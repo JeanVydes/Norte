@@ -69,12 +69,10 @@ fn build_body(
         )?),
     );
     if !request.tools.is_empty() {
-        body.insert(
-            "tools".to_owned(),
-            Value::Array(vec![json!({
-                "functionDeclarations": build_tools(model, &request.tools)?,
-            })]),
-        );
+        let tools = build_tools(model, &request.tools)?;
+        if !tools.is_empty() {
+            body.insert("tools".to_owned(), Value::Array(tools));
+        }
     }
     if generation {
         let config = generation_config(request);
@@ -256,25 +254,33 @@ fn media_part(media: &MediaPart) -> Result<Value> {
     }
 }
 
+/// Builds the `tools` array entries: one `functionDeclarations` entry for the
+/// host-executed functions plus one entry per provider tool.
+///
 /// # Errors
 ///
-/// Returns [`Error::Capability`] for a tool kind this wire cannot express, so a
-/// non-function tool is never silently dropped (Section 12 preamble).
+/// Returns [`Error::Capability`] for a provider tool whose declaration the host
+/// omitted, so a non-function tool is never silently dropped (Section 12
+/// preamble).
 fn build_tools(model: &ModelRef, tools: &[ToolSpec]) -> Result<Vec<Value>> {
-    let mut out = Vec::with_capacity(tools.len());
+    let mut declarations = Vec::new();
+    let mut provider = Vec::new();
     for tool in tools {
-        if !matches!(tool.kind, ToolKind::Function) {
-            return Err(Error::Capability {
-                model: model.clone(),
-                feature: format!("tool kind {:?} on the generateContent wire", tool.kind),
-            });
+        if matches!(tool.kind, ToolKind::Function) {
+            declarations.push(json!({
+                "name": tool.name.as_str(),
+                "description": tool.description,
+                "parameters": tool.parameters,
+            }));
+        } else {
+            provider.push(tool.provider_declaration(model, "generateContent")?.clone());
         }
-        out.push(json!({
-            "name": tool.name.as_str(),
-            "description": tool.description,
-            "parameters": tool.parameters,
-        }));
     }
+    let mut out = Vec::new();
+    if !declarations.is_empty() {
+        out.push(json!({ "functionDeclarations": declarations }));
+    }
+    out.extend(provider);
     Ok(out)
 }
 
@@ -500,6 +506,7 @@ mod tests {
             description: "Look up a value".to_owned(),
             kind: ToolKind::Function,
             parameters: serde_json::json!({ "type": "object" }),
+            declaration: None,
             approval: None,
         }];
         let body = build(&model(), &continuity(), &request).expect("build");
@@ -510,13 +517,43 @@ mod tests {
     }
 
     #[test]
-    fn a_non_function_tool_is_a_typed_error() {
+    fn provider_tools_are_separate_entries() {
+        let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
+        request.tools = vec![
+            ToolSpec {
+                name: ToolName::new("lookup").expect("tool"),
+                description: "Look up a value".to_owned(),
+                kind: ToolKind::Function,
+                parameters: serde_json::json!({ "type": "object" }),
+                declaration: None,
+                approval: None,
+            },
+            ToolSpec {
+                name: ToolName::new("google_search").expect("tool"),
+                description: "provider tool".to_owned(),
+                kind: ToolKind::ProviderExecuted,
+                parameters: serde_json::json!({ "type": "object" }),
+                declaration: Some(serde_json::json!({ "googleSearch": {} })),
+                approval: None,
+            },
+        ];
+        let body = build(&model(), &continuity(), &request).expect("build");
+        assert_eq!(
+            body["tools"][0]["functionDeclarations"][0]["name"],
+            "lookup"
+        );
+        assert_eq!(body["tools"][1], serde_json::json!({ "googleSearch": {} }));
+    }
+
+    #[test]
+    fn a_provider_tool_without_a_declaration_is_a_typed_error() {
         let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
         request.tools = vec![ToolSpec {
             name: ToolName::new("google_search").expect("tool"),
             description: "provider tool".to_owned(),
             kind: ToolKind::ProviderExecuted,
             parameters: serde_json::json!({ "type": "object" }),
+            declaration: None,
             approval: None,
         }];
         let error = build(&model(), &continuity(), &request).expect_err("error");

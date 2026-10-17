@@ -15,7 +15,7 @@ use crate::capability::ToolKind;
 use crate::domain::media::MediaPart;
 use crate::domain::part::{Part, TextPart};
 use crate::error::{Error, Result};
-use crate::id::{CallId, SessionId, ToolName};
+use crate::id::{CallId, ModelRef, SessionId, ToolName};
 
 /// A cooperative cancellation signal, owned by the core (NFR-4).
 ///
@@ -314,8 +314,33 @@ pub struct ToolSpec {
     pub description: String,
     pub kind: ToolKind,
     pub parameters: Value,
+    /// The provider-side declaration of a tool the host does not execute (a
+    /// built-in such as `web_search`), re-emitted verbatim on the wire (Section
+    /// 12). [`Option::None`] for a host-executed function tool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declaration: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval: Option<String>,
+}
+
+impl ToolSpec {
+    /// The provider declaration to re-emit on the wire, or a typed capability
+    /// error when the host did not supply one (Section 12: never a silent
+    /// omission).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Capability`] when `declaration` is [`Option::None`].
+    pub fn provider_declaration(&self, model: &ModelRef, wire: &str) -> Result<&Value> {
+        self.declaration.as_ref().ok_or_else(|| Error::Capability {
+            model: model.clone(),
+            feature: format!(
+                "tool `{}` ({:?}) has no provider declaration on the {wire} wire",
+                self.name.as_str(),
+                self.kind
+            ),
+        })
+    }
 }
 
 impl ToolSpec {
@@ -463,6 +488,13 @@ pub trait AnyFunction: Send + Sync + Debug {
         None
     }
 
+    /// The provider-side declaration of a tool this host does not execute (a
+    /// built-in such as `web_search`), re-emitted verbatim on the wire (Section
+    /// 12). [`Option::None`] for a host-executed function tool.
+    fn declaration(&self) -> Option<Value> {
+        None
+    }
+
     /// Runs the tool against raw JSON arguments.
     ///
     /// # Errors
@@ -483,6 +515,7 @@ pub trait AnyFunction: Send + Sync + Debug {
             description: self.description().to_owned(),
             kind: self.kind(),
             parameters: serde_json::to_value(self.parameters_schema())?,
+            declaration: self.declaration(),
             approval: self.approval().map(str::to_owned),
         })
     }

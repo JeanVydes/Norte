@@ -450,6 +450,7 @@ mod tests {
             description: "Look up a value".to_owned(),
             kind: ToolKind::Function,
             parameters: serde_json::json!({ "type": "object" }),
+            declaration: None,
             approval: None,
         }];
         let body = build(&model(), &continuity(), &Quirks::new(), &request).expect("build");
@@ -494,13 +495,14 @@ mod tests {
     }
 
     #[test]
-    fn a_non_function_tool_is_a_typed_error() {
+    fn a_provider_tool_is_a_typed_error_on_the_chat_wire() {
         let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
         request.tools = vec![ToolSpec {
             name: ToolName::new("search").expect("tool"),
             description: "provider tool".to_owned(),
             kind: ToolKind::ProviderExecuted,
             parameters: json!({ "type": "object" }),
+            declaration: Some(json!({ "type": "web_search" })),
             approval: None,
         }];
         let error = build(&model(), &continuity(), &Quirks::new(), &request).expect_err("error");

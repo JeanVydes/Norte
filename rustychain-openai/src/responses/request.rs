@@ -131,24 +131,23 @@ fn build_text(request: &ModelRequest) -> Option<Value> {
 
 /// # Errors
 ///
-/// Returns [`Error::Capability`] for a tool kind this wire cannot express, so a
-/// non-function tool is never silently dropped (Section 12 preamble).
+/// Returns [`Error::Capability`] for a provider tool whose declaration the host
+/// omitted, so a non-function tool is never silently dropped (Section 12
+/// preamble).
 fn build_tools(model: &ModelRef, tools: &[ToolSpec]) -> Result<Vec<Value>> {
     let mut out = Vec::with_capacity(tools.len());
     for tool in tools {
-        if !matches!(tool.kind, ToolKind::Function) {
-            return Err(Error::Capability {
-                model: model.clone(),
-                feature: format!("tool kind {:?} on the responses wire", tool.kind),
-            });
+        if matches!(tool.kind, ToolKind::Function) {
+            out.push(json!({
+                "type": "function",
+                "name": tool.name.as_str(),
+                "description": tool.description,
+                "parameters": tool.parameters,
+                "strict": false,
+            }));
+        } else {
+            out.push(tool.provider_declaration(model, "responses")?.clone());
         }
-        out.push(json!({
-            "type": "function",
-            "name": tool.name.as_str(),
-            "description": tool.description,
-            "parameters": tool.parameters,
-            "strict": false,
-        }));
     }
     Ok(out)
 }
@@ -568,6 +567,7 @@ mod tests {
             description: "Look up a value".to_owned(),
             kind: ToolKind::Function,
             parameters: serde_json::json!({ "type": "object" }),
+            declaration: None,
             approval: None,
         }];
         let body = build(&model(), &continuity(), &request).expect("build");
@@ -647,13 +647,32 @@ mod tests {
     }
 
     #[test]
-    fn a_non_function_tool_is_a_typed_error() {
+    fn a_provider_tool_is_emitted_verbatim() {
         let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
         request.tools = vec![ToolSpec {
             name: ToolName::new("web_search").expect("tool"),
             description: "provider tool".to_owned(),
             kind: ToolKind::ProviderExecuted,
             parameters: serde_json::json!({ "type": "object" }),
+            declaration: Some(serde_json::json!({ "type": "web_search" })),
+            approval: None,
+        }];
+        let body = build(&model(), &continuity(), &request).expect("build");
+        assert_eq!(
+            body["tools"][0],
+            serde_json::json!({ "type": "web_search" })
+        );
+    }
+
+    #[test]
+    fn a_provider_tool_without_a_declaration_is_a_typed_error() {
+        let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
+        request.tools = vec![ToolSpec {
+            name: ToolName::new("web_search").expect("tool"),
+            description: "provider tool".to_owned(),
+            kind: ToolKind::ProviderExecuted,
+            parameters: serde_json::json!({ "type": "object" }),
+            declaration: None,
             approval: None,
         }];
         let error = build(&model(), &continuity(), &request).expect_err("error");

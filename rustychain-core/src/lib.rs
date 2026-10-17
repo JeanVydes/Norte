@@ -49,7 +49,7 @@ pub use engine::{
     Engine, EngineBuilder, EngineConfig, EngineStream, TurnBuilder, TurnOutcome, usage_of,
 };
 pub use error::{Error, ProviderError, ProviderErrorKind, Result};
-pub use event::{EngineEvent, EventSink};
+pub use event::{EngineEvent, EventSink, StreamDelta};
 pub use id::{
     ApprovalId, BlobId, CallId, Digest, GenerationId, GrantId, ModelId, ModelRef, NodeId,
     ProviderId, SessionId, ToolName, WireFamily,

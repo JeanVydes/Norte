@@ -1,29 +1,32 @@
+<p align="center">
+  <img src="assets/banner.jpg" alt="RustyChain" width="100%">
+</p>
+
 # RustyChain
 
-A high-performance, type-safe Rust library for building LLM-powered applications,
-chains, and agents.
+<p align="center">
+  <a href="https://github.com/JeanVydes/rustychain/actions/workflows/rust.yml"><img src="https://github.com/JeanVydes/rustychain/actions/workflows/rust.yml/badge.svg?branch=dev" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
+  <img src="https://img.shields.io/badge/MSRV-1.85-blue.svg" alt="MSRV: 1.85">
+  <img src="https://img.shields.io/badge/edition-2024-blue.svg" alt="Edition: 2024">
+</p>
 
-RustyChain separates the **neutral model** (domain types, engine, streaming
-pipeline, contracts) from the **wires** that speak to providers. The core carries
-abstractions only: no vendor names, no model catalogs, no persistence backends.
-Hosts supply capabilities, endpoints, credentials and storage; adapters translate
-between the neutral model and the vendor wire in both directions.
+Streaming-first, type-safe Rust for LLM apps, chains and agents. A neutral core
+with no vendor names, plus adapters for OpenAI, Anthropic and Gemini.
 
-## Crates
+- **Neutral core** — vendor types never leave an adapter.
+- **Stream-first** — text, reasoning, tool arguments, media and safety ratings
+  arrive as deltas; blocking is `collect()`.
+- **Durable sessions** — a turn is a commit on an append-only node graph.
+- **Lossless export** — `Conversation` round-trips byte-for-byte, cache prefix
+  included.
+- **Policy-gated tools** — allow, deny, require approval, rewrite or rate-limit.
+- **Ports, not backends** — implement `Store` and `BlobStore`; in-memory versions
+  ship for tests.
 
-| Crate | Role |
-| --- | --- |
-| `rustychain-core` | Domain model, engine, streaming, policies, layers, capabilities and every contract (ports). |
-| `rustychain-openai` | The `OpenAI` wire family: Responses (primary) and Chat Completions, plus the native `openai` preset. |
-| `rustychain-anthropic` | The Anthropic Messages wire and the native `anthropic` preset. |
-| `rustychain-gemini` | The Google Gemini `generateContent` wire and the native `google` preset. |
-| `rustychain-http` | Shared HTTP transport, `VendorProfile`/auth schemes and `HttpMedia`. |
-| `rustychain-tools` | The default host tool suite, including the `command` executor. |
-| `rustychain-media` | Media preprocessing helpers. |
-| `rustychain-mcp` | Model Context Protocol integration. |
-| `rustychain-testing` | In-memory store, scripted model and conformance suites. |
+## Install
 
-## Installation
+Not published yet:
 
 ```toml
 [dependencies]
@@ -32,10 +35,7 @@ rustychain-openai = { git = "https://github.com/JeanVydes/rustychain", branch = 
 rustychain-testing = { git = "https://github.com/JeanVydes/rustychain", branch = "dev" }
 ```
 
-## Start
-
-The engine is a pure state machine over a session. You give it a `Store`, a
-`BlobStore`, a `Model` and a `ToolRegistry`; everything else is host data.
+## Quickstart
 
 ```rust
 use std::sync::Arc;
@@ -73,101 +73,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-`rustychain-testing`'s in-memory store is a reference implementation: production
-hosts implement the `Store` and `BlobStore` ports against their own database and
-object store.
+The in-memory store is a test reference; production hosts implement `Store` and
+`BlobStore` against their own database and object storage.
 
-## Turn control
+## Streaming
 
-`send` and `resume` use the engine defaults. To configure a single turn —
-sampling, reasoning, and exactly which tools the model may call — open the turn
-builder. Overrides are layered **per field**: engine defaults ← session defaults
-← this turn.
+A turn yields `EngineEvent`s as they arrive; `finish()` returns the outcome.
+Dropping the stream cancels the turn. Tools run automatically, up to
+`EngineConfig::max_iterations`.
 
 ```rust
-use rustychain_core::{Message, ReasoningEffort, ReasoningRequest, ToolName};
+use futures_util::StreamExt;
+use rustychain_core::{Engine, EngineEvent, Message, SessionId, StreamDelta};
 
-async fn turn(engine: &rustychain_core::Engine, session: rustychain_core::SessionId)
-    -> Result<(), Box<dyn std::error::Error>> {
-    let outcome = engine
-        .turn(session)
-        .input(Message::user("Summarise this."))
-        .temperature(0.2)
-        .top_k(40)
-        .reasoning(ReasoningRequest::Effort(ReasoningEffort::High))
-        .tools([ToolName::new("echo")?])
-        .start()
-        .finish()
-        .await?;
+async fn stream_turn(
+    engine: &Engine,
+    session: SessionId,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut stream = engine.send(session, Message::user("Hello!"));
+
+    while let Some(event) = stream.next().await {
+        match event? {
+            EngineEvent::StreamDelta {
+                delta: StreamDelta::Text { text, .. },
+                ..
+            } => print!("{text}"),
+            EngineEvent::StreamDelta {
+                delta: StreamDelta::Reasoning { text, .. },
+                ..
+            } => eprint!("{text}"),
+            EngineEvent::ToolCallStarted { tool, .. } => eprintln!("\n→ {tool}"),
+            _ => {}
+        }
+    }
+
+    let outcome = stream.finish().await?;
     let _ = outcome;
     Ok(())
 }
 ```
 
-Only the named tools are exposed to the model for that request — the base case
-is every registered tool. The effective configuration is reported on every
-request through `EngineEvent::RequestReconstructed`, so each send is auditable.
-
-## History as data
-
-A session exports as a self-contained, serializable `Conversation`: the ordered
-message array plus its identity. It round-trips losslessly and byte-stably, and a
-re-import reproduces the exact wire prefix — including the provider cache key —
-so handing a chat to another process does not cost a cache miss.
-
-```rust
-use rustychain_core::Conversation;
-
-async fn handover(engine: &rustychain_core::Engine, session: rustychain_core::SessionId)
-    -> Result<(), Box<dyn std::error::Error>> {
-    let conversation = engine.export(session).await?;
-    let json = conversation.to_json()?; // store it, ship it
-    let restored = Conversation::from_json(&json)?;
-    let imported = engine.import(restored).await?;
-    let _ = imported;
-    Ok(())
-}
-```
-
-## Vendors
-
-Every adapter is parameterized by three host values: a `ModelRef`, a
-`VendorProfile` (endpoint + credentials) and a `Capabilities` descriptor. The
-native vendors ship as presets (`openai`, `anthropic`, `gemini`). Compatible
-vendors need no preset: they are a `VendorProfile` with a different base URL and
-the generic adapter constructor.
-
-```rust
-use rustychain_core::{Capabilities, ModelRef, Modality, ProviderId, WireFamily};
-use rustychain_http::{AuthScheme, VendorProfile};
-use rustychain_openai::OpenAiChat;
-
-fn openrouter() -> Result<OpenAiChat, Box<dyn std::error::Error>> {
-    let profile = VendorProfile::new(
-        ProviderId::new("openrouter")?,
-        WireFamily::new("openai.chat")?,
-        "https://openrouter.ai/api/v1",
-    )?
-    .with_auth(AuthScheme::bearer(std::env::var("OPENROUTER_API_KEY")?));
-    let reference = ModelRef::new(
-        profile.provider.clone(),
-        "anthropic/claude-sonnet-4".parse()?,
-    );
-    let capabilities = Capabilities::builder()
-        .input(Modality::Text)
-        .output(Modality::Text)
-        .build();
-    OpenAiChat::new(reference, profile, capabilities)
-}
-```
-
-Capabilities are typed and host-supplied. There is no built-in model table. The
-fluent builder is the primary API; `capabilities_from_json` exists only so a host
-can bridge its own configuration.
-
 ## Tools
-
-Tools are declared with an attribute and executed by the host.
 
 ```rust
 use rustychain_core::{FnExecutor, Result, ToolRegistry};
@@ -202,14 +148,141 @@ fn build_registry() -> Result<ToolRegistry> {
 }
 ```
 
-Rich, stateful tools register through `ToolRegistry::register_tool` and can stream
-progress, observe cancellation and render custom context.
+The argument schema is generated from `EchoArgs`. Rich tools use
+`ToolRegistry::register_tool` and can stream progress or observe cancellation.
 
-## Documentation
+## Approvals
 
-- [`docs/SRS.md`](docs/SRS.md) is the single source of truth for behaviour.
-- [`CONTRIBUTING.md`](CONTRIBUTING.md) covers the build, lint and controller
-  policies.
+`ToolApprovalPolicy` gates a tool: the session parks at `Phase::AwaitingApproval`
+until the host grants or denies the call. Grants are bound to the arguments, so
+they cannot be replayed for different input.
+
+```rust
+use std::sync::Arc;
+
+use rustychain_core::{GrantScope, Message, Phase, PolicySet, ToolApprovalPolicy, ToolName};
+
+fn shell_approvals() -> Result<PolicySet, Box<dyn std::error::Error>> {
+    Ok(PolicySet::new(vec![Arc::new(ToolApprovalPolicy::new(
+        "shell-approval",
+        vec![ToolName::new("command")?],
+        "the agent wants to run a shell command",
+    ))]))
+}
+
+async fn run_guarded(
+    engine: &rustychain_core::Engine,
+    session: rustychain_core::SessionId,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let outcome = engine
+        .send(session, Message::user("Clean the build directory."))
+        .finish()
+        .await?;
+
+    if outcome.session.phase == Phase::AwaitingApproval {
+        let pending = engine.pending_approvals(session).await?;
+        for record in &pending {
+            println!("approve `{}`?", record.tool);
+        }
+        let record = &pending[0];
+        // Deny instead with `engine.deny(record.id, "operator", reason)`.
+        engine
+            .approve(record.id, GrantScope::Call(record.call_id), "operator")
+            .await?;
+        engine.resume(session).finish().await?;
+    }
+    Ok(())
+}
+```
+
+## Turn control
+
+`send` and `resume` use the engine defaults. Configure one turn — sampling,
+reasoning, exposed tools — with the turn builder. Overrides layer per field:
+engine ← session ← turn.
+
+```rust
+use rustychain_core::{Message, ReasoningEffort, ReasoningRequest, ToolName};
+
+async fn turn(engine: &rustychain_core::Engine, session: rustychain_core::SessionId)
+    -> Result<(), Box<dyn std::error::Error>> {
+    let outcome = engine
+        .turn(session)
+        .input(Message::user("Summarise this."))
+        .temperature(0.2)
+        .top_k(40)
+        .reasoning(ReasoningRequest::Effort(ReasoningEffort::High))
+        .tools([ToolName::new("echo")?])
+        .start()
+        .finish()
+        .await?;
+    let _ = outcome;
+    Ok(())
+}
+```
+
+## Other vendors
+
+An adapter is a `ModelRef` + a `VendorProfile` (endpoint, auth) + `Capabilities`.
+OpenAI-compatible vendors need no preset:
+
+```rust
+use rustychain_core::{Capabilities, ModelRef, Modality, ProviderId, WireFamily};
+use rustychain_http::{AuthScheme, VendorProfile};
+use rustychain_openai::OpenAiChat;
+
+fn openrouter() -> Result<OpenAiChat, Box<dyn std::error::Error>> {
+    let profile = VendorProfile::new(
+        ProviderId::new("openrouter")?,
+        WireFamily::new("openai.chat")?,
+        "https://openrouter.ai/api/v1",
+    )?
+    .with_auth(AuthScheme::bearer(std::env::var("OPENROUTER_API_KEY")?));
+    let reference = ModelRef::new(
+        profile.provider.clone(),
+        "anthropic/claude-sonnet-4".parse()?,
+    );
+    let capabilities = Capabilities::builder()
+        .input(Modality::Text)
+        .output(Modality::Text)
+        .build();
+    OpenAiChat::new(reference, profile, capabilities)
+}
+```
+
+Presets: `rustychain_openai::presets::openai`,
+`rustychain_anthropic::presets::anthropic`, `rustychain_gemini::presets::gemini`.
+
+## Export & import
+
+```rust
+use rustychain_core::Conversation;
+
+async fn handover(engine: &rustychain_core::Engine, session: rustychain_core::SessionId)
+    -> Result<(), Box<dyn std::error::Error>> {
+    let conversation = engine.export(session).await?;
+    let json = conversation.to_json()?; // store it, ship it
+    let restored = Conversation::from_json(&json)?;
+    let imported = engine.import(restored).await?;
+    let _ = imported;
+    Ok(())
+}
+```
+
+A re-import reproduces the exact wire prefix, so it costs no cache miss.
+
+## Development
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items
+```
+
+[`docs/SRS.md`](docs/SRS.md) is the source of truth for behaviour;
+[`CONTRIBUTING.md`](CONTRIBUTING.md) covers the build and lint policies. Wire
+parsers are fuzzed with `cargo-fuzz` (`fuzz/`); live tests are `#[ignore]`d.
 
 ## License
 

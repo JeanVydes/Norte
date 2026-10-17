@@ -8,7 +8,7 @@ use rustychain_core::{
     ReasoningEffort, ReasoningRequest, Result, ToolName, ToolRegistry,
 };
 use rustychain_openai::presets::openai;
-use rustychain_testing::{InMemoryBlobStore, InMemoryStore};
+use rustychain_testing::{InMemoryBlobStore, InMemoryStore, model};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -81,6 +81,90 @@ async fn the_readme_history_wiring_compiles() {
 
     let second = readme_engine();
     let _imported = second.import(decoded).await.expect("import");
+}
+
+#[tokio::test]
+async fn the_readme_streaming_wiring_compiles() {
+    use futures_util::StreamExt;
+    use rustychain_core::{EngineEvent, StreamDelta};
+    use rustychain_testing::ScriptedModel;
+
+    let scripted = Arc::new(ScriptedModel::new(model("test/echo")).turn_text("Hello!"));
+    let engine = EngineBuilder::new()
+        .store(Arc::new(InMemoryStore::new()))
+        .blobs(Arc::new(InMemoryBlobStore::new()))
+        .model(scripted)
+        .tools(ToolRegistry::new())
+        .build()
+        .expect("build engine");
+    let session = engine.create().await.expect("create");
+
+    let mut stream = engine.send(session.id, Message::user("Hello!"));
+    while let Some(event) = stream.next().await {
+        match event.expect("event") {
+            EngineEvent::StreamDelta {
+                delta: StreamDelta::Text { text, .. },
+                ..
+            } => print!("{text}"),
+            EngineEvent::StreamDelta {
+                delta: StreamDelta::Reasoning { text, .. },
+                ..
+            } => eprint!("{text}"),
+            EngineEvent::ToolCallStarted { tool, .. } => eprintln!("\n-> {tool}"),
+            _ => {}
+        }
+    }
+
+    let outcome = stream.finish().await.expect("turn");
+    assert!(outcome.message.is_some());
+}
+
+#[tokio::test]
+async fn the_readme_approval_wiring_compiles() {
+    use rustychain_core::{CallId, GrantScope, Phase, PolicySet, ToolApprovalPolicy};
+    use rustychain_testing::ScriptedModel;
+
+    let policies = PolicySet::new(vec![Arc::new(ToolApprovalPolicy::new(
+        "shell-approval",
+        vec![ToolName::new("echo").expect("tool")],
+        "the agent wants to run a shell command",
+    ))]);
+    let mut tools = ToolRegistry::new();
+    tools.register_declarator(&Echo).expect("register echo");
+    let scripted = Arc::new(
+        ScriptedModel::new(model("test/echo"))
+            .turn_tool_call(CallId::new(), "echo", &serde_json::json!({ "text": "hi" }))
+            .turn_text("done"),
+    );
+    let engine = EngineBuilder::new()
+        .store(Arc::new(InMemoryStore::new()))
+        .blobs(Arc::new(InMemoryBlobStore::new()))
+        .model(scripted)
+        .tools(tools)
+        .policies(policies)
+        .build()
+        .expect("build engine");
+    let session = engine.create().await.expect("create");
+
+    let outcome = engine
+        .send(session.id, Message::user("Clean the build directory."))
+        .finish()
+        .await
+        .expect("turn");
+
+    if outcome.session.phase == Phase::AwaitingApproval {
+        let pending = engine.pending_approvals(session.id).await.expect("pending");
+        for record in &pending {
+            println!("approve `{}`?", record.tool);
+        }
+        let record = &pending[0];
+        engine
+            .approve(record.id, GrantScope::Call(record.call_id), "operator")
+            .await
+            .expect("approve");
+        engine.resume(session.id).finish().await.expect("resume");
+    }
+    assert_eq!(outcome.session.phase, Phase::AwaitingApproval);
 }
 
 #[test]

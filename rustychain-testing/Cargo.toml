@@ -1,6 +1,6 @@
 [package]
 name = "rustychain-testing"
-description = "Reference stores, scripted models and conformance suites for RustyChain"
+description = "Scripted models, fixture replay, request probes and conformance suites for RustyChain"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

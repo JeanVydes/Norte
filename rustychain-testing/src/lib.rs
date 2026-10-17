@@ -1,15 +1,12 @@
 #![forbid(unsafe_code)]
-#![doc = "Reference stores and test doubles for `RustyChain`. Production code does not depend on this crate."]
+#![doc = "Scripted models, fixture replay, request probes and conformance suites for `RustyChain`. Production code does not depend on this crate."]
 
-pub mod blob;
 pub mod conformance;
 pub mod fixtures;
 pub mod model;
 pub mod observer;
 pub mod probe;
-pub mod store;
 
-pub use blob::InMemoryBlobStore;
 pub use conformance::{model_conformance, store_conformance};
 pub use fixtures::{model, system, user};
 pub use model::{
@@ -17,7 +14,7 @@ pub use model::{
 };
 pub use observer::RecordingObserver;
 pub use probe::ProbeModel;
-pub use store::InMemoryStore;
+pub use rustychain_core::memory::{InMemoryBlobStore, InMemoryStore};
 
 #[cfg(test)]
 mod tests {

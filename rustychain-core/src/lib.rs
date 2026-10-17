@@ -13,6 +13,7 @@ pub mod event;
 pub mod id;
 pub mod layer;
 pub mod media_adapter;
+pub mod memory;
 pub mod model;
 pub mod observer;
 pub mod policy;
@@ -59,6 +60,7 @@ pub use layer::{
     synthetic_stream,
 };
 pub use media_adapter::{MediaAdapter, ProviderFiles};
+pub use memory::{InMemoryBlobStore, InMemoryStore};
 pub use model::{
     ContinuityAdapter, GenerationParams, Model, ModelRequest, ModelStream, SESSION_EXTENSION,
     StreamLimits, TURN_OPTIONS_KEY, TurnOptions, splice_vendor_extensions,

@@ -3,7 +3,8 @@ use std::collections::BTreeMap;
 use futures_util::StreamExt;
 use rustychain_core::{
     CallId, Citation, CitationSource, Error, ExtensionPart, FinishReason, ModelStream, Part,
-    ProviderError, ProviderErrorKind, ReasoningVisibility, Result, StreamEvent, Usage,
+    ProviderError, ProviderErrorKind, ProviderTool, ReasoningVisibility, Result, StreamEvent,
+    Usage,
 };
 use rustychain_http::SseStream;
 use serde_json::Value;
@@ -50,6 +51,9 @@ struct Decoder {
     calls: BTreeMap<u32, CallId>,
     reasoning: BTreeMap<u32, ReasoningState>,
     opaque: BTreeMap<u32, (Value, String)>,
+    /// Provider-executed tool calls by their vendor id, so a following result
+    /// block can be correlated with the call that produced it.
+    vendor_tools: BTreeMap<String, (CallId, String)>,
     usage: Usage,
 }
 
@@ -60,6 +64,7 @@ impl Decoder {
             calls: BTreeMap::new(),
             reasoning: BTreeMap::new(),
             opaque: BTreeMap::new(),
+            vendor_tools: BTreeMap::new(),
             usage: Usage::default(),
         }
     }
@@ -226,6 +231,15 @@ impl Decoder {
                     block["input"] = input;
                 }
             }
+            if let Some(event) = self.provider_event(index, &block) {
+                return Ok(vec![
+                    StreamEvent::Continuity {
+                        index,
+                        fragment: self.continuity.fragment(&block)?,
+                    },
+                    event,
+                ]);
+            }
             return Ok(vec![StreamEvent::Part {
                 index,
                 part: Part::Extension(ExtensionPart {
@@ -238,6 +252,49 @@ impl Decoder {
             return Ok(vec![StreamEvent::ToolCallDone { index }]);
         }
         Ok(Vec::new())
+    }
+
+    /// Maps a provider-executed block (`server_tool_use` / `mcp_tool_use` and the
+    /// `*_tool_result` families) onto a typed event. The verbatim block is still
+    /// carried as a continuity fragment, so replay stays byte-exact (FR-ADP-3).
+    fn provider_event(&mut self, index: u32, block: &Value) -> Option<StreamEvent> {
+        let kind = opt_str(block, "type")?;
+        if matches!(kind, "server_tool_use" | "mcp_tool_use") {
+            let name = opt_str(block, "name").unwrap_or_default().to_owned();
+            let call_id = CallId::new();
+            if let Some(vendor) = opt_str(block, "id") {
+                self.vendor_tools
+                    .insert(vendor.to_owned(), (call_id, name.clone()));
+            }
+            return Some(StreamEvent::ProviderToolCall {
+                index,
+                call_id,
+                tool: ProviderTool {
+                    namespace: "anthropic".to_owned(),
+                    name,
+                },
+                input: block.get("input").cloned().unwrap_or(Value::Null),
+            });
+        }
+        if !kind.ends_with("_tool_result") {
+            return None;
+        }
+        let (call_id, name) = opt_str(block, "tool_use_id")
+            .and_then(|vendor| self.vendor_tools.get(vendor).cloned())
+            .unwrap_or_else(|| (CallId::new(), provider_result_tool(kind).to_owned()));
+        Some(StreamEvent::ProviderToolResult {
+            index,
+            call_id,
+            tool: ProviderTool {
+                namespace: "anthropic".to_owned(),
+                name,
+            },
+            output: block
+                .get("content")
+                .cloned()
+                .unwrap_or_else(|| block.clone()),
+            citations: Vec::new(),
+        })
     }
 
     fn message_delta(&mut self, value: &Value) -> Vec<StreamEvent> {
@@ -348,6 +405,20 @@ fn finish_reason(reason: &str) -> FinishReason {
         "tool_use" => FinishReason::ToolCalls,
         "refusal" => FinishReason::Refusal,
         other => FinishReason::Other(other.to_owned()),
+    }
+}
+
+/// The neutral tool name for a provider result block when the producing call is
+/// not known (the call usually precedes it and supplies the real name).
+fn provider_result_tool(kind: &str) -> &str {
+    match kind {
+        "web_search_tool_result" => "web_search",
+        "web_fetch_tool_result" => "web_fetch",
+        "code_execution_tool_result" => "code_execution",
+        "bash_code_execution_tool_result" => "bash_code_execution",
+        "text_editor_code_execution_tool_result" => "text_editor_code_execution",
+        "mcp_tool_result" => "mcp",
+        other => other,
     }
 }
 
@@ -562,10 +633,55 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unknown_blocks_round_trip_as_extensions() {
+    async fn provider_server_tool_use_becomes_a_typed_call() {
         let events = drain(&[
             r#"{"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_1","name":"web_search","input":{}}}"#,
             r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"rust\"}"}}"#,
+            r#"{"type":"content_block_stop","index":0}"#,
+        ])
+        .await;
+        let StreamEvent::ProviderToolCall { tool, input, .. } = &events[1] else {
+            panic!("expected a provider tool call, got {events:?}");
+        };
+        assert_eq!(tool.namespace, "anthropic");
+        assert_eq!(tool.name, "web_search");
+        assert_eq!(input["query"], "rust");
+        assert!(matches!(
+            events[0],
+            StreamEvent::Continuity { index: 0, .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_provider_result_correlates_with_its_call() {
+        let events = drain(&[
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_1","name":"web_search","input":{"query":"rust"}}}"#,
+            r#"{"type":"content_block_stop","index":0}"#,
+            r#"{"type":"content_block_start","index":1,"content_block":{"type":"web_search_tool_result","tool_use_id":"srvtoolu_1","content":[{"type":"web_search_result","title":"Rust","url":"https://rust-lang.org"}]}}"#,
+            r#"{"type":"content_block_stop","index":1}"#,
+        ])
+        .await;
+        let StreamEvent::ProviderToolCall { call_id, .. } = &events[1] else {
+            panic!("expected a call, got {events:?}");
+        };
+        let StreamEvent::ProviderToolResult {
+            call_id: result_id,
+            tool,
+            output,
+            ..
+        } = &events[3]
+        else {
+            panic!("expected a result, got {events:?}");
+        };
+        assert_eq!(result_id, call_id);
+        assert_eq!(tool.name, "web_search");
+        assert_eq!(output[0]["url"], "https://rust-lang.org");
+    }
+
+    #[tokio::test]
+    async fn unknown_blocks_round_trip_as_extensions() {
+        let events = drain(&[
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"container_upload","file_id":"file_1"}}"#,
             r#"{"type":"content_block_stop","index":0}"#,
         ])
         .await;
@@ -576,8 +692,8 @@ mod tests {
             panic!("expected an extension");
         };
         assert_eq!(extension.namespace, "anthropic");
-        assert_eq!(extension.data["type"], "server_tool_use");
-        assert_eq!(extension.data["input"]["query"], "rust");
+        assert_eq!(extension.data["type"], "container_upload");
+        assert_eq!(extension.data["file_id"], "file_1");
     }
 
     #[tokio::test]

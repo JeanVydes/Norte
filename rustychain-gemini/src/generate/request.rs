@@ -357,8 +357,9 @@ fn effort_name(effort: ReasoningEffort) -> &'static str {
 mod tests {
     use super::*;
     use rustychain_core::{
-        ContinuityAdapter, MediaKind, ModelId, ProviderId, ReasoningPart, ReasoningVisibility,
-        ToolCallPart, ToolName, WireFamily,
+        ContinuityAdapter, MediaKind, ModelId, ProviderId, ProviderTool, ProviderToolCallPart,
+        ProviderToolResultPart, ReasoningPart, ReasoningVisibility, ToolCallPart, ToolName,
+        WireFamily,
     };
 
     use crate::WIRE_GENERATE;
@@ -434,6 +435,43 @@ mod tests {
         let request = ModelRequest::new(model(), vec![Message::user("go"), assistant]);
         let body = build(&model(), &continuity(), &request).expect("build");
         assert_eq!(body["contents"][1]["parts"][0], part);
+    }
+
+    #[test]
+    fn provider_code_execution_replays_verbatim() {
+        let call = serde_json::json!({
+            "executableCode": { "language": "PYTHON", "code": "1+1" },
+        });
+        let result = serde_json::json!({
+            "codeExecutionResult": { "outcome": "OUTCOME_OK", "output": "2" },
+        });
+        let call_id = CallId::new();
+        let tool = ProviderTool {
+            namespace: "google".to_owned(),
+            name: "code_execution".to_owned(),
+        };
+        let assistant = Message::new(
+            Role::Assistant,
+            vec![
+                Part::ProviderToolCall(ProviderToolCallPart {
+                    call_id,
+                    tool: tool.clone(),
+                    input: call["executableCode"].clone(),
+                    continuity: Some(continuity().build(&call).expect("call token")),
+                }),
+                Part::ProviderToolResult(ProviderToolResultPart {
+                    call_id,
+                    tool,
+                    output: result["codeExecutionResult"].clone(),
+                    citations: Vec::new(),
+                    continuity: Some(continuity().build(&result).expect("result token")),
+                }),
+            ],
+        );
+        let request = ModelRequest::new(model(), vec![Message::user("go"), assistant]);
+        let body = build(&model(), &continuity(), &request).expect("build");
+        assert_eq!(body["contents"][1]["parts"][0], call);
+        assert_eq!(body["contents"][1]["parts"][1], result);
     }
 
     #[test]

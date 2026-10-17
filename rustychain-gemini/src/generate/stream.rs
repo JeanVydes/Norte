@@ -2,7 +2,7 @@ use futures_util::StreamExt;
 use rustychain_core::{
     CallId, Citation, CitationSource, Error, ExtensionPart, FinishReason, MediaKind, MediaMetadata,
     MediaPart, MediaSource, MimeType, ModelStream, Part, ProviderError, ProviderErrorKind,
-    ReasoningVisibility, Result, StreamEvent, Usage,
+    ProviderTool, ReasoningVisibility, Result, StreamEvent, Usage,
 };
 use rustychain_http::SseStream;
 use serde_json::{Value, json};
@@ -47,6 +47,9 @@ struct Decoder {
     saw_tool_call: bool,
     finished: bool,
     pending_finish: Option<FinishReason>,
+    /// The most recent `executableCode` call, so the matching
+    /// `codeExecutionResult` correlates with it.
+    code_call: Option<CallId>,
 }
 
 impl Decoder {
@@ -61,6 +64,7 @@ impl Decoder {
             saw_tool_call: false,
             finished: false,
             pending_finish: None,
+            code_call: None,
         }
     }
 
@@ -163,6 +167,15 @@ impl Decoder {
         if let Some(call) = part.get("functionCall").filter(|call| !call.is_null()) {
             return self.function_call(part, call, events);
         }
+        if let Some(code) = part.get("executableCode").filter(|code| !code.is_null()) {
+            return self.executable_code(part, code, events);
+        }
+        if let Some(result) = part
+            .get("codeExecutionResult")
+            .filter(|result| !result.is_null())
+        {
+            return self.code_execution_result(part, result, events);
+        }
         if let Some(data) = part.get("inlineData").filter(|data| !data.is_null()) {
             return self.inline_data(data, events);
         }
@@ -177,6 +190,57 @@ impl Decoder {
             return self.text(part, text, thought, events);
         }
         self.extension(part, events);
+        Ok(())
+    }
+
+    /// A provider-executed `executableCode` block becomes a typed
+    /// `ProviderToolCall`, keeping the verbatim part in continuity so replay
+    /// stays byte-exact (FR-ADP-3).
+    fn executable_code(
+        &mut self,
+        part: &Value,
+        code: &Value,
+        events: &mut Vec<StreamEvent>,
+    ) -> Result<()> {
+        let index = self.alloc();
+        let call_id = CallId::new();
+        self.code_call = Some(call_id);
+        events.push(StreamEvent::Continuity {
+            index,
+            fragment: self.continuity.fragment(part)?,
+        });
+        events.push(StreamEvent::ProviderToolCall {
+            index,
+            call_id,
+            tool: provider_tool(),
+            input: code.clone(),
+        });
+        self.break_text();
+        Ok(())
+    }
+
+    /// The provider-executed `codeExecutionResult` becomes a typed
+    /// `ProviderToolResult`, correlated with the preceding `executableCode`.
+    fn code_execution_result(
+        &mut self,
+        part: &Value,
+        result: &Value,
+        events: &mut Vec<StreamEvent>,
+    ) -> Result<()> {
+        let index = self.alloc();
+        let call_id = self.code_call.take().unwrap_or_default();
+        events.push(StreamEvent::Continuity {
+            index,
+            fragment: self.continuity.fragment(part)?,
+        });
+        events.push(StreamEvent::ProviderToolResult {
+            index,
+            call_id,
+            tool: provider_tool(),
+            output: result.clone(),
+            citations: Vec::new(),
+        });
+        self.break_text();
         Ok(())
     }
 
@@ -345,6 +409,14 @@ impl Decoder {
             | "IMAGE_SAFETY" => FinishReason::ContentFilter,
             other => FinishReason::Other(other.to_owned()),
         }
+    }
+}
+
+/// The neutral descriptor for Gemini's provider-executed code execution.
+fn provider_tool() -> ProviderTool {
+    ProviderTool {
+        namespace: "google".to_owned(),
+        name: "code_execution".to_owned(),
     }
 }
 
@@ -670,20 +742,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn server_side_tool_parts_round_trip_as_extensions() {
+    async fn code_execution_parts_become_typed_provider_parts() {
         let events = drain(&[
             r#"{"candidates":[{"content":{"parts":[{"executableCode":{"language":"PYTHON","code":"1+1"}}]}}]}"#,
+            r#"{"candidates":[{"content":{"parts":[{"codeExecutionResult":{"outcome":"OUTCOME_OK","output":"2"}}]}}]}"#,
         ])
         .await;
-        let StreamEvent::Part {
-            part: Part::Extension(extension),
+        let StreamEvent::ProviderToolCall {
+            call_id,
+            tool,
+            input,
             ..
-        } = &events[0]
+        } = &events[1]
         else {
-            panic!("expected extension part");
+            panic!("expected a provider tool call, got {events:?}");
         };
-        assert_eq!(extension.namespace, "google");
-        assert_eq!(extension.data["executableCode"]["code"], "1+1");
+        assert_eq!(tool.namespace, "google");
+        assert_eq!(tool.name, "code_execution");
+        assert_eq!(input["code"], "1+1");
+        let StreamEvent::ProviderToolResult {
+            call_id: result_id,
+            output,
+            ..
+        } = &events[3]
+        else {
+            panic!("expected a provider tool result, got {events:?}");
+        };
+        assert_eq!(result_id, call_id);
+        assert_eq!(output["outcome"], "OUTCOME_OK");
+        assert_eq!(output["output"], "2");
     }
 
     #[tokio::test]

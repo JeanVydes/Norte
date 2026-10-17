@@ -242,6 +242,11 @@ fn push_assistant(
                     blocks.push(continuity.decode(token)?);
                 }
             }
+            Part::ProviderToolResult(result) => {
+                if let Some(token) = &result.continuity {
+                    blocks.push(continuity.decode(token)?);
+                }
+            }
             Part::Extension(extension) if extension.namespace.starts_with("anthropic") => {
                 blocks.push(extension.data.clone());
             }
@@ -375,8 +380,9 @@ fn media_source(media: &MediaPart) -> Result<Value> {
 mod tests {
     use super::*;
     use rustychain_core::{
-        ContinuityAdapter, ExtensionPart, MimeType, ModelId, ProviderId, ReasoningPart,
-        ReasoningVisibility, ToolCallPart, ToolName, WireFamily,
+        CallId, ContinuityAdapter, ExtensionPart, MimeType, ModelId, ProviderId, ProviderTool,
+        ProviderToolCallPart, ProviderToolResultPart, ReasoningPart, ReasoningVisibility,
+        ToolCallPart, ToolName, WireFamily,
     };
 
     use crate::WIRE_MESSAGES;
@@ -507,6 +513,49 @@ mod tests {
         let request = ModelRequest::new(model(), vec![assistant, Message::user("again")]);
         let body = build(&model(), &continuity(), &request).expect("build");
         assert_eq!(body["messages"][0]["content"][0], block);
+    }
+
+    #[test]
+    fn provider_tool_blocks_are_replayed_verbatim() {
+        let call_block = serde_json::json!({
+            "type": "server_tool_use",
+            "id": "srvtoolu_1",
+            "name": "web_search",
+            "input": {"query": "rust"},
+        });
+        let result_block = serde_json::json!({
+            "type": "web_search_tool_result",
+            "tool_use_id": "srvtoolu_1",
+            "content": [{"type": "web_search_result", "url": "https://rust-lang.org"}],
+        });
+        let adapter = continuity();
+        let call_id = CallId::new();
+        let tool = ProviderTool {
+            namespace: "anthropic".to_owned(),
+            name: "web_search".to_owned(),
+        };
+        let assistant = Message::new(
+            Role::Assistant,
+            vec![
+                Part::ProviderToolCall(ProviderToolCallPart {
+                    call_id,
+                    tool: tool.clone(),
+                    input: call_block["input"].clone(),
+                    continuity: Some(adapter.build(&call_block).expect("call token")),
+                }),
+                Part::ProviderToolResult(ProviderToolResultPart {
+                    call_id,
+                    tool,
+                    output: result_block["content"].clone(),
+                    citations: Vec::new(),
+                    continuity: Some(adapter.build(&result_block).expect("result token")),
+                }),
+            ],
+        );
+        let request = ModelRequest::new(model(), vec![assistant]);
+        let body = build(&model(), &adapter, &request).expect("build");
+        assert_eq!(body["messages"][0]["content"][0], call_block);
+        assert_eq!(body["messages"][0]["content"][1], result_block);
     }
 
     #[test]

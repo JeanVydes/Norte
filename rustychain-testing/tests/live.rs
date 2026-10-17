@@ -72,3 +72,28 @@ async fn live_gemini_generate() {
     let text = reply(Arc::new(model)).await;
     assert!(!text.is_empty(), "the live model returned no text");
 }
+
+#[tokio::test]
+#[ignore = "live provider smoke test; run with --ignored and a key set"]
+async fn live_openrouter_chat() {
+    let Some(key) = live_key("OPENROUTER_API_KEY") else {
+        return;
+    };
+    let provider = rustychain_core::ProviderId::new("openrouter").expect("provider");
+    let reference = rustychain_core::ModelRef::new(
+        provider.clone(),
+        "nvidia/nemotron-3.5-super-vl:free".parse().expect("model"),
+    );
+    let profile = rustychain_http::VendorProfile::new(
+        provider,
+        rustychain_core::WireFamily::new(rustychain_openai::WIRE_CHAT).expect("wire"),
+        "https://openrouter.ai/api/v1",
+    )
+    .expect("profile")
+    .with_auth(rustychain_http::AuthScheme::bearer(key))
+    .with_header("X-Title", "RustyChain");
+    let model =
+        rustychain_openai::OpenAiChat::new(reference, profile, text_capabilities()).expect("chat");
+    let text = reply(Arc::new(model)).await;
+    assert!(!text.is_empty(), "the live model returned no text");
+}

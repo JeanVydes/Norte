@@ -2,10 +2,11 @@ use std::collections::BTreeMap;
 
 use rustychain_core::{
     CallId, Error, MediaKind, MediaPart, MediaSource, Message, ModelRef, ModelRequest, Part,
-    Result, Role, ToolKind, ToolResultPart, ToolSpec,
+    Result, Role, ToolKind, ToolResultPart, ToolSpec, splice_vendor_extensions,
 };
 use serde_json::{Value, json};
 
+use crate::WIRE_MESSAGES;
 use crate::continuity::AnthropicContinuity;
 use crate::json::{base64_encode, opt_str};
 
@@ -118,6 +119,7 @@ fn build_body(
             );
         }
     }
+    splice_vendor_extensions(model, WIRE_MESSAGES, &request.extensions, &mut body)?;
     Ok(Value::Object(body))
 }
 
@@ -648,5 +650,27 @@ mod tests {
         let request = ModelRequest::new(model(), vec![assistant]);
         let body = build(&model(), &continuity(), &request).expect("build");
         assert_eq!(body["messages"][0]["content"][0]["id"], "toolu_9");
+    }
+
+    #[test]
+    fn vendor_extras_are_spliced_into_the_body() {
+        let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
+        request.extensions.insert(
+            "anthropic.messages:metadata".to_owned(),
+            serde_json::json!({ "trace": "x" }),
+        );
+        let body = build(&model(), &continuity(), &request).expect("build");
+        assert_eq!(body["metadata"]["trace"], "x");
+    }
+
+    #[test]
+    fn a_vendor_extra_may_not_override_adapter_state() {
+        let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
+        request.extensions.insert(
+            "anthropic.messages:model".to_owned(),
+            serde_json::json!("other"),
+        );
+        let error = build(&model(), &continuity(), &request).expect_err("collision");
+        assert!(matches!(error, Error::Capability { .. }));
     }
 }

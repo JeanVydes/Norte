@@ -5,6 +5,7 @@
 //! mode and representative tool subsets, asserted on the reconstructed request
 //! the adapter would have received.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -402,11 +403,16 @@ async fn export_captures_and_import_restores_request_config() {
         },
         reasoning: Some(ReasoningRequest::Effort(ReasoningEffort::High)),
         tools: Some(vec![name("beta")]),
+        extensions: BTreeMap::from([(
+            "google.gemini:safetySettings".to_owned(),
+            json!([{ "category": "HARM" }]),
+        )]),
     };
     let expected = options.over(&TurnOptions {
         params: config.params.clone(),
         reasoning: Some(config.reasoning),
         tools: None,
+        extensions: BTreeMap::default(),
     });
 
     let probe_a = probe();
@@ -475,8 +481,46 @@ async fn export_captures_and_import_restores_request_config() {
     );
     assert_eq!(names(&request_b), vec!["beta"]);
     assert_eq!(
+        request_b.extensions.get("google.gemini:safetySettings"),
+        Some(&json!([{ "category": "HARM" }])),
+        "vendor extras survive the round trip"
+    );
+    assert_eq!(
         serde_json::to_string(&request_a).expect("bytes a"),
         serde_json::to_string(&request_b).expect("bytes b"),
         "the complete request must be reproduced byte-identically"
+    );
+}
+
+#[tokio::test]
+async fn the_builder_sets_vendor_extensions_on_the_request() {
+    let probe = probe();
+    let engine = build(
+        probe.clone(),
+        registry(),
+        Vec::new(),
+        EngineConfig::default(),
+    );
+    let session = engine.create().await.expect("create");
+    engine
+        .turn(session.id)
+        .input(Message::user("hi"))
+        .extension(
+            "google.gemini:safetySettings",
+            json!([{ "category": "HARM" }]),
+        )
+        .start()
+        .finish()
+        .await
+        .expect("turn");
+
+    let request = probe.last_request().expect("request");
+    assert_eq!(
+        request.extensions.get("google.gemini:safetySettings"),
+        Some(&json!([{ "category": "HARM" }]))
+    );
+    assert!(
+        request.extensions.contains_key("session"),
+        "the engine-managed session key is always present"
     );
 }

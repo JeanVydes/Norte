@@ -3,11 +3,12 @@ use std::collections::BTreeMap;
 use rustychain_core::{
     CallId, Error, MediaKind, MediaPart, MediaSource, Message, ModelRef, ModelRequest, Part,
     ReasoningEffort, ReasoningRequest, Result, Role, SESSION_EXTENSION, ToolKind, ToolResultPart,
-    ToolSpec,
+    ToolSpec, splice_vendor_extensions,
 };
 use rustychain_http::{Quirk, Quirks};
 use serde_json::{Value, json};
 
+use crate::WIRE_CHAT;
 use crate::continuity::OpenAiContinuity;
 use crate::json::{data_url, opt_str};
 
@@ -111,6 +112,7 @@ pub(crate) fn build(
             body.insert("prompt_cache_key".to_owned(), Value::String(key.to_owned()));
         }
     }
+    splice_vendor_extensions(model, WIRE_CHAT, &request.extensions, &mut body)?;
     Ok(Value::Object(body))
 }
 
@@ -506,6 +508,28 @@ mod tests {
             approval: None,
         }];
         let error = build(&model(), &continuity(), &Quirks::new(), &request).expect_err("error");
+        assert!(matches!(error, Error::Capability { .. }));
+    }
+
+    #[test]
+    fn vendor_extras_are_spliced_into_the_body() {
+        let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
+        request.extensions.insert(
+            "openai.chat:metadata".to_owned(),
+            serde_json::json!({ "trace": "x" }),
+        );
+        let body = build(&model(), &continuity(), &Quirks::new(), &request).expect("build");
+        assert_eq!(body["metadata"]["trace"], "x");
+    }
+
+    #[test]
+    fn a_vendor_extra_may_not_override_adapter_state() {
+        let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
+        request
+            .extensions
+            .insert("openai.chat:model".to_owned(), serde_json::json!("other"));
+        let error =
+            build(&model(), &continuity(), &Quirks::new(), &request).expect_err("collision");
         assert!(matches!(error, Error::Capability { .. }));
     }
 }

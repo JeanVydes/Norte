@@ -480,6 +480,7 @@ impl Engine {
             params: self.config.params.clone(),
             reasoning: Some(self.config.reasoning),
             tools: None,
+            extensions: BTreeMap::new(),
         }
     }
 
@@ -761,6 +762,11 @@ impl Engine {
         let tool_names: Vec<ToolName> = tools.iter().map(|spec| spec.name.clone()).collect();
 
         let cache_boundaries = reconstructed.cache_boundaries.clone();
+        let mut extensions = options.extensions.clone();
+        extensions.insert(
+            SESSION_EXTENSION.to_owned(),
+            Value::String(session.id.to_string()),
+        );
         let request = ModelRequest {
             model: model_ref.clone(),
             messages: reconstructed.messages,
@@ -769,10 +775,7 @@ impl Engine {
             params: options.params.clone(),
             limits: self.config.limits,
             cache_boundaries: reconstructed.cache_boundaries,
-            extensions: BTreeMap::from([(
-                SESSION_EXTENSION.to_owned(),
-                Value::String(session.id.to_string()),
-            )]),
+            extensions,
         };
         let request_digest =
             Digest::of_json(&serde_json::to_value(&request).unwrap_or(Value::Null));
@@ -1681,6 +1684,15 @@ impl<'a> TurnBuilder<'a> {
     #[must_use]
     pub fn tools(mut self, names: impl IntoIterator<Item = ToolName>) -> Self {
         self.options.tools = Some(names.into_iter().collect());
+        self
+    }
+
+    /// Sets a vendor request extra for this turn, keyed `<wire-family>:<field>`
+    /// (Section 12), for example `google.gemini:safetySettings`. A key whose
+    /// family does not match the active wire is ignored.
+    #[must_use]
+    pub fn extension(mut self, key: impl Into<String>, value: Value) -> Self {
+        self.options.extensions.insert(key.into(), value);
         self
     }
 

@@ -4,10 +4,11 @@ use rustychain_core::{
     CallId, Error, ExtensionPart, MediaKind, MediaPart, MediaSource, Message, ModelRef,
     ModelRequest, Part, ProviderToolCallPart, ProviderToolResultPart, ReasoningEffort,
     ReasoningPart, ReasoningRequest, Result, Role, SESSION_EXTENSION, ToolCallPart, ToolKind,
-    ToolResultPart, ToolSpec,
+    ToolResultPart, ToolSpec, splice_vendor_extensions,
 };
 use serde_json::{Value, json};
 
+use crate::WIRE_RESPONSES;
 use crate::continuity::OpenAiContinuity;
 use crate::json::{data_url, opt_str};
 
@@ -81,6 +82,7 @@ pub(crate) fn build(
     {
         body.insert("prompt_cache_key".to_owned(), Value::String(key.to_owned()));
     }
+    splice_vendor_extensions(model, WIRE_RESPONSES, &request.extensions, &mut body)?;
     Ok(Value::Object(body))
 }
 
@@ -676,6 +678,33 @@ mod tests {
             approval: None,
         }];
         let error = build(&model(), &continuity(), &request).expect_err("error");
+        assert!(matches!(error, Error::Capability { .. }));
+    }
+
+    #[test]
+    fn vendor_extras_are_spliced_into_the_body() {
+        let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
+        request.extensions.insert(
+            "openai.responses:metadata".to_owned(),
+            serde_json::json!({ "trace": "x" }),
+        );
+        request.extensions.insert(
+            "google.gemini:safetySettings".to_owned(),
+            serde_json::json!([]),
+        );
+        let body = build(&model(), &continuity(), &request).expect("build");
+        assert_eq!(body["metadata"]["trace"], "x");
+        assert!(body.get("safetySettings").is_none());
+    }
+
+    #[test]
+    fn a_vendor_extra_may_not_override_adapter_state() {
+        let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
+        request.extensions.insert(
+            "openai.responses:model".to_owned(),
+            serde_json::json!("other"),
+        );
+        let error = build(&model(), &continuity(), &request).expect_err("collision");
         assert!(matches!(error, Error::Capability { .. }));
     }
 }

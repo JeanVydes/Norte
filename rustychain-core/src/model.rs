@@ -8,7 +8,7 @@ use serde_json::Value;
 use crate::capability::{Capabilities, ReasoningRequest};
 use crate::domain::continuity::{ContinuityFragment, ContinuityToken, ReplayDecision};
 use crate::domain::message::Message;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::id::{ModelRef, SessionId, ToolName};
 use crate::stream::StreamEvent;
 use crate::tool::ToolSpec;
@@ -95,22 +95,34 @@ pub struct TurnOptions {
     /// (FR-ENG-8). Order is canonicalized at request time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<ToolName>>,
+    /// Vendor request extras, keyed `<wire-family>:<field>` (for example
+    /// `google.gemini:safetySettings`). The adapter whose wire family matches
+    /// splices the field into its request body; a path that collides with
+    /// adapter-owned state is a typed capability error (Section 12).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extensions: BTreeMap<String, Value>,
 }
 
 impl TurnOptions {
     /// True when the options change nothing relative to the layer below.
     #[must_use]
     pub fn is_default(&self) -> bool {
-        self.params.is_default() && self.reasoning.is_none() && self.tools.is_none()
+        self.params.is_default()
+            && self.reasoning.is_none()
+            && self.tools.is_none()
+            && self.extensions.is_empty()
     }
 
     /// Overlays `self` on `base`: set fields win, unset fields inherit.
     #[must_use]
     pub fn over(&self, base: &Self) -> Self {
+        let mut extensions = base.extensions.clone();
+        extensions.extend(self.extensions.clone());
         Self {
             params: self.params.over(&base.params),
             reasoning: self.reasoning.or(base.reasoning),
             tools: self.tools.clone().or_else(|| base.tools.clone()),
+            extensions,
         }
     }
 }
@@ -164,6 +176,76 @@ impl ModelRequest {
             cache_boundaries: Vec::new(),
             extensions: BTreeMap::new(),
         }
+    }
+}
+
+/// Splices host-declared vendor request extras into a wire body (Section 12).
+///
+/// Extras live in [`ModelRequest::extensions`] under keys of the form
+/// `<wire-family>:<field>` (for example `google.gemini:safetySettings`). Only
+/// keys whose family equals `family` are applied; the part after the colon is a
+/// dotted path applied inside `body`, creating intermediate objects as needed. A
+/// path that collides with a field the adapter already set is a typed
+/// [`Error::Capability`], so a host can never silently override adapter-owned
+/// wire state.
+///
+/// # Errors
+///
+/// Returns [`Error::Capability`] on a colliding path or a scalar the path tries
+/// to descend through.
+pub fn splice_vendor_extensions(
+    model: &ModelRef,
+    family: &str,
+    extensions: &BTreeMap<String, Value>,
+    body: &mut serde_json::Map<String, Value>,
+) -> Result<()> {
+    let prefix = format!("{family}:");
+    for (key, value) in extensions {
+        let Some(path) = key.strip_prefix(&prefix) else {
+            continue;
+        };
+        let segments: Vec<&str> = path.split('.').collect();
+        insert_extension(model, key, &segments, value.clone(), body)?;
+    }
+    Ok(())
+}
+
+fn insert_extension(
+    model: &ModelRef,
+    key: &str,
+    segments: &[&str],
+    value: Value,
+    body: &mut serde_json::Map<String, Value>,
+) -> Result<()> {
+    let Some((head, rest)) = segments.split_first() else {
+        return Ok(());
+    };
+    if head.is_empty() {
+        return Err(Error::Capability {
+            model: model.clone(),
+            feature: format!("vendor extension `{key}` has an empty path segment"),
+        });
+    }
+    if rest.is_empty() {
+        if body.contains_key(*head) {
+            return Err(Error::Capability {
+                model: model.clone(),
+                feature: format!("vendor extension `{key}` collides with a request field"),
+            });
+        }
+        body.insert((*head).to_owned(), value);
+        return Ok(());
+    }
+    let entry = body
+        .entry((*head).to_owned())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if let Value::Object(map) = entry {
+        insert_extension(model, key, rest, value, map)
+    } else {
+        Err(Error::Capability {
+            model: model.clone(),
+            feature: format!("vendor extension `{key}` conflicts with a scalar request field"),
+        })
     }
 }
 
@@ -265,4 +347,87 @@ pub trait RealtimeSession: Send + Sync {
     async fn events(&mut self) -> Result<RealtimeEventStream>;
 
     async fn close(&mut self) -> Result<()>;
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use serde_json::json;
+
+    use super::*;
+
+    fn model() -> ModelRef {
+        ModelRef::from_str("google/gemini-2.5-pro").expect("model")
+    }
+
+    #[test]
+    fn vendor_extensions_apply_only_for_the_matching_family() {
+        let mut extensions = BTreeMap::new();
+        extensions.insert(
+            "google.gemini:safetySettings".to_owned(),
+            json!([{ "category": "HARM" }]),
+        );
+        extensions.insert(
+            "google.gemini:generationConfig.responseModalities".to_owned(),
+            json!(["TEXT"]),
+        );
+        extensions.insert("openai.responses:metadata".to_owned(), json!({ "k": 1 }));
+
+        let mut body = serde_json::Map::new();
+        body.insert("generationConfig".to_owned(), json!({ "temperature": 0.5 }));
+        splice_vendor_extensions(&model(), "google.gemini", &extensions, &mut body)
+            .expect("splice");
+
+        assert_eq!(body["safetySettings"][0]["category"], "HARM");
+        assert_eq!(body["generationConfig"]["responseModalities"][0], "TEXT");
+        assert_eq!(body["generationConfig"]["temperature"], json!(0.5));
+        assert!(!body.contains_key("metadata"));
+    }
+
+    #[test]
+    fn a_vendor_extension_may_not_override_a_request_field() {
+        let mut extensions = BTreeMap::new();
+        extensions.insert("google.gemini:contents".to_owned(), json!([]));
+
+        let mut body = serde_json::Map::new();
+        body.insert("contents".to_owned(), json!([{ "role": "user" }]));
+        let error = splice_vendor_extensions(&model(), "google.gemini", &extensions, &mut body)
+            .expect_err("collision");
+        assert!(matches!(error, Error::Capability { .. }));
+    }
+
+    #[test]
+    fn a_vendor_extension_may_not_descend_through_a_scalar() {
+        let mut extensions = BTreeMap::new();
+        extensions.insert("google.gemini:model.extra".to_owned(), json!(true));
+
+        let mut body = serde_json::Map::new();
+        body.insert("model".to_owned(), json!("gemini-2.5-pro"));
+        let error = splice_vendor_extensions(&model(), "google.gemini", &extensions, &mut body)
+            .expect_err("scalar");
+        assert!(matches!(error, Error::Capability { .. }));
+    }
+
+    #[test]
+    fn turn_options_overlay_merges_extensions_per_key() {
+        let base = TurnOptions {
+            extensions: BTreeMap::from([
+                ("a".to_owned(), json!(1)),
+                ("shared".to_owned(), json!("base")),
+            ]),
+            ..TurnOptions::default()
+        };
+        let over = TurnOptions {
+            extensions: BTreeMap::from([
+                ("b".to_owned(), json!(2)),
+                ("shared".to_owned(), json!("over")),
+            ]),
+            ..TurnOptions::default()
+        };
+        let merged = over.over(&base);
+        assert_eq!(merged.extensions.get("a"), Some(&json!(1)));
+        assert_eq!(merged.extensions.get("b"), Some(&json!(2)));
+        assert_eq!(merged.extensions.get("shared"), Some(&json!("over")));
+    }
 }

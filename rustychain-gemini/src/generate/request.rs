@@ -1,9 +1,10 @@
 use rustychain_core::{
     CallId, Error, MediaPart, MediaSource, Message, ModelRef, ModelRequest, Part, ReasoningEffort,
-    ReasoningRequest, Result, Role, ToolKind, ToolResultPart, ToolSpec,
+    ReasoningRequest, Result, Role, ToolKind, ToolResultPart, ToolSpec, splice_vendor_extensions,
 };
 use serde_json::{Value, json};
 
+use crate::WIRE_GENERATE;
 use crate::continuity::GeminiContinuity;
 use crate::json::{base64_encode, opt_str};
 
@@ -80,6 +81,7 @@ fn build_body(
             body.insert("generationConfig".to_owned(), Value::Object(config));
         }
     }
+    splice_vendor_extensions(model, WIRE_GENERATE, &request.extensions, &mut body)?;
     Ok(Value::Object(body))
 }
 
@@ -614,5 +616,38 @@ mod tests {
         let request = ModelRequest::new(model(), vec![Message::user("go"), assistant]);
         let body = build(&model(), &continuity(), &request).expect("build");
         assert_eq!(body["contents"][1]["parts"][0], part);
+    }
+
+    #[test]
+    fn vendor_extras_are_spliced_into_the_body() {
+        let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
+        request.extensions.insert(
+            "google.gemini:safetySettings".to_owned(),
+            serde_json::json!([
+                { "category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE" }
+            ]),
+        );
+        request.extensions.insert(
+            "google.gemini:generationConfig.responseModalities".to_owned(),
+            serde_json::json!(["TEXT", "IMAGE"]),
+        );
+        request.extensions.insert(
+            "openai.responses:metadata".to_owned(),
+            serde_json::json!({ "trace": "x" }),
+        );
+        let body = build(&model(), &continuity(), &request).expect("build");
+        assert_eq!(body["safetySettings"][0]["threshold"], "BLOCK_NONE");
+        assert_eq!(body["generationConfig"]["responseModalities"][1], "IMAGE");
+        assert!(body.get("metadata").is_none());
+    }
+
+    #[test]
+    fn a_vendor_extra_may_not_override_adapter_state() {
+        let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
+        request
+            .extensions
+            .insert("google.gemini:contents".to_owned(), serde_json::json!([]));
+        let error = build(&model(), &continuity(), &request).expect_err("collision");
+        assert!(matches!(error, Error::Capability { .. }));
     }
 }

@@ -122,6 +122,7 @@ impl Decoder {
                 }
             }
             self.grounding(&candidate, events);
+            self.citation_metadata(&candidate, events);
         }
         Ok(())
     }
@@ -163,6 +164,49 @@ impl Decoder {
         }
     }
 
+    /// Surfaces `citationMetadata` sources as neutral citations on the text part
+    /// being streamed. A source carrying only a URI maps onto a `URL` citation;
+    /// one with ranges or licensing keeps its vendor object, so nothing is lost.
+    fn citation_metadata(&self, candidate: &Value, events: &mut Vec<StreamEvent>) {
+        let Some(index) = self.text_index else {
+            return;
+        };
+        let Some(metadata) = candidate
+            .get("citationMetadata")
+            .filter(|value| !value.is_null())
+        else {
+            return;
+        };
+        let Some(sources) = metadata
+            .get("citationSources")
+            .or_else(|| metadata.get("citations"))
+            .and_then(Value::as_array)
+        else {
+            return;
+        };
+        let mut seen = std::collections::BTreeSet::new();
+        for source in sources {
+            if !seen.insert(source.to_string()) {
+                continue;
+            }
+            let title = opt_str(source, "title").map(ToOwned::to_owned);
+            let citation = match uri_only(source) {
+                Some(uri) => Citation {
+                    source: CitationSource::Url(uri.to_owned()),
+                    title,
+                },
+                None => Citation {
+                    source: CitationSource::Extension {
+                        namespace: "google".to_owned(),
+                        data: source.clone(),
+                    },
+                    title,
+                },
+            };
+            events.push(StreamEvent::Citation { index, citation });
+        }
+    }
+
     fn part(&mut self, part: &Value, events: &mut Vec<StreamEvent>) -> Result<()> {
         if let Some(call) = part.get("functionCall").filter(|call| !call.is_null()) {
             return self.function_call(part, call, events);
@@ -177,10 +221,10 @@ impl Decoder {
             return self.code_execution_result(part, result, events);
         }
         if let Some(data) = part.get("inlineData").filter(|data| !data.is_null()) {
-            return self.inline_data(data, events);
+            return self.inline_data(part, data, events);
         }
         if let Some(data) = part.get("fileData").filter(|data| !data.is_null()) {
-            return self.file_data(data, events);
+            return self.file_data(part, data, events);
         }
         if let Some(text) = opt_str(part, "text") {
             let thought = part
@@ -351,7 +395,12 @@ impl Decoder {
         Ok(())
     }
 
-    fn inline_data(&mut self, data: &Value, events: &mut Vec<StreamEvent>) -> Result<()> {
+    fn inline_data(
+        &mut self,
+        part: &Value,
+        data: &Value,
+        events: &mut Vec<StreamEvent>,
+    ) -> Result<()> {
         let bytes = base64_decode(opt_str(data, "data").unwrap_or_default())?;
         let mime = mime_of(data)?;
         let index = self.alloc();
@@ -359,7 +408,7 @@ impl Decoder {
             index,
             kind: media_kind(mime.as_str()),
             mime,
-            metadata: MediaMetadata::default(),
+            metadata: media_metadata(part),
         });
         events.push(StreamEvent::MediaChunk {
             index,
@@ -370,14 +419,20 @@ impl Decoder {
         Ok(())
     }
 
-    fn file_data(&mut self, data: &Value, events: &mut Vec<StreamEvent>) -> Result<()> {
+    fn file_data(
+        &mut self,
+        part: &Value,
+        data: &Value,
+        events: &mut Vec<StreamEvent>,
+    ) -> Result<()> {
         let uri = opt_str(data, "fileUri").unwrap_or_default().to_owned();
         let mime = mime_of(data)?;
         let index = self.alloc();
-        let part = MediaPart::new(media_kind(mime.as_str()), MediaSource::Url(uri), mime);
+        let mut media = MediaPart::new(media_kind(mime.as_str()), MediaSource::Url(uri), mime);
+        media.metadata = media_metadata(part);
         events.push(StreamEvent::Part {
             index,
-            part: Part::Media(part),
+            part: Part::Media(media),
         });
         self.break_text();
         Ok(())
@@ -418,6 +473,30 @@ fn provider_tool() -> ProviderTool {
         namespace: "google".to_owned(),
         name: "code_execution".to_owned(),
     }
+}
+
+/// Media metadata for a part, carrying `videoMetadata` (clip offsets and frame
+/// rate) in the metadata extension bag so it round-trips without a guess.
+fn media_metadata(part: &Value) -> MediaMetadata {
+    let mut metadata = MediaMetadata::default();
+    if let Some(video) = part.get("videoMetadata").filter(|value| !value.is_null()) {
+        metadata
+            .extension
+            .insert("google.video_metadata".to_owned(), video.clone());
+    }
+    metadata
+}
+
+/// The URI of a citation source when nothing beyond the URI and title is
+/// carried, so it maps losslessly onto a neutral `URL` citation.
+fn uri_only(source: &Value) -> Option<&str> {
+    let extra = ["startIndex", "endIndex", "license", "publicationDate"]
+        .iter()
+        .any(|key| source.get(*key).is_some_and(|value| !value.is_null()));
+    if extra {
+        return None;
+    }
+    opt_str(source, "uri")
 }
 
 fn mime_of(data: &Value) -> Result<MimeType> {
@@ -835,6 +914,59 @@ mod tests {
             CitationSource::Url("https://example.test/rust".to_owned())
         );
         assert_eq!(citation.title.as_deref(), Some("Rust"));
+    }
+
+    #[tokio::test]
+    async fn video_metadata_is_carried_on_the_media_part() {
+        let events = drain(&[
+            r#"{"candidates":[{"content":{"parts":[{"fileData":{"mimeType":"video/mp4","fileUri":"https://example.test/a.mp4"},"videoMetadata":{"startOffset":"1s","endOffset":"10s","fps":5}}]}}]}"#,
+        ])
+        .await;
+        let StreamEvent::Part {
+            part: Part::Media(media),
+            ..
+        } = &events[0]
+        else {
+            panic!("expected media part");
+        };
+        assert_eq!(media.kind, MediaKind::Video);
+        assert_eq!(
+            media.metadata.extension["google.video_metadata"],
+            json!({"startOffset": "1s", "endOffset": "10s", "fps": 5})
+        );
+    }
+
+    #[tokio::test]
+    async fn citation_metadata_sources_become_citations() {
+        let events = drain(&[
+            r#"{"candidates":[{"content":{"parts":[{"text":"Rust"}]},"citationMetadata":{"citationSources":[{"uri":"https://example.test/a","title":"A"},{"uri":"https://example.test/b","title":"B","startIndex":0,"endIndex":4,"license":"CC"}]}}]}"#,
+        ])
+        .await;
+        let StreamEvent::Citation { citation, .. } = &events[1] else {
+            panic!("expected a citation");
+        };
+        assert_eq!(
+            citation.source,
+            CitationSource::Url("https://example.test/a".to_owned())
+        );
+        assert_eq!(citation.title.as_deref(), Some("A"));
+        let StreamEvent::Citation { citation, .. } = &events[2] else {
+            panic!("expected a citation");
+        };
+        assert_eq!(
+            citation.source,
+            CitationSource::Extension {
+                namespace: "google".to_owned(),
+                data: json!({
+                    "uri": "https://example.test/b",
+                    "title": "B",
+                    "startIndex": 0,
+                    "endIndex": 4,
+                    "license": "CC",
+                }),
+            }
+        );
+        assert_eq!(citation.title.as_deref(), Some("B"));
     }
 
     #[tokio::test]

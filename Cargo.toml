@@ -20,7 +20,7 @@ rust-version = "1.85"
 license = "MIT"
 repository = "https://github.com/JeanVydes/rustychain"
 homepage = "https://github.com/JeanVydes/rustychain"
-authors = ["Jean Vides <j@lojur.com>"]
+authors = ["Jean Vides <j@vyde.dev>"]
 
 [workspace.dependencies]
 rustychain-macros = { path = "rustychain-macros", version = "0.1.0" }

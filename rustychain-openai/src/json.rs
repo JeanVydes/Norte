@@ -33,7 +33,11 @@ pub(crate) fn opt_str<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
 
 /// Builds an `RFC 2397` data `URL` from a MIME type and bytes.
 pub(crate) fn data_url(mime: &str, bytes: &[u8]) -> String {
+    format!("data:{mime};base64,{}", base64_encode(bytes))
+}
+
+/// Encodes bytes as standard base64.
+pub(crate) fn base64_encode(bytes: &[u8]) -> String {
     use base64::Engine as _;
-    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
-    format!("data:{mime};base64,{encoded}")
+    base64::engine::general_purpose::STANDARD.encode(bytes)
 }

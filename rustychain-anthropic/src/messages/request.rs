@@ -633,6 +633,20 @@ mod tests {
     }
 
     #[test]
+    fn video_media_is_rejected() {
+        let media = MediaPart::new(
+            MediaKind::Video,
+            MediaSource::Inline(vec![1]),
+            MimeType::new("video/mp4").expect("mime"),
+        );
+        let request = ModelRequest::new(
+            model(),
+            vec![Message::new(Role::User, vec![Part::Media(media)])],
+        );
+        assert!(build(&model(), &continuity(), &request).is_err());
+    }
+
+    #[test]
     fn continuity_adapter_is_used_for_the_call_index() {
         let token = continuity()
             .build(&serde_json::json!({ "tool_use_id": "toolu_9" }))

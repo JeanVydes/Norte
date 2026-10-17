@@ -620,6 +620,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn audio_output_is_materialized_as_audio() {
+        let events = drain(&[
+            r#"{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"audio/wav","data":"AQID"}}]}}]}"#,
+        ])
+        .await;
+        let StreamEvent::MediaStart { kind, mime, .. } = &events[0] else {
+            panic!("expected media start");
+        };
+        assert_eq!(*kind, MediaKind::Audio);
+        assert_eq!(mime.as_str(), "audio/wav");
+    }
+
+    #[tokio::test]
+    async fn video_output_is_materialized_as_video() {
+        let events = drain(&[
+            r#"{"candidates":[{"content":{"parts":[{"fileData":{"mimeType":"video/mp4","fileUri":"https://example.test/a.mp4"}}]}}]}"#,
+        ])
+        .await;
+        let StreamEvent::Part {
+            part: Part::Media(media),
+            ..
+        } = &events[0]
+        else {
+            panic!("expected media part");
+        };
+        assert_eq!(media.kind, MediaKind::Video);
+    }
+
+    #[tokio::test]
     async fn vendor_file_output_is_a_url_for_the_engine_to_ingest() {
         let events = drain(&[
             r#"{"candidates":[{"content":{"parts":[{"fileData":{"mimeType":"image/jpeg","fileUri":"https://example.test/a.jpg"}}]}}]}"#,

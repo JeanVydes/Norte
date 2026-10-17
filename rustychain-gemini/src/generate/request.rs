@@ -501,6 +501,36 @@ mod tests {
     }
 
     #[test]
+    fn audio_and_video_use_inline_data() {
+        let audio = MediaPart::new(
+            MediaKind::Audio,
+            MediaSource::Inline(vec![1, 2, 3]),
+            rustychain_core::MimeType::new("audio/wav").expect("mime"),
+        );
+        let video = MediaPart::new(
+            MediaKind::Video,
+            MediaSource::Url("https://example.test/a.mp4".to_owned()),
+            rustychain_core::MimeType::new("video/mp4").expect("mime"),
+        );
+        let request = ModelRequest::new(
+            model(),
+            vec![Message::new(
+                Role::User,
+                vec![Part::Media(audio), Part::Media(video)],
+            )],
+        );
+        let body = build(&model(), &continuity(), &request).expect("build");
+        assert_eq!(
+            body["contents"][0]["parts"][0]["inlineData"]["mimeType"],
+            "audio/wav"
+        );
+        assert_eq!(
+            body["contents"][0]["parts"][1]["fileData"]["mimeType"],
+            "video/mp4"
+        );
+    }
+
+    #[test]
     fn tools_use_function_declarations() {
         let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
         request.tools = vec![ToolSpec {

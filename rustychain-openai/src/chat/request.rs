@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 use crate::WIRE_CHAT;
 use crate::continuity::OpenAiContinuity;
-use crate::json::{data_url, opt_str};
+use crate::json::{base64_encode, data_url, opt_str};
 
 type CallIndex = BTreeMap<CallId, String>;
 
@@ -300,11 +300,18 @@ fn user_content(message: &Message) -> Result<Value> {
 }
 
 fn media_block(media: &MediaPart) -> Result<Value> {
-    if !matches!(media.kind, MediaKind::Image) {
-        return Err(Error::InvalidInput(
-            "openai chat: only image media is supported on this wire".to_owned(),
-        ));
+    match media.kind {
+        MediaKind::Image => image_block(media),
+        MediaKind::Audio => audio_block(media),
+        MediaKind::Document => file_block(media),
+        _ => Err(Error::InvalidInput(
+            "openai chat: only image, audio and document media are supported on this wire"
+                .to_owned(),
+        )),
     }
+}
+
+fn image_block(media: &MediaPart) -> Result<Value> {
     let url = match &media.source {
         MediaSource::Inline(bytes) => data_url(media.mime.as_str(), bytes),
         MediaSource::Url(url) => url.clone(),
@@ -318,6 +325,63 @@ fn media_block(media: &MediaPart) -> Result<Value> {
         "type": "image_url",
         "image_url": { "url": url },
     }))
+}
+
+/// Audio input is carried inline as `input_audio`; the vendor accepts only the
+/// `wav` and `mp3` formats, so any other audio MIME type is a typed error.
+fn audio_block(media: &MediaPart) -> Result<Value> {
+    let MediaSource::Inline(bytes) = &media.source else {
+        return Err(Error::InvalidInput(
+            "openai chat: audio must be inline bytes".to_owned(),
+        ));
+    };
+    Ok(json!({
+        "type": "input_audio",
+        "input_audio": {
+            "data": base64_encode(bytes),
+            "format": audio_format(media)?,
+        },
+    }))
+}
+
+fn audio_format(media: &MediaPart) -> Result<&'static str> {
+    match media.mime.as_str() {
+        "audio/wav" | "audio/x-wav" | "audio/wave" => Ok("wav"),
+        "audio/mpeg" | "audio/mp3" => Ok("mp3"),
+        other => Err(Error::InvalidInput(format!(
+            "openai chat: unsupported audio format {other}"
+        ))),
+    }
+}
+
+/// Documents travel as a `file` part; the vendor accepts inline data or an
+/// uploaded file id, but not a bare URL.
+fn file_block(media: &MediaPart) -> Result<Value> {
+    let mut file = json!({ "filename": filename(media) });
+    match &media.source {
+        MediaSource::Inline(bytes) => {
+            file["file_data"] = Value::String(data_url(media.mime.as_str(), bytes));
+        }
+        MediaSource::ProviderFile(reference) => {
+            file["file_id"] = Value::String(reference.file_id.clone());
+        }
+        _ => {
+            return Err(Error::InvalidInput(
+                "openai chat: document must be inline bytes or a provider file".to_owned(),
+            ));
+        }
+    }
+    Ok(json!({ "type": "file", "file": file }))
+}
+
+fn filename(media: &MediaPart) -> String {
+    let subtype = media
+        .mime
+        .as_str()
+        .split_once('/')
+        .map_or("bin", |(_, subtype)| subtype);
+    let subtype = subtype.split([';', '+']).next().unwrap_or("bin");
+    format!("upload.{subtype}")
 }
 
 #[cfg(test)]
@@ -424,11 +488,65 @@ mod tests {
     }
 
     #[test]
-    fn non_image_media_is_rejected() {
+    fn inline_document_becomes_a_file_block() {
         let media = MediaPart::new(
             MediaKind::Document,
-            MediaSource::Inline(vec![1]),
+            MediaSource::Inline(vec![1, 2, 3]),
             MimeType::new("application/pdf").expect("mime"),
+        );
+        let message = Message::new(Role::User, vec![Part::Media(media)]);
+        let request = ModelRequest::new(model(), vec![message]);
+        let body = build(&model(), &continuity(), &Quirks::new(), &request).expect("build");
+        assert_eq!(body["messages"][0]["content"][0]["type"], "file");
+        assert_eq!(
+            body["messages"][0]["content"][0]["file"]["filename"],
+            "upload.pdf"
+        );
+        let data = body["messages"][0]["content"][0]["file"]["file_data"]
+            .as_str()
+            .expect("data");
+        assert!(data.starts_with("data:application/pdf;base64,"));
+    }
+
+    #[test]
+    fn inline_audio_becomes_an_input_audio_block() {
+        let media = MediaPart::new(
+            MediaKind::Audio,
+            MediaSource::Inline(vec![1, 2, 3]),
+            MimeType::new("audio/wav").expect("mime"),
+        );
+        let message = Message::new(Role::User, vec![Part::text("listen"), Part::Media(media)]);
+        let request = ModelRequest::new(model(), vec![message]);
+        let body = build(&model(), &continuity(), &Quirks::new(), &request).expect("build");
+        assert_eq!(body["messages"][0]["content"][1]["type"], "input_audio");
+        assert_eq!(
+            body["messages"][0]["content"][1]["input_audio"]["format"],
+            "wav"
+        );
+        assert_eq!(
+            body["messages"][0]["content"][1]["input_audio"]["data"],
+            "AQID"
+        );
+    }
+
+    #[test]
+    fn an_unsupported_audio_format_is_a_typed_error() {
+        let media = MediaPart::new(
+            MediaKind::Audio,
+            MediaSource::Inline(vec![1]),
+            MimeType::new("audio/flac").expect("mime"),
+        );
+        let message = Message::new(Role::User, vec![Part::Media(media)]);
+        let request = ModelRequest::new(model(), vec![message]);
+        assert!(build(&model(), &continuity(), &Quirks::new(), &request).is_err());
+    }
+
+    #[test]
+    fn video_media_is_rejected_on_the_chat_wire() {
+        let media = MediaPart::new(
+            MediaKind::Video,
+            MediaSource::Inline(vec![1]),
+            MimeType::new("video/mp4").expect("mime"),
         );
         let message = Message::new(Role::User, vec![Part::Media(media)]);
         let request = ModelRequest::new(model(), vec![message]);

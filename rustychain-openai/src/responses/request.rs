@@ -561,6 +561,35 @@ mod tests {
     }
 
     #[test]
+    fn audio_and_video_travel_as_input_files() {
+        let audio = MediaPart::new(
+            MediaKind::Audio,
+            MediaSource::Inline(vec![1, 2, 3]),
+            MimeType::new("audio/wav").expect("mime"),
+        );
+        let video = MediaPart::new(
+            MediaKind::Video,
+            MediaSource::Url("https://example.test/a.mp4".to_owned()),
+            MimeType::new("video/mp4").expect("mime"),
+        );
+        let request = ModelRequest::new(
+            model(),
+            vec![Message::new(
+                Role::User,
+                vec![Part::Media(audio), Part::Media(video)],
+            )],
+        );
+        let body = build(&model(), &continuity(), &request).expect("build");
+        assert_eq!(body["input"][0]["content"][0]["type"], "input_file");
+        assert_eq!(body["input"][0]["content"][0]["filename"], "upload.wav");
+        assert_eq!(body["input"][0]["content"][1]["type"], "input_file");
+        assert_eq!(
+            body["input"][0]["content"][1]["file_url"],
+            "https://example.test/a.mp4"
+        );
+    }
+
+    #[test]
     fn function_tools_are_flattened() {
         let request = ModelRequest::new(model(), vec![Message::user("hi")]);
         let mut request = request;

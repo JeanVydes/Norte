@@ -8,11 +8,14 @@
 use std::sync::Arc;
 
 use rustychain_core::{
-    CallId, Conversation, Engine, EngineBuilder, FnExecutor, Message, Model, ModelRef,
-    ModelRequest, Part, Result, Role, TextPart, ToolCallPart, ToolRegistry, ToolResultPart,
+    CallId, Conversation, Engine, EngineBuilder, FnExecutor, GrantScope, Message, Model, ModelRef,
+    ModelRequest, Part, Phase, PolicySet, Result, Role, TextPart, ToolApprovalPolicy, ToolCallPart,
+    ToolName, ToolRegistry, ToolResultPart,
 };
 use rustychain_openai::OpenAiChat;
-use rustychain_testing::{InMemoryBlobStore, InMemoryStore, ProbeModel, text_capabilities};
+use rustychain_testing::{
+    InMemoryBlobStore, InMemoryStore, ProbeModel, ScriptedModel, text_capabilities,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -197,6 +200,94 @@ async fn gemini_wire_is_byte_identical_after_export_import() {
         move |request: &ModelRequest| adapter.request_body(request).expect("body")
     };
     assert_wire_stable(Arc::new(adapter), body_of).await;
+}
+
+#[tokio::test]
+async fn a_parked_approval_survives_export_import() {
+    // The ledger does not travel in the envelope (FR-EXP-1), but the parked
+    // state does. Importing into a fresh engine and resuming must ask for the
+    // approval again instead of stalling on a record that no longer exists.
+    let call_id = CallId::new();
+    let policies = PolicySet::new(vec![Arc::new(ToolApprovalPolicy::new(
+        "guard",
+        vec![ToolName::new("weather").expect("tool")],
+        "weather touches the world",
+    ))]);
+
+    let scripted = Arc::new(
+        ScriptedModel::new(rustychain_testing::model("test/weather"))
+            .turn_tool_call(call_id, "weather", &json!({ "city": "Paris" }))
+            .turn_text("done"),
+    );
+    let engine_a = EngineBuilder::new()
+        .store(Arc::new(InMemoryStore::new()))
+        .blobs(Arc::new(InMemoryBlobStore::new()))
+        .model(scripted)
+        .tools(registry())
+        .policies(policies.clone())
+        .build()
+        .expect("engine a");
+
+    let session = engine_a.create().await.expect("create");
+    let outcome = engine_a
+        .send(session.id, Message::user("weather in Paris?"))
+        .finish()
+        .await
+        .expect("turn");
+    assert_eq!(outcome.session.phase, Phase::AwaitingApproval);
+
+    let conversation = engine_a.export(session.id).await.expect("export");
+    assert_eq!(conversation.phase, Phase::AwaitingApproval);
+
+    let engine_b = EngineBuilder::new()
+        .store(Arc::new(InMemoryStore::new()))
+        .blobs(Arc::new(InMemoryBlobStore::new()))
+        .model(Arc::new(
+            ScriptedModel::new(rustychain_testing::model("test/weather")).turn_text("done"),
+        ))
+        .tools(registry())
+        .policies(policies)
+        .build()
+        .expect("engine b");
+    let imported = engine_b.import(conversation).await.expect("import");
+    assert!(
+        engine_b
+            .pending_approvals(imported.id)
+            .await
+            .expect("pending")
+            .is_empty(),
+        "no approval record travels in the envelope"
+    );
+
+    let parked = engine_b
+        .resume(imported.id)
+        .finish()
+        .await
+        .expect("resume re-requests");
+    assert_eq!(parked.session.phase, Phase::AwaitingApproval);
+
+    let fresh = engine_b
+        .pending_approvals(imported.id)
+        .await
+        .expect("pending");
+    assert_eq!(fresh.len(), 1, "resuming must re-request the approval");
+    assert_eq!(fresh[0].call_id, call_id);
+
+    engine_b
+        .approve(fresh[0].id, GrantScope::Call(call_id), "tester")
+        .await
+        .expect("approve");
+    let outcome = engine_b
+        .resume(imported.id)
+        .finish()
+        .await
+        .expect("resume after approval");
+    assert_eq!(outcome.session.phase, Phase::Idle);
+    assert_eq!(
+        engine_b.history(imported.id).await.expect("history").len(),
+        4,
+        "user, assistant tool call, tool result, assistant answer"
+    );
 }
 
 #[tokio::test]

@@ -170,10 +170,7 @@ pub async fn store_conformance(store: &dyn Store) {
         .expect("load approval")
         .expect("approval exists");
     assert_eq!(fetched, record);
-    let pending = store
-        .pending_approvals(session_id)
-        .await
-        .expect("pending approvals");
+    let pending = store.approvals(session_id).await.expect("approvals");
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].id, record.id);
 }

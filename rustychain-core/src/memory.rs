@@ -164,7 +164,7 @@ impl Store for InMemoryStore {
         Ok(self.tables.read().await.approvals.get(&id).cloned())
     }
 
-    async fn pending_approvals(&self, session: SessionId) -> Result<Vec<ApprovalRecord>> {
+    async fn approvals(&self, session: SessionId) -> Result<Vec<ApprovalRecord>> {
         let mut records: Vec<ApprovalRecord> = self
             .tables
             .read()

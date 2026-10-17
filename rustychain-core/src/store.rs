@@ -29,7 +29,10 @@ pub trait Store: Send + Sync {
 
     async fn approval(&self, id: ApprovalId) -> Result<Option<ApprovalRecord>>;
 
-    async fn pending_approvals(&self, session: SessionId) -> Result<Vec<ApprovalRecord>>;
+    /// Every approval record recorded for the session, decided or not, oldest
+    /// first. The engine reads it to resolve a call; the host-facing view of
+    /// what still needs a decision is [`crate::Engine::pending_approvals`].
+    async fn approvals(&self, session: SessionId) -> Result<Vec<ApprovalRecord>>;
 
     /// The conversation the model sees: every ancestor message, root first.
     async fn history(&self, head: Option<NodeId>) -> Result<Vec<Message>> {

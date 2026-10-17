@@ -253,13 +253,22 @@ impl Engine {
         self.store.history(session.head).await
     }
 
-    /// Lists the host approvals still relevant to the session.
+    /// The approvals the host still has to decide for the session: records that
+    /// are pending and have not expired, oldest first. Decided and expired
+    /// records stay in the store for audit rather than showing up here.
     ///
     /// # Errors
     ///
     /// Propagates the store error.
     pub async fn pending_approvals(&self, session: SessionId) -> Result<Vec<ApprovalRecord>> {
-        self.store.pending_approvals(session).await
+        let now = Utc::now();
+        Ok(self
+            .store
+            .approvals(session)
+            .await?
+            .into_iter()
+            .filter(|record| record.status == ApprovalStatus::Pending && !record.is_expired_at(now))
+            .collect())
     }
 
     /// Enqueues a steering message, drained at the next safe point.
@@ -596,14 +605,15 @@ impl Engine {
                 )));
             }
 
+            // A turn ends at the first assistant message that is not waiting on
+            // tools; a parked session carries on as soon as the host has nothing
+            // left to decide.
             let head_message = match session.head {
                 Some(head) => Some(self.store.node(head).await?.message),
                 None => None,
             };
             if let Some(message) = &head_message {
-                let pending_tools =
-                    session.phase == Phase::AwaitingTool && message.has_tool_calls();
-                if message.role == Role::Assistant && !pending_tools {
+                if message.role == Role::Assistant && !self.continues_turn(&session).await? {
                     return Ok(TurnOutcome {
                         session,
                         message: last.or_else(|| Some(message.clone())),
@@ -612,13 +622,7 @@ impl Engine {
             }
 
             match session.phase {
-                Phase::AwaitingApproval => {
-                    return Ok(TurnOutcome {
-                        session,
-                        message: last,
-                    });
-                }
-                Phase::AwaitingTool => {
+                Phase::AwaitingTool | Phase::AwaitingApproval => {
                     session = self
                         .run_tools(&session, &sender, &cancellation, &early_results)
                         .await?;
@@ -676,6 +680,29 @@ impl Engine {
                 }
             }
         }
+    }
+
+    /// Whether the loop keeps working from the current head.
+    ///
+    /// The turn ends at a final assistant message. It carries on while tools are
+    /// pending, and a parked session carries on too once the host has nothing
+    /// left to decide: a granted call runs, a denied one fails, and a call with
+    /// no record at all asks again — which is how an imported or expired
+    /// session finds its way forward (FR-APPR-5).
+    async fn continues_turn(&self, session: &Session) -> Result<bool> {
+        let Some(head) = session.head else {
+            return Ok(false);
+        };
+        let message = self.store.node(head).await?.message;
+        let mid_flight = matches!(session.phase, Phase::AwaitingTool | Phase::AwaitingApproval)
+            && message.has_tool_calls();
+        if !mid_flight {
+            return Ok(false);
+        }
+        if session.phase == Phase::AwaitingTool {
+            return Ok(true);
+        }
+        Ok(self.pending_approvals(session.id).await?.is_empty())
     }
 
     async fn append_turn(
@@ -1274,7 +1301,7 @@ impl Engine {
         tool: &ToolName,
         sender: &mpsc::Sender<EngineEvent>,
     ) -> Result<Option<()>> {
-        let records = self.store.pending_approvals(session.id).await?;
+        let records = self.store.approvals(session.id).await?;
         if let Some(record) = records.iter().find(|record| record.call_id == call.call_id) {
             if record.is_expired_at(Utc::now()) {
                 return Err(Error::ApprovalExpired(record.id));

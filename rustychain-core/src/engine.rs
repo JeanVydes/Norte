@@ -1489,6 +1489,10 @@ fn stream_delta(event: &StreamEvent) -> Option<StreamDelta> {
             index: *index,
             text: text.clone(),
         }),
+        StreamEvent::RefusalDelta { index, text } => Some(StreamDelta::Refusal {
+            index: *index,
+            text: text.clone(),
+        }),
         StreamEvent::ToolCallDelta {
             index,
             call_id,

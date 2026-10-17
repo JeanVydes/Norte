@@ -8,7 +8,7 @@ use crate::domain::media::{MediaKind, MediaMetadata, MediaPart, MediaSource, Mim
 use crate::domain::message::{FinishReason, Message, MessageOrigin, MessageStatus, Usage};
 use crate::domain::part::{
     Citation, Part, ProviderTool, ProviderToolCallPart, ProviderToolResultPart, ReasoningPart,
-    ReasoningVisibility, TextPart, ToolCallPart,
+    ReasoningVisibility, RefusalPart, TextPart, ToolCallPart,
 };
 use crate::error::{Error, Result};
 use crate::id::{CallId, GenerationId};
@@ -32,6 +32,12 @@ pub enum StreamEvent {
         visibility: ReasoningVisibility,
     },
     ReasoningDelta {
+        index: u32,
+        text: String,
+    },
+    /// A partial refusal. The vendor streams it the way it streams text, so it
+    /// accumulates into one [`Part::Refusal`] at the part index.
+    RefusalDelta {
         index: u32,
         text: String,
     },
@@ -111,6 +117,9 @@ enum Partial {
         visibility: ReasoningVisibility,
         text: String,
     },
+    Refusal {
+        text: String,
+    },
     ToolCall {
         call_id: CallId,
         name: String,
@@ -182,6 +191,7 @@ impl StreamAccumulator {
                 },
             )),
             StreamEvent::ReasoningDelta { index, text } => self.grow_reasoning(index, &text),
+            StreamEvent::RefusalDelta { index, text } => self.grow_refusal(index, &text),
             StreamEvent::ToolCallStart {
                 index,
                 call_id,
@@ -319,6 +329,27 @@ impl StreamAccumulator {
             other => {
                 return Err(Error::Codec(format!(
                     "reasoning delta for a non-reasoning part: {other:?}"
+                )));
+            }
+        };
+        self.check(grown)?;
+        Ok(None)
+    }
+
+    fn grow_refusal(&mut self, index: u32, text: &str) -> Result<Option<Part>> {
+        let grown = match self
+            .partials
+            .entry(index)
+            .or_insert_with(|| Partial::Refusal {
+                text: String::new(),
+            }) {
+            Partial::Refusal { text: held } => {
+                held.push_str(text);
+                held.len()
+            }
+            other => {
+                return Err(Error::Codec(format!(
+                    "refusal delta for a non-refusal part: {other:?}"
                 )));
             }
         };
@@ -471,6 +502,7 @@ impl StreamAccumulator {
                     text,
                     continuity: self.continuity.remove(&index),
                 }),
+                Partial::Refusal { text } => Part::Refusal(RefusalPart { text }),
                 Partial::ToolCall {
                     call_id,
                     name,
@@ -600,6 +632,30 @@ mod tests {
         let result = accumulator.finish().expect("finish");
         assert_eq!(result.parts.len(), 1);
         assert_eq!(result.parts[0], Part::Text(TextPart::new("hello")));
+    }
+
+    #[test]
+    fn refusal_deltas_assemble_into_one_part() {
+        let mut accumulator = accumulator();
+        accumulator
+            .apply(StreamEvent::RefusalDelta {
+                index: 2,
+                text: "I can".to_owned(),
+            })
+            .expect("delta");
+        accumulator
+            .apply(StreamEvent::RefusalDelta {
+                index: 2,
+                text: "not help".to_owned(),
+            })
+            .expect("delta");
+        let result = accumulator.finish().expect("finish");
+        assert_eq!(
+            result.parts,
+            vec![Part::Refusal(RefusalPart {
+                text: "I cannot help".to_owned(),
+            })]
+        );
     }
 
     #[test]

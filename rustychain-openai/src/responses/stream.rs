@@ -13,6 +13,14 @@ use serde_json::Value;
 use crate::continuity::OpenAiContinuity;
 use crate::json::{opt_str, str_field, u32_field};
 
+/// The audio-output events carry no index, so the single audio stream is pinned
+/// to a fixed part index well clear of the item indices.
+const AUDIO_INDEX: u32 = 10_000;
+/// The spoken transcript that accompanies streamed audio output.
+const TRANSCRIPT_INDEX: u32 = 10_001;
+/// The Responses wire streams raw 16-bit little-endian PCM at 24 kHz.
+const AUDIO_MIME: &str = "audio/pcm16";
+
 /// Maps the vendor `SSE` stream into core stream events.
 pub(crate) fn map(sse: SseStream, continuity: OpenAiContinuity) -> ModelStream {
     let mut decoder = Decoder::new(continuity);
@@ -45,6 +53,7 @@ struct Decoder {
     calls: BTreeMap<u32, CallId>,
     started_reasoning: BTreeMap<u32, ReasoningVisibility>,
     saw_tool_call: bool,
+    audio_started: bool,
 }
 
 impl Decoder {
@@ -54,6 +63,7 @@ impl Decoder {
             calls: BTreeMap::new(),
             started_reasoning: BTreeMap::new(),
             saw_tool_call: false,
+            audio_started: false,
         }
     }
 
@@ -74,7 +84,11 @@ impl Decoder {
             }
             "response.function_call_arguments.delta" => self.arguments_delta(&value),
             "response.output_text.annotation.added" => Ok(Self::annotation(&value)),
+            "response.refusal.delta" => Self::refusal_delta(&value),
             "response.refusal.done" => Self::refusal(&value),
+            "response.audio.delta" => self.audio_delta(&value),
+            "response.audio.done" => Ok(self.audio_done()),
+            "response.audio.transcript.delta" => Self::transcript_delta(&value),
             "response.completed" | "response.incomplete" => Ok(self.finish(&value)),
             "response.failed" => Err(failed_error(&value)),
             "error" => Err(stream_error(&value)),
@@ -211,6 +225,52 @@ impl Decoder {
             part: Part::Refusal(RefusalPart {
                 text: str_field(value, "refusal")?.to_owned(),
             }),
+        }])
+    }
+
+    fn refusal_delta(value: &Value) -> Result<Vec<StreamEvent>> {
+        Ok(vec![StreamEvent::RefusalDelta {
+            index: u32_field(value, "output_index")?,
+            text: str_field(value, "delta")?.to_owned(),
+        }])
+    }
+
+    fn audio_delta(&mut self, value: &Value) -> Result<Vec<StreamEvent>> {
+        let bytes = crate::json::base64_decode(str_field(value, "delta")?)?;
+        let mut events = Vec::new();
+        if !self.audio_started {
+            self.audio_started = true;
+            events.push(StreamEvent::MediaStart {
+                index: AUDIO_INDEX,
+                kind: MediaKind::Audio,
+                mime: MimeType::new(AUDIO_MIME)?,
+                metadata: MediaMetadata::default(),
+            });
+        }
+        events.push(StreamEvent::MediaChunk {
+            index: AUDIO_INDEX,
+            bytes,
+            last: false,
+        });
+        Ok(events)
+    }
+
+    fn audio_done(&mut self) -> Vec<StreamEvent> {
+        if !self.audio_started {
+            return Vec::new();
+        }
+        self.audio_started = false;
+        vec![StreamEvent::MediaChunk {
+            index: AUDIO_INDEX,
+            bytes: Vec::new(),
+            last: true,
+        }]
+    }
+
+    fn transcript_delta(value: &Value) -> Result<Vec<StreamEvent>> {
+        Ok(vec![StreamEvent::TextDelta {
+            index: TRANSCRIPT_INDEX,
+            text: str_field(value, "delta")?.to_owned(),
         }])
     }
 
@@ -612,6 +672,82 @@ mod tests {
             StreamEvent::MediaChunk {
                 index: 0,
                 bytes: vec![1, 2, 3],
+                last: true,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn streamed_refusal_becomes_a_refusal_part() {
+        let events = drain(&[
+            r#"{"type":"response.refusal.delta","output_index":0,"content_index":0,"delta":"I can"}"#,
+            r#"{"type":"response.refusal.done","output_index":0,"content_index":0,"refusal":"I cannot help"}"#,
+        ])
+        .await;
+        assert_eq!(
+            events[0],
+            StreamEvent::RefusalDelta {
+                index: 0,
+                text: "I can".to_owned(),
+            }
+        );
+        assert_eq!(
+            events[1],
+            StreamEvent::Part {
+                index: 0,
+                part: Part::Refusal(RefusalPart {
+                    text: "I cannot help".to_owned(),
+                }),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn streamed_audio_output_is_materialized() {
+        let events = drain(&[
+            r#"{"type":"response.audio.transcript.delta","response_id":"r","delta":"hello"}"#,
+            r#"{"type":"response.audio.delta","response_id":"r","delta":"AQID"}"#,
+            r#"{"type":"response.audio.delta","response_id":"r","delta":"BAU="}"#,
+            r#"{"type":"response.audio.done","response_id":"r"}"#,
+        ])
+        .await;
+        assert_eq!(
+            events[0],
+            StreamEvent::TextDelta {
+                index: TRANSCRIPT_INDEX,
+                text: "hello".to_owned(),
+            }
+        );
+        let StreamEvent::MediaStart {
+            index, kind, mime, ..
+        } = &events[1]
+        else {
+            panic!("expected media start");
+        };
+        assert_eq!(*index, AUDIO_INDEX);
+        assert_eq!(*kind, MediaKind::Audio);
+        assert_eq!(mime.as_str(), "audio/pcm16");
+        assert_eq!(
+            events[2],
+            StreamEvent::MediaChunk {
+                index: AUDIO_INDEX,
+                bytes: vec![1, 2, 3],
+                last: false,
+            }
+        );
+        assert_eq!(
+            events[3],
+            StreamEvent::MediaChunk {
+                index: AUDIO_INDEX,
+                bytes: vec![4, 5],
+                last: false,
+            }
+        );
+        assert_eq!(
+            events[4],
+            StreamEvent::MediaChunk {
+                index: AUDIO_INDEX,
+                bytes: Vec::new(),
                 last: true,
             }
         );

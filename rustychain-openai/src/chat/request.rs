@@ -226,12 +226,23 @@ fn chat_role(role: Role) -> &'static str {
 fn push_assistant(calls: &CallIndex, message: &Message, out: &mut Vec<Value>) {
     let text = message.text();
     let tool_calls = assistant_tool_calls(calls, message);
+    let refusal: String = message
+        .parts
+        .iter()
+        .filter_map(|part| match part {
+            Part::Refusal(refusal) => Some(refusal.text.as_str()),
+            _ => None,
+        })
+        .collect();
     let mut object = serde_json::Map::new();
     object.insert("role".to_owned(), Value::String("assistant".to_owned()));
     if text.is_empty() && !tool_calls.is_empty() {
         object.insert("content".to_owned(), Value::Null);
     } else {
         object.insert("content".to_owned(), Value::String(text));
+    }
+    if !refusal.is_empty() {
+        object.insert("refusal".to_owned(), Value::String(refusal));
     }
     if !tool_calls.is_empty() {
         object.insert("tool_calls".to_owned(), Value::Array(tool_calls));
@@ -388,8 +399,8 @@ fn filename(media: &MediaPart) -> String {
 mod tests {
     use super::*;
     use rustychain_core::{
-        ContinuityAdapter, MimeType, ModelId, ProviderId, ToolCallPart, ToolName, ToolResultPart,
-        WireFamily,
+        ContinuityAdapter, MimeType, ModelId, ProviderId, RefusalPart, ToolCallPart, ToolName,
+        ToolResultPart, WireFamily,
     };
 
     use crate::WIRE_CHAT;
@@ -468,6 +479,20 @@ mod tests {
         assert_eq!(body["messages"][1]["role"], "tool");
         assert_eq!(body["messages"][1]["tool_call_id"], "call_1");
         assert_eq!(body["messages"][1]["content"], "42");
+    }
+
+    #[test]
+    fn an_assistant_refusal_is_re_emitted() {
+        let message = Message::new(
+            Role::Assistant,
+            vec![Part::Refusal(RefusalPart {
+                text: "I cannot help".to_owned(),
+            })],
+        );
+        let request = ModelRequest::new(model(), vec![message]);
+        let body = build(&model(), &continuity(), &Quirks::new(), &request).expect("build");
+        assert_eq!(body["messages"][0]["role"], "assistant");
+        assert_eq!(body["messages"][0]["refusal"], "I cannot help");
     }
 
     #[test]

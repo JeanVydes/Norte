@@ -41,3 +41,15 @@ pub(crate) fn base64_encode(bytes: &[u8]) -> String {
     use base64::Engine as _;
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
+
+/// Decodes standard base64 into bytes.
+///
+/// # Errors
+///
+/// Returns a codec error when the input is not valid base64.
+pub(crate) fn base64_decode(text: &str) -> Result<Vec<u8>> {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD
+        .decode(text)
+        .map_err(|error| Error::Codec(format!("openai wire: invalid base64: {error}")))
+}

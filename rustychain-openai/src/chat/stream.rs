@@ -13,7 +13,9 @@ use crate::json::opt_str;
 
 const REASONING_INDEX: u32 = 0;
 const TEXT_INDEX: u32 = 1;
+const REFUSAL_INDEX: u32 = 2;
 const TOOL_BASE: u32 = 1000;
+const FUNCTION_CALL_INDEX: u32 = TOOL_BASE - 1;
 
 /// Maps the vendor `SSE` stream into core stream events.
 pub(crate) fn map(sse: SseStream, continuity: OpenAiContinuity) -> ModelStream {
@@ -47,10 +49,18 @@ struct ToolState {
     named: bool,
 }
 
+/// Tracks the deprecated `function_call` delta shape, which carries no id.
+#[derive(Clone, Debug)]
+struct LegacyCall {
+    call_id: CallId,
+    named: bool,
+}
+
 #[derive(Clone, Debug)]
 struct Decoder {
     continuity: OpenAiContinuity,
     tools: BTreeMap<u32, ToolState>,
+    legacy: Option<LegacyCall>,
     reasoning_started: bool,
 }
 
@@ -59,6 +69,7 @@ impl Decoder {
         Self {
             continuity,
             tools: BTreeMap::new(),
+            legacy: None,
             reasoning_started: false,
         }
     }
@@ -99,6 +110,12 @@ impl Decoder {
             });
         }
         self.reasoning(delta, events);
+        if let Some(text) = opt_str(delta, "refusal").filter(|text| !text.is_empty()) {
+            events.push(StreamEvent::RefusalDelta {
+                index: REFUSAL_INDEX,
+                text: text.to_owned(),
+            });
+        }
         if let Some(annotations) = delta.get("annotations").and_then(Value::as_array) {
             for annotation in annotations {
                 if let Some(citation) = chat_citation(annotation) {
@@ -114,7 +131,51 @@ impl Decoder {
                 self.tool_call(call, events)?;
             }
         }
+        if let Some(call) = delta.get("function_call").filter(|call| !call.is_null()) {
+            self.function_call(call, events);
+        }
         Ok(())
+    }
+
+    /// Maps the deprecated `function_call` delta shape, which carries the name
+    /// and arguments without an id or index, onto a tool call so it is never
+    /// dropped.
+    fn function_call(&mut self, call: &Value, events: &mut Vec<StreamEvent>) {
+        let name = opt_str(call, "name");
+        let arguments = opt_str(call, "arguments").unwrap_or("");
+        let call_id = if let Some(state) = &mut self.legacy {
+            let call_id = state.call_id;
+            if let Some(name) = name.filter(|_| !state.named) {
+                state.named = true;
+                events.push(StreamEvent::ToolCallDelta {
+                    index: FUNCTION_CALL_INDEX,
+                    call_id,
+                    name: Some(name.to_owned()),
+                    arguments: String::new(),
+                });
+            }
+            call_id
+        } else {
+            let call_id = CallId::new();
+            self.legacy = Some(LegacyCall {
+                call_id,
+                named: name.is_some(),
+            });
+            events.push(StreamEvent::ToolCallStart {
+                index: FUNCTION_CALL_INDEX,
+                call_id,
+                name: name.unwrap_or_default().to_owned(),
+            });
+            call_id
+        };
+        if !arguments.is_empty() {
+            events.push(StreamEvent::ToolCallDelta {
+                index: FUNCTION_CALL_INDEX,
+                call_id,
+                name: None,
+                arguments: arguments.to_owned(),
+            });
+        }
     }
 
     fn reasoning(&mut self, delta: &Value, events: &mut Vec<StreamEvent>) {
@@ -441,6 +502,53 @@ mod tests {
             }
         );
         assert_eq!(events[3], StreamEvent::Finish(FinishReason::Stop));
+    }
+
+    #[tokio::test]
+    async fn refusal_content_streams_as_a_refusal_part() {
+        let events = drain(&[
+            r#"{"choices":[{"index":0,"delta":{"refusal":"I can"},"finish_reason":null}]}"#,
+            r#"{"choices":[{"index":0,"delta":{"refusal":"not help"},"finish_reason":"stop"}]}"#,
+        ])
+        .await;
+        assert_eq!(
+            events[0],
+            StreamEvent::RefusalDelta {
+                index: REFUSAL_INDEX,
+                text: "I can".to_owned(),
+            }
+        );
+        assert_eq!(
+            events[1],
+            StreamEvent::RefusalDelta {
+                index: REFUSAL_INDEX,
+                text: "not help".to_owned(),
+            }
+        );
+        assert_eq!(events[2], StreamEvent::Finish(FinishReason::Stop));
+    }
+
+    #[tokio::test]
+    async fn the_legacy_function_call_shape_becomes_a_tool_call() {
+        let events = drain(&[
+            r#"{"choices":[{"index":0,"delta":{"function_call":{"name":"lookup","arguments":"{\"q\":"}},"finish_reason":null}]}"#,
+            r#"{"choices":[{"index":0,"delta":{"function_call":{"arguments":"1}"}},"finish_reason":"function_call"}]}"#,
+        ])
+        .await;
+        let StreamEvent::ToolCallStart { index, name, .. } = &events[0] else {
+            panic!("expected tool call start");
+        };
+        assert_eq!(*index, FUNCTION_CALL_INDEX);
+        assert_eq!(name, "lookup");
+        let arguments: String = events
+            .iter()
+            .filter_map(|event| match event {
+                StreamEvent::ToolCallDelta { arguments, .. } => Some(arguments.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(arguments, r#"{"q":1}"#);
+        assert!(events.contains(&StreamEvent::Finish(FinishReason::ToolCalls)));
     }
 
     #[tokio::test]

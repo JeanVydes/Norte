@@ -21,6 +21,10 @@ pub enum StreamDelta {
         index: u32,
         text: String,
     },
+    Refusal {
+        index: u32,
+        text: String,
+    },
     ToolArguments {
         index: u32,
         call_id: CallId,

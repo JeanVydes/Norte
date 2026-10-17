@@ -2,6 +2,7 @@
 resolver = "3"
 exclude = ["fuzz"]
 members = [
+    "examples/react-agent",
     "rustychain-macros",
     "rustychain-core",
     "rustychain-http",

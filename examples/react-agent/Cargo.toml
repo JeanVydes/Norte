@@ -1,0 +1,28 @@
+[package]
+name = "react-agent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "A streaming ReAct agent on RustyChain, wired to OpenRouter."
+
+[[bin]]
+name = "react-agent"
+path = "src/main.rs"
+
+[dependencies]
+rustychain-core = { workspace = true }
+rustychain-http = { workspace = true }
+rustychain-openai = { workspace = true }
+rustychain-tools = { workspace = true }
+async-trait = { workspace = true }
+futures-util = { workspace = true }
+reqwest = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[lints]
+workspace = true

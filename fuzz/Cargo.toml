@@ -1,0 +1,53 @@
+[package]
+name = "rustychain-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+rustychain-anthropic = { path = "../rustychain-anthropic", features = ["fuzz"] }
+rustychain-core = { path = "../rustychain-core" }
+rustychain-gemini = { path = "../rustychain-gemini", features = ["fuzz"] }
+rustychain-http = { path = "../rustychain-http" }
+rustychain-openai = { path = "../rustychain-openai", features = ["fuzz"] }
+
+[[bin]]
+name = "anthropic_messages"
+path = "fuzz_targets/anthropic_messages.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "openai_responses"
+path = "fuzz_targets/openai_responses.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "openai_chat"
+path = "fuzz_targets/openai_chat.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "gemini_generate"
+path = "fuzz_targets/gemini_generate.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sse"
+path = "fuzz_targets/sse.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]

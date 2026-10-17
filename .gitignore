@@ -20,3 +20,7 @@ docs/
 draft_*
 sandbox/
 tmp/
+/fuzz/target
+/fuzz/artifacts
+/fuzz/corpus
+/fuzz/coverage

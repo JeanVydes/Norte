@@ -38,6 +38,38 @@ pub(crate) fn build_count(
     build_body(model, continuity, request, false)
 }
 
+/// Builds the wire body that creates an explicit cached content: the prompt
+/// (system instruction, contents and tools) plus the resource `model` and
+/// `ttl`. It deliberately carries no generation configuration.
+///
+/// # Errors
+///
+/// Returns an error when a part cannot be expressed on this wire.
+pub(crate) fn build_cache(
+    model: &ModelRef,
+    continuity: &GeminiContinuity,
+    request: &ModelRequest,
+    ttl: &str,
+) -> Result<Value> {
+    let mut body = build_body(model, continuity, request, false)?;
+    let object = body
+        .as_object_mut()
+        .ok_or_else(|| Error::Codec("gemini wire: cache body is not an object".to_owned()))?;
+    object.insert("model".to_owned(), Value::String(qualified_model(model)));
+    object.insert("ttl".to_owned(), Value::String(ttl.to_owned()));
+    Ok(body)
+}
+
+/// The fully qualified `models/...` resource name a request body requires.
+fn qualified_model(model: &ModelRef) -> String {
+    let name = model.model.as_str();
+    if name.starts_with("models/") {
+        name.to_owned()
+    } else {
+        format!("models/{name}")
+    }
+}
+
 fn build_body(
     model: &ModelRef,
     continuity: &GeminiContinuity,
@@ -651,6 +683,18 @@ mod tests {
         let body = build_count(&model(), &continuity(), &request).expect("build");
         assert_eq!(body["systemInstruction"]["parts"][0]["text"], "rules");
         assert_eq!(body["contents"][0]["parts"][0]["text"], "hi");
+        assert!(body.get("generationConfig").is_none());
+    }
+
+    #[test]
+    fn cache_body_qualifies_the_model_and_carries_the_prompt() {
+        let request =
+            ModelRequest::new(model(), vec![Message::system("rules"), Message::user("hi")]);
+        let body = build_cache(&model(), &continuity(), &request, "3600s").expect("build");
+        assert_eq!(body["model"], "models/gemini-2.5-pro");
+        assert_eq!(body["ttl"], "3600s");
+        assert_eq!(body["systemInstruction"]["parts"][0]["text"], "rules");
+        assert_eq!(body["contents"][0]["role"], "user");
         assert!(body.get("generationConfig").is_none());
     }
 

@@ -119,6 +119,27 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
+  fuzz:
+    name: Parser Fuzzing (FR-TEST-3)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      - name: Build every fuzz target
+        run: cargo fuzz build
+      - name: Smoke-run every target
+        run: |
+          for target in anthropic_messages openai_responses openai_chat gemini_generate sse; do
+            cargo fuzz run "$target" -- -runs=20000 -max_total_time=30
+          done
+
   audit:
     name: Security Audit
     runs-on: ubuntu-latest
@@ -151,6 +172,7 @@ jobs:
       - deps
       - test
       - docs
+      - fuzz
       - audit
     steps:
       - name: Check results
@@ -161,6 +183,7 @@ jobs:
              [[ "${{ needs.deps.result }}" != "success" ]] || \
              [[ "${{ needs.test.result }}" != "success" ]] || \
              [[ "${{ needs.docs.result }}" != "success" ]] || \
+             [[ "${{ needs.fuzz.result }}" != "success" ]] || \
              [[ "${{ needs.audit.result }}" != "success" ]]; then
             echo "One or more CI jobs failed"
             exit 1

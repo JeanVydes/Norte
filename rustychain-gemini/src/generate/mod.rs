@@ -1,6 +1,10 @@
 mod request;
 mod stream;
 
+#[cfg(feature = "fuzz")]
+#[doc(hidden)]
+pub use stream::FuzzGenerate;
+
 use rustychain_core::{
     Capabilities, ContinuityAdapter, Model, ModelId, ModelRef, ModelRequest, ModelStream, Result,
     WireFamily,
@@ -87,6 +91,35 @@ impl GeminiGenerate {
             .ok_or_else(|| {
                 rustychain_core::Error::Codec(
                     "gemini wire: countTokens response has no totalTokens".to_owned(),
+                )
+            })
+    }
+
+    /// Creates an explicit cached content from `request` and returns its
+    /// resource name (for example `cachedContents/abc`).
+    ///
+    /// Gemini also caches prompt prefixes implicitly, which is what the adapter
+    /// relies on by default. This is the opt-in explicit API; the returned name
+    /// is sent on a turn as the `google.gemini:cachedContent` vendor extension
+    /// (FR-ENG-7), so the cached prefix is served without being re-sent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the request cannot be expressed on this wire or the
+    /// endpoint fails.
+    pub async fn create_cached_content(&self, request: &ModelRequest, ttl: &str) -> Result<String> {
+        let body = request::build_cache(&self.reference, &self.continuity, request, ttl)?;
+        let response = self
+            .client
+            .send_post_json(&self.profile, "cachedContents", &body)
+            .await?;
+        response
+            .get("name")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| {
+                rustychain_core::Error::Codec(
+                    "gemini wire: cachedContents response has no name".to_owned(),
                 )
             })
     }

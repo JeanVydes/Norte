@@ -36,6 +36,7 @@ pub use domain::media::{
     MediaKind, MediaMetadata, MediaPart, MediaSource, MimeType, ProviderFileRef,
 };
 pub use domain::message::{CacheClass, FinishReason, Message, MessageOrigin, MessageStatus, Usage};
+pub use domain::moderation::SafetyRating;
 pub use domain::node::{Node, NodeKind};
 pub use domain::part::{
     Citation, CitationSource, ExtensionPart, Part, ProviderTool, ProviderToolCallPart,

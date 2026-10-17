@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::domain::continuity::ContinuityFragment;
 use crate::domain::media::{MediaKind, MediaMetadata, MediaPart, MediaSource, MimeType};
 use crate::domain::message::{FinishReason, Message, MessageOrigin, MessageStatus, Usage};
+use crate::domain::moderation::SafetyRating;
 use crate::domain::part::{
     Citation, Part, ProviderTool, ProviderToolCallPart, ProviderToolResultPart, ReasoningPart,
     ReasoningVisibility, RefusalPart, TextPart, ToolCallPart,
@@ -112,6 +113,11 @@ pub enum StreamEvent {
     Continuity {
         index: u32,
         fragment: ContinuityFragment,
+    },
+    /// The vendor's moderation labels for a generated candidate. Informational:
+    /// the neutral model never gates on them (see [`SafetyRating`]).
+    SafetyRatings {
+        ratings: Vec<SafetyRating>,
     },
     Usage(Usage),
     Finish(FinishReason),
@@ -274,7 +280,7 @@ impl StreamAccumulator {
                 self.complete(index, part.clone());
                 Ok(Some(part))
             }
-            StreamEvent::Continuity { .. } => Ok(None),
+            StreamEvent::Continuity { .. } | StreamEvent::SafetyRatings { .. } => Ok(None),
             StreamEvent::Usage(usage) => {
                 self.usage = usage;
                 Ok(None)

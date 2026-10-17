@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::capability::ReasoningRequest;
+use crate::domain::moderation::SafetyRating;
 use crate::domain::part::Part;
 use crate::domain::session::Phase;
 use crate::id::{ApprovalId, CallId, Digest, SessionId, ToolName};
@@ -38,6 +39,9 @@ pub enum StreamDelta {
     Continuity {
         index: u32,
         len: usize,
+    },
+    SafetyRatings {
+        ratings: Vec<SafetyRating>,
     },
 }
 

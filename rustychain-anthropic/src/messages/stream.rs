@@ -432,6 +432,35 @@ fn stream_error(value: &Value) -> Error {
     Error::provider(provider)
 }
 
+/// A stateful entry point the `fuzz` crate drives with arbitrary `SSE` payloads.
+///
+/// Enabled by the `fuzz` feature. It is not part of the supported API.
+#[cfg(feature = "fuzz")]
+#[doc(hidden)]
+pub struct FuzzMessages {
+    decoder: Decoder,
+}
+
+#[cfg(feature = "fuzz")]
+impl FuzzMessages {
+    /// Creates a decoder bound to `continuity`.
+    #[must_use]
+    pub fn new(continuity: AnthropicContinuity) -> Self {
+        Self {
+            decoder: Decoder::new(continuity),
+        }
+    }
+
+    /// Decodes one raw `SSE` `data` payload.
+    ///
+    /// # Errors
+    ///
+    /// Returns a codec error for malformed input.
+    pub fn decode(&mut self, data: &str) -> Result<Vec<StreamEvent>> {
+        self.decoder.decode(data)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

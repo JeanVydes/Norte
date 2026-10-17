@@ -1,6 +1,10 @@
 mod request;
 mod stream;
 
+#[cfg(feature = "fuzz")]
+#[doc(hidden)]
+pub use stream::FuzzMessages;
+
 use rustychain_core::{
     Capabilities, ContinuityAdapter, Model, ModelRef, ModelRequest, ModelStream, Result, WireFamily,
 };

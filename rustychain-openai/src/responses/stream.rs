@@ -4,8 +4,8 @@ use base64::Engine as _;
 use futures_util::StreamExt;
 use rustychain_core::{
     CallId, Citation, CitationSource, Error, ExtensionPart, FinishReason, MediaKind, MediaMetadata,
-    MimeType, ModelStream, Part, ProviderError, ProviderErrorKind, ProviderId, ReasoningVisibility,
-    RefusalPart, Result, StreamEvent, Usage,
+    MimeType, ModelStream, Part, ProviderError, ProviderErrorKind, ProviderId, ProviderTool,
+    ReasoningVisibility, RefusalPart, Result, StreamEvent, Usage,
 };
 use rustychain_http::SseStream;
 use serde_json::Value;
@@ -118,9 +118,12 @@ impl Decoder {
     fn output_item_done(&mut self, value: &Value) -> Result<Vec<StreamEvent>> {
         let index = u32_field(value, "output_index")?;
         let item = item_of(value)?;
-        match opt_str(item, "type") {
-            Some("reasoning") => self.reasoning_done(index, item),
-            Some("function_call") => {
+        let Some(kind) = opt_str(item, "type") else {
+            return Ok(Vec::new());
+        };
+        match kind {
+            "reasoning" => self.reasoning_done(index, item),
+            "function_call" => {
                 let meta = serde_json::json!({
                     "call_id": opt_str(item, "call_id"),
                     "id": opt_str(item, "id"),
@@ -133,18 +136,56 @@ impl Decoder {
                     StreamEvent::ToolCallDone { index },
                 ])
             }
-            Some("image_generation_call") => image_output(index, item),
-            Some("message") => Ok(Vec::new()),
-            // Server-side tool items (web search, file search, code interpreter,
-            // MCP, computer use, …) are replayed to the same vendor verbatim.
-            _ => Ok(vec![StreamEvent::Part {
+            "image_generation_call" => image_output(index, item),
+            "message" => Ok(Vec::new()),
+            // Provider-executed tool items are typed; anything else is replayed
+            // to the same vendor verbatim.
+            other => self.provider_item(index, other, item),
+        }
+    }
+
+    /// Types a provider-executed output item (web search, file search, code
+    /// interpreter, MCP, …) while keeping the verbatim item in continuity, so
+    /// replay stays byte-exact (FR-ADP-3). Items with no typed mapping stay
+    /// opaque `Extension` parts.
+    fn provider_item(&self, index: u32, kind: &str, item: &Value) -> Result<Vec<StreamEvent>> {
+        let Some((name, is_result)) = provider_kind(kind) else {
+            return Ok(vec![StreamEvent::Part {
                 index,
                 part: Part::Extension(ExtensionPart {
                     namespace: "openai".to_owned(),
                     data: item.clone(),
                 }),
-            }]),
-        }
+            }]);
+        };
+        let tool = ProviderTool {
+            namespace: "openai".to_owned(),
+            name: name.to_owned(),
+        };
+        let call_id = CallId::new();
+        let event = if is_result {
+            StreamEvent::ProviderToolResult {
+                index,
+                call_id,
+                tool,
+                output: item.clone(),
+                citations: Vec::new(),
+            }
+        } else {
+            StreamEvent::ProviderToolCall {
+                index,
+                call_id,
+                tool,
+                input: item.clone(),
+            }
+        };
+        Ok(vec![
+            StreamEvent::Continuity {
+                index,
+                fragment: self.continuity.fragment(item)?,
+            },
+            event,
+        ])
     }
 
     fn reasoning_done(&mut self, index: u32, item: &Value) -> Result<Vec<StreamEvent>> {
@@ -357,6 +398,22 @@ fn item_of(value: &Value) -> Result<&Value> {
         .ok_or_else(|| Error::Codec("openai wire: output item event has no item".to_owned()))
 }
 
+/// The neutral tool name and role of an `OpenAI` provider-executed output item.
+/// `true` means the item is a completed execution (a result); `false` means it
+/// is the invocation only (a call). Items the host executes, or that carry no
+/// provider-tool meaning, have no mapping.
+fn provider_kind(kind: &str) -> Option<(&'static str, bool)> {
+    Some(match kind {
+        "web_search_call" => ("web_search", false),
+        "mcp_approval_request" => ("mcp_approval_request", false),
+        "file_search_call" => ("file_search", true),
+        "code_interpreter_call" => ("code_interpreter", true),
+        "mcp_call" => ("mcp", true),
+        "mcp_list_tools" => ("mcp_list_tools", true),
+        _ => return None,
+    })
+}
+
 fn reasoning_visibility(item: &Value) -> ReasoningVisibility {
     let has_summary = item
         .get("summary")
@@ -459,6 +516,35 @@ fn provider(message: &str, code: Option<&str>) -> Error {
         provider = provider.with_code(code.to_owned());
     }
     Error::provider(provider)
+}
+
+/// A stateful entry point the `fuzz` crate drives with arbitrary `SSE` payloads.
+///
+/// Enabled by the `fuzz` feature. It is not part of the supported API.
+#[cfg(feature = "fuzz")]
+#[doc(hidden)]
+pub struct FuzzResponses {
+    decoder: Decoder,
+}
+
+#[cfg(feature = "fuzz")]
+impl FuzzResponses {
+    /// Creates a decoder bound to `continuity`.
+    #[must_use]
+    pub fn new(continuity: OpenAiContinuity) -> Self {
+        Self {
+            decoder: Decoder::new(continuity),
+        }
+    }
+
+    /// Decodes one raw `SSE` `data` payload.
+    ///
+    /// # Errors
+    ///
+    /// Returns a codec error for malformed input.
+    pub fn decode(&mut self, data: &str) -> Result<Vec<StreamEvent>> {
+        self.decoder.decode(data)
+    }
 }
 
 #[cfg(test)]
@@ -798,9 +884,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn server_side_tool_items_round_trip_as_extensions() {
+    async fn provider_tool_items_are_typed() {
         let events = drain(&[
             r#"{"type":"response.output_item.done","output_index":0,"item":{"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"search","query":"rust"}}}"#,
+            r#"{"type":"response.output_item.done","output_index":1,"item":{"type":"file_search_call","id":"fs_1","status":"completed","queries":["rust"],"results":[{"file_id":"f_1","text":"fast"}]}}"#,
+        ])
+        .await;
+        let StreamEvent::ProviderToolCall { tool, input, .. } = &events[1] else {
+            panic!("expected a provider tool call, got {events:?}");
+        };
+        assert_eq!(tool.namespace, "openai");
+        assert_eq!(tool.name, "web_search");
+        assert_eq!(input["action"]["query"], "rust");
+        let StreamEvent::ProviderToolResult { tool, output, .. } = &events[3] else {
+            panic!("expected a provider tool result, got {events:?}");
+        };
+        assert_eq!(tool.name, "file_search");
+        assert_eq!(output["results"][0]["text"], "fast");
+    }
+
+    #[tokio::test]
+    async fn host_executed_items_round_trip_as_extensions() {
+        let events = drain(&[
+            r#"{"type":"response.output_item.done","output_index":0,"item":{"type":"custom_tool_call","call_id":"c_1","name":"run","input":"x"}}"#,
         ])
         .await;
         let StreamEvent::Part {
@@ -811,8 +917,8 @@ mod tests {
             panic!("expected an extension part");
         };
         assert_eq!(extension.namespace, "openai");
-        assert_eq!(extension.data["type"], "web_search_call");
-        assert_eq!(extension.data["action"]["query"], "rust");
+        assert_eq!(extension.data["type"], "custom_tool_call");
+        assert_eq!(extension.data["input"], "x");
     }
 
     #[tokio::test]

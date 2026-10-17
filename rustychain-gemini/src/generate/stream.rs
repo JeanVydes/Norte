@@ -2,7 +2,7 @@ use futures_util::StreamExt;
 use rustychain_core::{
     CallId, Citation, CitationSource, Error, ExtensionPart, FinishReason, MediaKind, MediaMetadata,
     MediaPart, MediaSource, MimeType, ModelStream, Part, ProviderError, ProviderErrorKind,
-    ProviderTool, ReasoningVisibility, Result, StreamEvent, Usage,
+    ProviderTool, ReasoningVisibility, Result, SafetyRating, StreamEvent, Usage,
 };
 use rustychain_http::SseStream;
 use serde_json::{Value, json};
@@ -123,25 +123,33 @@ impl Decoder {
             }
             self.grounding(&candidate, events);
             self.citation_metadata(&candidate, events);
+            safety_ratings(&candidate, events);
         }
         Ok(())
     }
 
     /// Surfaces search / maps grounding as neutral `URL` citations on the text
-    /// part being streamed.
+    /// part being streamed, from both `groundingMetadata.groundingChunks` and a
+    /// candidate's `groundingAttributions`.
     fn grounding(&self, candidate: &Value, events: &mut Vec<StreamEvent>) {
         let Some(index) = self.text_index else {
             return;
         };
-        let Some(chunks) = candidate
+        let chunks = candidate
             .get("groundingMetadata")
             .and_then(|metadata| metadata.get("groundingChunks"))
             .and_then(Value::as_array)
-        else {
-            return;
-        };
+            .into_iter()
+            .flatten();
+        let attributed = candidate
+            .get("groundingAttributions")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|attribution| attribution.get("sourceId"))
+            .filter_map(|source| source.get("groundingChunk"));
         let mut seen = std::collections::BTreeSet::new();
-        for chunk in chunks {
+        for chunk in chunks.chain(attributed) {
             let context = ["web", "retrievedContext", "maps"]
                 .iter()
                 .find_map(|key| chunk.get(*key));
@@ -499,6 +507,44 @@ fn uri_only(source: &Value) -> Option<&str> {
     opt_str(source, "uri")
 }
 
+/// Surfaces a candidate's moderation labels verbatim (FR-ADP-3).
+fn safety_ratings(candidate: &Value, events: &mut Vec<StreamEvent>) {
+    let Some(ratings) = candidate
+        .get("safetyRatings")
+        .and_then(Value::as_array)
+        .filter(|ratings| !ratings.is_empty())
+    else {
+        return;
+    };
+    events.push(StreamEvent::SafetyRatings {
+        ratings: ratings.iter().map(safety_rating).collect(),
+    });
+}
+
+/// Maps one vendor safety rating, keeping every field the typed ones do not
+/// cover (numeric scores included).
+fn safety_rating(value: &Value) -> SafetyRating {
+    let typed = ["category", "probability", "severity", "blocked"];
+    let mut extension = std::collections::BTreeMap::new();
+    if let Some(object) = value.as_object() {
+        for (key, value) in object {
+            if !typed.contains(&key.as_str()) {
+                extension.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    SafetyRating {
+        category: opt_str(value, "category").unwrap_or_default().to_owned(),
+        probability: opt_str(value, "probability").map(ToOwned::to_owned),
+        severity: opt_str(value, "severity").map(ToOwned::to_owned),
+        blocked: value
+            .get("blocked")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        extension,
+    }
+}
+
 fn mime_of(data: &Value) -> Result<MimeType> {
     MimeType::new(opt_str(data, "mimeType").unwrap_or("application/octet-stream"))
 }
@@ -549,6 +595,35 @@ fn stream_error(error: &Value) -> Error {
         provider = provider.with_status(code);
     }
     Error::provider(provider)
+}
+
+/// A stateful entry point the `fuzz` crate drives with arbitrary `SSE` payloads.
+///
+/// Enabled by the `fuzz` feature. It is not part of the supported API.
+#[cfg(feature = "fuzz")]
+#[doc(hidden)]
+pub struct FuzzGenerate {
+    decoder: Decoder,
+}
+
+#[cfg(feature = "fuzz")]
+impl FuzzGenerate {
+    /// Creates a decoder bound to `continuity`.
+    #[must_use]
+    pub fn new(continuity: GeminiContinuity) -> Self {
+        Self {
+            decoder: Decoder::new(continuity),
+        }
+    }
+
+    /// Decodes one raw `SSE` `data` payload.
+    ///
+    /// # Errors
+    ///
+    /// Returns a codec error for malformed input.
+    pub fn decode(&mut self, data: &str) -> Result<Vec<StreamEvent>> {
+        self.decoder.decode(data)
+    }
 }
 
 #[cfg(test)]
@@ -967,6 +1042,37 @@ mod tests {
             }
         );
         assert_eq!(citation.title.as_deref(), Some("B"));
+    }
+
+    #[tokio::test]
+    async fn safety_ratings_are_surfaced_verbatim() {
+        let events = drain(&[
+            r#"{"candidates":[{"content":{"parts":[{"text":"hi"}]},"safetyRatings":[{"category":"HARM_CATEGORY_HATE_SPEECH","probability":"NEGLIGIBLE","probabilityScore":0.1,"blocked":false}]}]}"#,
+        ])
+        .await;
+        let StreamEvent::SafetyRatings { ratings } = &events[1] else {
+            panic!("expected safety ratings, got {events:?}");
+        };
+        assert_eq!(ratings[0].category, "HARM_CATEGORY_HATE_SPEECH");
+        assert_eq!(ratings[0].probability.as_deref(), Some("NEGLIGIBLE"));
+        assert!(!ratings[0].blocked);
+        assert_eq!(ratings[0].extension["probabilityScore"], json!(0.1));
+    }
+
+    #[tokio::test]
+    async fn grounding_attributions_become_citations() {
+        let events = drain(&[
+            r#"{"candidates":[{"content":{"parts":[{"text":"Rust"}]},"groundingAttributions":[{"sourceId":{"groundingChunk":{"web":{"uri":"https://example.test/a","title":"A"}}},"content":{"parts":[{"text":"Rust"}]}}]}]}"#,
+        ])
+        .await;
+        let StreamEvent::Citation { citation, .. } = &events[1] else {
+            panic!("expected a citation, got {events:?}");
+        };
+        assert_eq!(
+            citation.source,
+            CitationSource::Url("https://example.test/a".to_owned())
+        );
+        assert_eq!(citation.title.as_deref(), Some("A"));
     }
 
     #[tokio::test]

@@ -445,8 +445,9 @@ fn set_breakpoint(items: &mut [Value], item: usize, block: usize) {
 mod tests {
     use super::*;
     use rustychain_core::{
-        ContinuityAdapter, MimeType, ModelId, ProviderId, ReasoningPart, ReasoningVisibility,
-        ToolName, WireFamily,
+        CallId, ContinuityAdapter, MimeType, ModelId, ProviderId, ProviderTool,
+        ProviderToolCallPart, ProviderToolResultPart, ReasoningPart, ReasoningVisibility, ToolName,
+        WireFamily,
     };
 
     use crate::WIRE_RESPONSES;
@@ -627,6 +628,50 @@ mod tests {
         let body = build(&model(), &continuity(), &request).expect("build");
         assert_eq!(body["input"][0], item);
         assert_eq!(body["input"][1]["content"][0]["text"], "again");
+    }
+
+    #[test]
+    fn provider_tool_items_are_replayed_verbatim() {
+        let call = serde_json::json!({
+            "type": "web_search_call",
+            "id": "ws_1",
+            "status": "completed",
+            "action": { "type": "search", "query": "rust" },
+        });
+        let result = serde_json::json!({
+            "type": "file_search_call",
+            "id": "fs_1",
+            "status": "completed",
+            "results": [{ "file_id": "f_1", "text": "fast" }],
+        });
+        let adapter = continuity();
+        let call_id = CallId::new();
+        let tool = ProviderTool {
+            namespace: "openai".to_owned(),
+            name: "web_search".to_owned(),
+        };
+        let assistant = Message::new(
+            Role::Assistant,
+            vec![
+                Part::ProviderToolCall(ProviderToolCallPart {
+                    call_id,
+                    tool: tool.clone(),
+                    input: call.clone(),
+                    continuity: Some(adapter.build(&call).expect("call token")),
+                }),
+                Part::ProviderToolResult(ProviderToolResultPart {
+                    call_id,
+                    tool,
+                    output: result.clone(),
+                    citations: Vec::new(),
+                    continuity: Some(adapter.build(&result).expect("result token")),
+                }),
+            ],
+        );
+        let request = ModelRequest::new(model(), vec![assistant, Message::user("again")]);
+        let body = build(&model(), &adapter, &request).expect("build");
+        assert_eq!(body["input"][0], call);
+        assert_eq!(body["input"][1], result);
     }
 
     #[test]

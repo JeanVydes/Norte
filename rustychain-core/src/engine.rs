@@ -1512,6 +1512,9 @@ fn stream_delta(event: &StreamEvent) -> Option<StreamDelta> {
             index: *index,
             len: fragment.len(),
         }),
+        StreamEvent::SafetyRatings { ratings } => Some(StreamDelta::SafetyRatings {
+            ratings: ratings.clone(),
+        }),
         _ => None,
     }
 }

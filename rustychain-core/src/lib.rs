@@ -59,9 +59,8 @@ pub use layer::{
 };
 pub use media_adapter::{MediaAdapter, ProviderFiles};
 pub use model::{
-    ContinuityAdapter, GenerationParams, Model, ModelRequest, ModelStream, RealtimeEvent,
-    RealtimeEventStream, RealtimeModel, RealtimeSession, SESSION_EXTENSION, StreamLimits,
-    TURN_OPTIONS_KEY, TurnOptions, splice_vendor_extensions,
+    ContinuityAdapter, GenerationParams, Model, ModelRequest, ModelStream, SESSION_EXTENSION,
+    StreamLimits, TURN_OPTIONS_KEY, TurnOptions, splice_vendor_extensions,
 };
 pub use observer::{Observer, ObserverSet, StreamTransform};
 pub use policy::{

@@ -175,7 +175,6 @@ pub enum Feature {
     Citations,
     ParallelToolCalls,
     ForcedToolChoice,
-    Realtime,
     Batch,
 }
 

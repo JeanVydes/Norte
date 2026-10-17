@@ -9,7 +9,7 @@ use crate::capability::{Capabilities, ReasoningRequest};
 use crate::domain::continuity::{ContinuityFragment, ContinuityToken, ReplayDecision};
 use crate::domain::message::Message;
 use crate::error::{Error, Result};
-use crate::id::{ModelRef, SessionId, ToolName};
+use crate::id::{ModelRef, ToolName};
 use crate::stream::StreamEvent;
 use crate::tool::ToolSpec;
 
@@ -291,62 +291,6 @@ pub trait Model: Send + Sync {
     fn continuity(&self) -> &dyn ContinuityAdapter;
 
     async fn stream(&self, request: ModelRequest) -> Result<ModelStream>;
-}
-
-/// Bidirectional session contract. It reuses the store, approvals, tools and
-/// policies, but owns its transport lifecycle.
-#[async_trait::async_trait]
-pub trait RealtimeModel: Send + Sync {
-    fn reference(&self) -> &ModelRef;
-
-    fn capabilities(&self) -> &Capabilities;
-
-    async fn connect(&self, session: SessionId) -> Result<Box<dyn RealtimeSession>>;
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "kind")]
-#[non_exhaustive]
-pub enum RealtimeEvent {
-    AudioInput {
-        bytes: Vec<u8>,
-    },
-    AudioOutput {
-        bytes: Vec<u8>,
-    },
-    TextDelta {
-        text: String,
-    },
-    Transcript {
-        role: crate::domain::role::Role,
-        text: String,
-    },
-    ToolCall {
-        call_id: crate::id::CallId,
-        name: String,
-        arguments: Value,
-    },
-    TurnEnded,
-    Error {
-        message: String,
-    },
-    Extension {
-        namespace: String,
-        data: Value,
-    },
-}
-
-pub type RealtimeEventStream = Pin<Box<dyn Stream<Item = Result<RealtimeEvent>> + Send + 'static>>;
-
-#[async_trait::async_trait]
-pub trait RealtimeSession: Send + Sync {
-    async fn send_audio(&self, bytes: Vec<u8>) -> Result<()>;
-
-    async fn send_text(&self, text: String) -> Result<()>;
-
-    async fn events(&mut self) -> Result<RealtimeEventStream>;
-
-    async fn close(&mut self) -> Result<()>;
 }
 
 #[cfg(test)]

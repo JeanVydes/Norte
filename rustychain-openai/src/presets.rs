@@ -11,8 +11,8 @@
 use rustychain_core::{Capabilities, ModelRef, ProviderId, Result, WireFamily};
 use rustychain_http::{AuthScheme, VendorProfile};
 
-use crate::responses::OpenAiResponses;
 use crate::WIRE_RESPONSES;
+use crate::responses::OpenAiResponses;
 
 /// Provider id of `OpenAI`.
 const OPENAI_PROVIDER: &str = "openai";

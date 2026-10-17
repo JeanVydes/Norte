@@ -152,17 +152,13 @@ fn every_adapter_satisfies_the_model_conformance_suite() {
         rustychain_openai::presets::openai("gpt-5", "sk-test", capabilities()).expect("openai");
     model_conformance(&openai, openai.reference());
 
-    let anthropic = rustychain_anthropic::presets::anthropic(
-        "claude-sonnet-4",
-        "sk-test",
-        capabilities(),
-    )
-    .expect("anthropic");
+    let anthropic =
+        rustychain_anthropic::presets::anthropic("claude-sonnet-4", "sk-test", capabilities())
+            .expect("anthropic");
     model_conformance(&anthropic, anthropic.reference());
 
-    let gemini =
-        rustychain_gemini::presets::gemini("gemini-2.5-pro", "sk-test", capabilities())
-            .expect("gemini");
+    let gemini = rustychain_gemini::presets::gemini("gemini-2.5-pro", "sk-test", capabilities())
+        .expect("gemini");
     model_conformance(&gemini, gemini.reference());
 }
 
@@ -364,7 +360,10 @@ async fn conversation_export_import_is_lossless_and_byte_stable() {
     let conversation = world.engine.export(session.id).await.expect("export");
     let json = conversation.to_json().expect("to_json");
     let decoded = Conversation::from_json(&json).expect("from_json");
-    assert_eq!(decoded, conversation, "deserialize must not lose information");
+    assert_eq!(
+        decoded, conversation,
+        "deserialize must not lose information"
+    );
     assert_eq!(
         decoded.to_json().expect("re-serialize"),
         json,

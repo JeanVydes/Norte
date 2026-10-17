@@ -5,6 +5,7 @@ on:
     branches: ["dev", "main"]
   pull_request:
     branches: ["dev", "main"]
+  workflow_dispatch:
   schedule:
     - cron: "0 0 * * 0"
 
@@ -85,6 +86,23 @@ jobs:
         run: cargo build --workspace --verbose
       - name: Run the workspace tests (unit, integration, doc)
         run: cargo test --workspace --verbose
+
+  live:
+    name: Live Provider Smoke (FR-TEST-2)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run the recorded and live provider smoke tests
+        run: cargo test -p rustychain-testing --test live -- --ignored --nocapture
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 
   docs:
     name: Documentation

@@ -297,8 +297,7 @@ impl CommandTool {
     async fn run(&self, context: &ToolContext, request: &CommandRequest) -> Result<ToolOutput> {
         let started = Instant::now();
         let started_at = Utc::now();
-        let request_digest =
-            Digest::of_json(&serde_json::to_value(request).unwrap_or(Value::Null));
+        let request_digest = Digest::of_json(&serde_json::to_value(request).unwrap_or(Value::Null));
         let timeout = request
             .timeout_ms
             .map_or(self.limits.default_timeout, Duration::from_millis);
@@ -307,13 +306,8 @@ impl CommandTool {
             .unwrap_or(self.limits.max_output_bytes);
 
         let fail = |code: CommandCode, reason: String| {
-            let output = CommandOutput::failed(
-                code,
-                reason,
-                started.elapsed(),
-                request_digest,
-                started_at,
-            );
+            let output =
+                CommandOutput::failed(code, reason, started.elapsed(), request_digest, started_at);
             audit(&output);
             render(&*self.renderer, &output)
         };

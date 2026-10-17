@@ -60,7 +60,7 @@ pub use layer::{
 pub use media_adapter::{MediaAdapter, ProviderFiles};
 pub use model::{
     ContinuityAdapter, GenerationParams, Model, ModelRequest, ModelStream, RealtimeEvent,
-    RealtimeEventStream, RealtimeModel, RealtimeSession, StreamLimits, SESSION_EXTENSION,
+    RealtimeEventStream, RealtimeModel, RealtimeSession, SESSION_EXTENSION, StreamLimits,
     TURN_OPTIONS_KEY, TurnOptions,
 };
 pub use observer::{Observer, ObserverSet, StreamTransform};
@@ -69,9 +69,9 @@ pub use policy::{
     combine,
 };
 pub use preprocess::{MediaPayload, MediaPreprocessor};
+pub use rustychain_macros::tool;
 pub use store::{BlobStore, Store};
 pub use stream::{Accumulated, StreamAccumulator, StreamEvent};
-pub use rustychain_macros::tool;
 pub use tool::registry::{FnTool, ToolRegistry};
 pub use tool::{
     AnyFunction, Cancellation, FnDeclarator, FnExecutor, FunctionDeclaration, ProgressSink,

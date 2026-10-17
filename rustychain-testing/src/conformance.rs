@@ -3,8 +3,9 @@ use std::collections::VecDeque;
 use chrono::Duration;
 
 use rustychain_core::{
-    ApprovalRecord, CallId, Commit, ContinuityFragment, ContinuityScope, ContinuitySemantics, Error,
-    Message, Model, ModelRef, Node, NodeId, Phase, ReplayDecision, SessionId, Store, ToolName,
+    ApprovalRecord, CallId, Commit, ContinuityFragment, ContinuityScope, ContinuitySemantics,
+    Error, Message, Model, ModelRef, Node, NodeId, Phase, ReplayDecision, SessionId, Store,
+    ToolName,
 };
 
 /// Runs the [`Model`] contract every adapter must satisfy (FR-TEST-1).

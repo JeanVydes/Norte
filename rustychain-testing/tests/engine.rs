@@ -4,7 +4,7 @@ use std::time::Duration;
 use rustychain_core::{
     CallId, ContinuityFragment, ContinuityScope, ContinuitySemantics, Engine, EngineBuilder, Error,
     FinishReason, FnExecutor, Message, MessageStatus, Phase, PolicySet, Result, Role, Store,
-    StreamEvent, ToolContext, ToolName, ToolRegistry, ToolApprovalPolicy, WireFamily,
+    StreamEvent, ToolApprovalPolicy, ToolContext, ToolName, ToolRegistry, WireFamily,
 };
 use rustychain_testing::{
     InMemoryBlobStore, InMemoryStore, ScriptedModel, StrictContinuity, model, text_capabilities,
@@ -40,11 +40,7 @@ struct Harness {
     model: Arc<ScriptedModel>,
 }
 
-fn harness(
-    model: Arc<ScriptedModel>,
-    tools: ToolRegistry,
-    policies: PolicySet,
-) -> Harness {
+fn harness(model: Arc<ScriptedModel>, tools: ToolRegistry, policies: PolicySet) -> Harness {
     let store = Arc::new(InMemoryStore::new());
     let blobs = Arc::new(InMemoryBlobStore::new());
     let engine = EngineBuilder::new()
@@ -81,7 +77,11 @@ async fn a_text_turn_is_committed_and_reported() {
         Some("hello world")
     );
 
-    let history = harness.store.history(outcome.session.head).await.expect("history");
+    let history = harness
+        .store
+        .history(outcome.session.head)
+        .await
+        .expect("history");
     assert_eq!(history.len(), 2);
     assert_eq!(history[0].role, Role::User);
     assert_eq!(history[1].role, Role::Assistant);
@@ -116,16 +116,17 @@ async fn tool_calls_run_and_feed_the_next_turn() {
     );
     assert_eq!(harness.model.request_count(), 2);
 
-    let history = harness.store.history(outcome.session.head).await.expect("history");
+    let history = harness
+        .store
+        .history(outcome.session.head)
+        .await
+        .expect("history");
     assert_eq!(history.len(), 4);
     assert_eq!(history[2].role, Role::Tool);
     let result = history[2].tool_results()[0];
     assert_eq!(result.call_id, call_id);
     assert!(!result.is_error);
-    assert_eq!(
-        result.structured,
-        Some(json!({ "echoed": "hi" }))
-    );
+    assert_eq!(result.structured, Some(json!({ "echoed": "hi" })));
 
     let second_request = harness.model.requests()[1].clone();
     let tool_message = second_request
@@ -153,7 +154,11 @@ async fn an_unknown_tool_is_reported_to_the_model_as_an_error() {
         .await
         .expect("turn");
 
-    let history = harness.store.history(outcome.session.head).await.expect("history");
+    let history = harness
+        .store
+        .history(outcome.session.head)
+        .await
+        .expect("history");
     let result = history[2].tool_results()[0];
     assert!(result.is_error);
     assert_eq!(
@@ -199,7 +204,11 @@ async fn a_required_approval_blocks_then_resumes() {
 
     harness
         .engine
-        .approve(record.id, rustychain_core::GrantScope::Call(call_id), "tester")
+        .approve(
+            record.id,
+            rustychain_core::GrantScope::Call(call_id),
+            "tester",
+        )
         .await
         .expect("approve");
 
@@ -215,7 +224,11 @@ async fn a_required_approval_blocks_then_resumes() {
         Some("finished")
     );
 
-    let history = harness.store.history(outcome.session.head).await.expect("history");
+    let history = harness
+        .store
+        .history(outcome.session.head)
+        .await
+        .expect("history");
     let result = history[2].tool_results()[0];
     assert!(!result.is_error);
     assert_eq!(result.structured, Some(json!({ "echoed": "secret" })));
@@ -332,7 +345,9 @@ async fn tool_context_reaches_the_executor() {
             .turn_text("done"),
     );
     let mut tools = ToolRegistry::new();
-    tools.register_declarator(&ContextProbe).expect("register probe");
+    tools
+        .register_declarator(&ContextProbe)
+        .expect("register probe");
     let harness = harness(scripted, tools, PolicySet::default());
     let session = harness.engine.create().await.expect("create");
     let outcome = harness
@@ -341,7 +356,11 @@ async fn tool_context_reaches_the_executor() {
         .finish()
         .await
         .expect("turn");
-    let history = harness.store.history(outcome.session.head).await.expect("history");
+    let history = harness
+        .store
+        .history(outcome.session.head)
+        .await
+        .expect("history");
     let result = history[2].tool_results()[0];
     assert_eq!(
         result.structured,

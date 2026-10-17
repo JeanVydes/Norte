@@ -8,8 +8,8 @@
 use std::sync::Arc;
 
 use rustychain_core::{
-    CallId, Conversation, Engine, EngineBuilder, FnExecutor, Message, Model, ModelRef, ModelRequest,
-    Part, Result, Role, TextPart, ToolCallPart, ToolRegistry, ToolResultPart,
+    CallId, Conversation, Engine, EngineBuilder, FnExecutor, Message, Model, ModelRef,
+    ModelRequest, Part, Result, Role, TextPart, ToolCallPart, ToolRegistry, ToolResultPart,
 };
 use rustychain_openai::OpenAiChat;
 use rustychain_testing::{InMemoryBlobStore, InMemoryStore, ProbeModel, text_capabilities};
@@ -154,8 +154,8 @@ async fn assert_wire_stable(model: Arc<dyn Model>, body_of: impl Fn(&ModelReques
 
 #[tokio::test]
 async fn openai_responses_wire_is_byte_identical_after_export_import() {
-    let adapter =
-        rustychain_openai::presets::openai("gpt-5", "sk-test", text_capabilities()).expect("openai");
+    let adapter = rustychain_openai::presets::openai("gpt-5", "sk-test", text_capabilities())
+        .expect("openai");
     let body_of = {
         let adapter = adapter.clone();
         move |request: &ModelRequest| adapter.request_body(request).expect("body")
@@ -166,10 +166,7 @@ async fn openai_responses_wire_is_byte_identical_after_export_import() {
 #[tokio::test]
 async fn openai_chat_wire_is_byte_identical_after_export_import() {
     let profile = rustychain_openai::presets::openai_profile("sk-test").expect("profile");
-    let reference = ModelRef::new(
-        profile.provider.clone(),
-        "gpt-5".parse().expect("model id"),
-    );
+    let reference = ModelRef::new(profile.provider.clone(), "gpt-5".parse().expect("model id"));
     let adapter = OpenAiChat::new(reference, profile, text_capabilities()).expect("chat");
     let body_of = {
         let adapter = adapter.clone();
@@ -180,12 +177,9 @@ async fn openai_chat_wire_is_byte_identical_after_export_import() {
 
 #[tokio::test]
 async fn anthropic_wire_is_byte_identical_after_export_import() {
-    let adapter = rustychain_anthropic::presets::anthropic(
-        "claude-sonnet-4",
-        "sk-test",
-        text_capabilities(),
-    )
-    .expect("anthropic");
+    let adapter =
+        rustychain_anthropic::presets::anthropic("claude-sonnet-4", "sk-test", text_capabilities())
+            .expect("anthropic");
     let body_of = {
         let adapter = adapter.clone();
         move |request: &ModelRequest| adapter.request_body(request).expect("body")
@@ -207,8 +201,8 @@ async fn gemini_wire_is_byte_identical_after_export_import() {
 
 #[tokio::test]
 async fn importing_a_duplicate_session_is_rejected() {
-    let adapter =
-        rustychain_openai::presets::openai("gpt-5", "sk-test", text_capabilities()).expect("openai");
+    let adapter = rustychain_openai::presets::openai("gpt-5", "sk-test", text_capabilities())
+        .expect("openai");
     let store = Arc::new(InMemoryStore::new());
     let engine = engine(Arc::new(ProbeModel::new(Arc::new(adapter))), store);
 
@@ -223,7 +217,10 @@ async fn importing_a_duplicate_session_is_rejected() {
         .import(conversation)
         .await
         .expect_err("importing an existing id must fail");
-    assert!(matches!(error, rustychain_core::Error::StoreConflict { .. }));
+    assert!(matches!(
+        error,
+        rustychain_core::Error::StoreConflict { .. }
+    ));
 }
 
 #[tokio::test]
@@ -231,8 +228,8 @@ async fn a_forked_conversation_moves_only_the_cache_key() {
     // Importing under a fresh id is an explicit fork: the prefix stays
     // byte-identical, but the session-derived cache key moves, which is exactly
     // why the envelope preserves the original id by default.
-    let adapter =
-        rustychain_openai::presets::openai("gpt-5", "sk-test", text_capabilities()).expect("openai");
+    let adapter = rustychain_openai::presets::openai("gpt-5", "sk-test", text_capabilities())
+        .expect("openai");
     let body_of = {
         let adapter = adapter.clone();
         move |request: &ModelRequest| adapter.request_body(request).expect("body")

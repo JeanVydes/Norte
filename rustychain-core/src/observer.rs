@@ -174,11 +174,8 @@ mod tests {
 
     #[test]
     fn transforms_project_deltas_in_registration_order() {
-        let set = ObserverSet::with_transforms(
-            Vec::new(),
-            vec![Arc::new(DropText), Arc::new(Upper)],
-            4,
-        );
+        let set =
+            ObserverSet::with_transforms(Vec::new(), vec![Arc::new(DropText), Arc::new(Upper)], 4);
         assert_eq!(set.transform_names(), vec!["drop-text", "upper"]);
         let text = StreamDelta::Text {
             index: 0,

@@ -64,7 +64,8 @@ impl HttpClient {
         path: &str,
         body: &Value,
     ) -> Result<Value> {
-        self.send_json(profile, Method::POST, path, Some(body)).await
+        self.send_json(profile, Method::POST, path, Some(body))
+            .await
     }
 
     /// Sends a `JSON` request, retrying on retryable failures, and decodes the
@@ -138,7 +139,12 @@ impl HttpClient {
         self.retry.delay(retries, error.retry_after())
     }
 
-    fn request(&self, profile: &VendorProfile, method: Method, path: &str) -> Result<RequestBuilder> {
+    fn request(
+        &self,
+        profile: &VendorProfile,
+        method: Method,
+        path: &str,
+    ) -> Result<RequestBuilder> {
         let url = profile.endpoint(path)?;
         let mut builder = self.inner.request(method, url);
         for (name, value) in profile.auth.headers()? {
@@ -304,9 +310,21 @@ mod tests {
 
     #[test]
     fn retryability_follows_the_kind() {
-        assert!(is_retryable(&status_error(StatusCode::TOO_MANY_REQUESTS, "", None)));
-        assert!(is_retryable(&status_error(StatusCode::BAD_GATEWAY, "", None)));
-        assert!(!is_retryable(&status_error(StatusCode::UNAUTHORIZED, "", None)));
+        assert!(is_retryable(&status_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "",
+            None
+        )));
+        assert!(is_retryable(&status_error(
+            StatusCode::BAD_GATEWAY,
+            "",
+            None
+        )));
+        assert!(!is_retryable(&status_error(
+            StatusCode::UNAUTHORIZED,
+            "",
+            None
+        )));
         assert!(!is_retryable(&Error::InvalidInput("x".to_owned())));
     }
 
@@ -322,7 +340,10 @@ mod tests {
             r#"{"error":{"type":"insufficient_quota","message":"out of quota"}}"#,
             None,
         );
-        assert_eq!(quota.provider_kind(), Some(ProviderErrorKind::QuotaExceeded));
+        assert_eq!(
+            quota.provider_kind(),
+            Some(ProviderErrorKind::QuotaExceeded)
+        );
         assert!(!is_retryable(&quota));
 
         let rate = status_error(

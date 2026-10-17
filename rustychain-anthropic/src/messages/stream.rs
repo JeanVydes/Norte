@@ -301,9 +301,7 @@ fn citation_source(citation: &Value) -> CitationSource {
     match opt_str(citation, "type").unwrap_or_default() {
         "char_location" => range_source(citation, "start_char_index", "end_char_index"),
         "page_location" => range_source(citation, "start_page_number", "end_page_number"),
-        "content_block_location" => {
-            range_source(citation, "start_block_index", "end_block_index")
-        }
+        "content_block_location" => range_source(citation, "start_block_index", "end_block_index"),
         "search_result_location" => opt_str(citation, "source").map_or_else(
             || extension_source(citation),
             |url| CitationSource::Url(url.to_owned()),
@@ -399,6 +397,50 @@ mod tests {
         events
     }
 
+    /// Loads a recorded transcript — a JSON array of SSE `data` payloads — and
+    /// maps it through the wire, so live-provider behaviour is pinned hermetically
+    /// (FR-TEST-2).
+    async fn drain_fixture(fixture: &str) -> Vec<StreamEvent> {
+        let data: Vec<String> = serde_json::from_str(fixture).expect("fixture json");
+        let refs: Vec<&str> = data.iter().map(String::as_str).collect();
+        drain(&refs).await
+    }
+
+    #[tokio::test]
+    async fn recorded_transcript_pins_the_critical_path() {
+        let events = drain_fixture(include_str!(
+            "../../../rustychain-testing/fixtures/anthropic.messages.json"
+        ))
+        .await;
+        let text: String = events
+            .iter()
+            .filter_map(|event| match event {
+                StreamEvent::TextDelta { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text, "Hello, world");
+        // Anthropic streams usage cumulatively: input/cache arrive on
+        // `message_start`, output on `message_delta`. Fold the last Some per field.
+        let mut input = None;
+        let mut cache_read = None;
+        let mut output = None;
+        for event in &events {
+            if let StreamEvent::Usage(usage) = event {
+                input = usage.input_tokens.or(input);
+                cache_read = usage.cache_read_tokens.or(cache_read);
+                output = usage.output_tokens.or(output);
+            }
+        }
+        assert_eq!(input, Some(10));
+        assert_eq!(cache_read, Some(4));
+        assert_eq!(output, Some(2));
+        assert_eq!(
+            events.last(),
+            Some(&StreamEvent::Finish(FinishReason::Stop))
+        );
+    }
+
     #[tokio::test]
     async fn text_and_usage_decode_with_cumulative_accounting() {
         let events = drain(&[
@@ -412,8 +454,20 @@ mod tests {
         ])
         .await;
         assert_eq!(events[1], StreamEvent::TextStart { index: 0 });
-        assert_eq!(events[2], StreamEvent::TextDelta { index: 0, text: "Hel".to_owned() });
-        assert_eq!(events[3], StreamEvent::TextDelta { index: 0, text: "lo".to_owned() });
+        assert_eq!(
+            events[2],
+            StreamEvent::TextDelta {
+                index: 0,
+                text: "Hel".to_owned()
+            }
+        );
+        assert_eq!(
+            events[3],
+            StreamEvent::TextDelta {
+                index: 0,
+                text: "lo".to_owned()
+            }
+        );
         let usage = events
             .iter()
             .find_map(|event| match event {
@@ -423,7 +477,10 @@ mod tests {
             .expect("usage");
         assert_eq!(usage.input_tokens, Some(10));
         assert_eq!(usage.cache_read_tokens, Some(4));
-        assert_eq!(events.last(), Some(&StreamEvent::Finish(FinishReason::Stop)));
+        assert_eq!(
+            events.last(),
+            Some(&StreamEvent::Finish(FinishReason::Stop))
+        );
     }
 
     #[tokio::test]
@@ -444,17 +501,28 @@ mod tests {
         let mut fragment = None;
         for event in &events {
             match event {
-                StreamEvent::ToolCallDelta { arguments: delta, .. } => arguments.push_str(delta),
-                StreamEvent::Continuity { fragment: value, .. } => fragment = Some(value.clone()),
+                StreamEvent::ToolCallDelta {
+                    arguments: delta, ..
+                } => arguments.push_str(delta),
+                StreamEvent::Continuity {
+                    fragment: value, ..
+                } => fragment = Some(value.clone()),
                 _ => {}
             }
         }
         assert_eq!(arguments, r#"{"q":1}"#);
         let decoded = continuity()
-            .decode(&continuity().merge(None, fragment.expect("fragment")).expect("merge"))
+            .decode(
+                &continuity()
+                    .merge(None, fragment.expect("fragment"))
+                    .expect("merge"),
+            )
             .expect("decode");
         assert_eq!(decoded["tool_use_id"], "toolu_1");
-        assert_eq!(events.last(), Some(&StreamEvent::Finish(FinishReason::ToolCalls)));
+        assert_eq!(
+            events.last(),
+            Some(&StreamEvent::Finish(FinishReason::ToolCalls))
+        );
     }
 
     #[tokio::test]
@@ -473,7 +541,13 @@ mod tests {
                 visibility: ReasoningVisibility::Full,
             }
         );
-        assert_eq!(events[1], StreamEvent::ReasoningDelta { index: 0, text: "why".to_owned() });
+        assert_eq!(
+            events[1],
+            StreamEvent::ReasoningDelta {
+                index: 0,
+                text: "why".to_owned()
+            }
+        );
         let StreamEvent::Continuity { fragment, .. } = &events[2] else {
             panic!("expected continuity");
         };

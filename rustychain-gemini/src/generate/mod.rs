@@ -8,8 +8,8 @@ use rustychain_core::{
 use rustychain_http::{HttpClient, VendorProfile};
 use serde_json::Value;
 
-use crate::continuity::GeminiContinuity;
 use crate::WIRE_GENERATE;
+use crate::continuity::GeminiContinuity;
 
 /// The `Gemini` `generateContent` API adapter.
 ///

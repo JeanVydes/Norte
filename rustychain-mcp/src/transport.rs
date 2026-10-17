@@ -180,9 +180,10 @@ impl StdioTransport {
             .stdout
             .take()
             .ok_or_else(|| McpError::Transport("child has no stdout".to_owned()))?;
-        let stderr_task = child.stderr.take().map(|stderr| {
-            tokio::spawn(drain_stderr(stderr))
-        });
+        let stderr_task = child
+            .stderr
+            .take()
+            .map(|stderr| tokio::spawn(drain_stderr(stderr)));
         Ok(Self {
             child: Mutex::new(child),
             stdin: Mutex::new(stdin),
@@ -259,11 +260,18 @@ mod tests {
             "tools/list",
             Some(json!({ "cursor": "c" })),
         ));
-        write_framed(&mut left_write, &request).await.expect("write");
-        assert_eq!(read_framed(&mut right_read).await.expect("read"), Some(request));
+        write_framed(&mut left_write, &request)
+            .await
+            .expect("write");
+        assert_eq!(
+            read_framed(&mut right_read).await.expect("read"),
+            Some(request)
+        );
 
         let response = Message::Response(Response::success(RequestId::Number(1), json!({})));
-        write_framed(&mut right_write, &response).await.expect("write");
+        write_framed(&mut right_write, &response)
+            .await
+            .expect("write");
         assert_eq!(
             read_framed(&mut left_read).await.expect("read"),
             Some(response)

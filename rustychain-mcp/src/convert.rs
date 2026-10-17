@@ -103,7 +103,11 @@ fn media_to_content(media: MediaPart) -> ContentBlock {
                 MediaKind::Audio => ContentBlock::audio(encoded, media.mime.as_str()),
                 _ => {
                     let uri = format!("data:{};base64,{encoded}", media.mime);
-                    ContentBlock::resource(ResourceContents::blob(uri, media.mime.as_str(), encoded))
+                    ContentBlock::resource(ResourceContents::blob(
+                        uri,
+                        media.mime.as_str(),
+                        encoded,
+                    ))
                 }
             }
         }
@@ -117,9 +121,10 @@ fn media_to_content(media: MediaPart) -> ContentBlock {
 }
 
 fn base64_media(kind: MediaKind, block: &ContentBlock) -> McpResult<MediaPart> {
-    let data = block.data.as_deref().ok_or_else(|| {
-        McpError::Protocol(format!("{} block has no data payload", block.kind))
-    })?;
+    let data = block
+        .data
+        .as_deref()
+        .ok_or_else(|| McpError::Protocol(format!("{} block has no data payload", block.kind)))?;
     let bytes = STANDARD.decode(data)?;
     let mime = match block.mime_type.as_deref() {
         Some(mime) => MimeType::new(mime)?,

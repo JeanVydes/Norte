@@ -48,9 +48,10 @@ impl RemoteTool {
         namespace: &str,
         definition: ToolDefinition,
     ) -> McpResult<Self> {
-        let name = ToolName::new(namespaced_name(namespace, &definition.name)).map_err(McpError::from)?;
-        let parameters = Schema::try_from(definition.input_schema.clone())
-            .unwrap_or_else(|_| object_schema());
+        let name =
+            ToolName::new(namespaced_name(namespace, &definition.name)).map_err(McpError::from)?;
+        let parameters =
+            Schema::try_from(definition.input_schema.clone()).unwrap_or_else(|_| object_schema());
         Ok(Self {
             client,
             name,
@@ -152,7 +153,10 @@ mod tests {
 
     #[test]
     fn names_are_namespaced_and_sanitized() {
-        assert_eq!(namespaced_name("files", "read_file"), "mcp__files__read_file");
+        assert_eq!(
+            namespaced_name("files", "read_file"),
+            "mcp__files__read_file"
+        );
         assert_eq!(namespaced_name("a.b/c", "x y"), "mcp__a_b_c__x_y");
         assert_eq!(namespaced_name("", ""), "mcp______");
     }

@@ -5,7 +5,7 @@ use rustychain_core::{
     ReasoningVisibility, Result, StreamEvent, Usage,
 };
 use rustychain_http::SseStream;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::continuity::GeminiContinuity;
 use crate::json::{base64_decode, opt_str};
@@ -380,9 +380,7 @@ fn usage_of(usage: &Value) -> Usage {
     mapped.input_tokens = usage.get("promptTokenCount").and_then(Value::as_u64);
     mapped.output_tokens = usage.get("candidatesTokenCount").and_then(Value::as_u64);
     mapped.reasoning_tokens = usage.get("thoughtsTokenCount").and_then(Value::as_u64);
-    mapped.cache_read_tokens = usage
-        .get("cachedContentTokenCount")
-        .and_then(Value::as_u64);
+    mapped.cache_read_tokens = usage.get("cachedContentTokenCount").and_then(Value::as_u64);
     mapped
 }
 
@@ -464,6 +462,45 @@ mod tests {
         continuity().decode(&token).expect("decode")
     }
 
+    /// Loads a recorded transcript — a JSON array of SSE `data` payloads — and
+    /// maps it through the wire, so live-provider behaviour is pinned hermetically
+    /// (FR-TEST-2).
+    async fn drain_fixture(fixture: &str) -> Vec<StreamEvent> {
+        let data: Vec<String> = serde_json::from_str(fixture).expect("fixture json");
+        let refs: Vec<&str> = data.iter().map(String::as_str).collect();
+        drain(&refs).await
+    }
+
+    #[tokio::test]
+    async fn recorded_transcript_pins_the_critical_path() {
+        let events = drain_fixture(include_str!(
+            "../../../rustychain-testing/fixtures/gemini.generate.json"
+        ))
+        .await;
+        let text: String = events
+            .iter()
+            .filter_map(|event| match event {
+                StreamEvent::TextDelta { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text, "Hello, world");
+        let usage = events
+            .iter()
+            .find_map(|event| match event {
+                StreamEvent::Usage(usage) => Some(usage),
+                _ => None,
+            })
+            .expect("usage");
+        assert_eq!(usage.input_tokens, Some(7));
+        assert_eq!(usage.output_tokens, Some(2));
+        assert_eq!(usage.cache_read_tokens, Some(3));
+        assert_eq!(
+            events.last(),
+            Some(&StreamEvent::Finish(FinishReason::Stop))
+        );
+    }
+
     #[tokio::test]
     async fn text_deltas_and_usage_survive_the_decode() {
         let events = drain(&[
@@ -516,7 +553,10 @@ mod tests {
         let decoded = decode_continuity(&events);
         assert_eq!(decoded["functionCall"]["name"], "lookup");
         assert_eq!(decoded["thoughtSignature"], "sig");
-        assert_eq!(events.last(), Some(&StreamEvent::Finish(FinishReason::ToolCalls)));
+        assert_eq!(
+            events.last(),
+            Some(&StreamEvent::Finish(FinishReason::ToolCalls))
+        );
     }
 
     #[tokio::test]
@@ -571,7 +611,10 @@ mod tests {
             r#"{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/png","data":"AQID"}}]}}]}"#,
         ])
         .await;
-        let StreamEvent::MediaStart { index, kind, mime, .. } = &events[0] else {
+        let StreamEvent::MediaStart {
+            index, kind, mime, ..
+        } = &events[0]
+        else {
             panic!("expected media start");
         };
         assert_eq!(*index, 0);
@@ -627,11 +670,11 @@ mod tests {
 
     #[tokio::test]
     async fn blocked_prompts_finish_as_content_filter() {
-        let events = drain(&[
-            r#"{"promptFeedback":{"blockReason":"SAFETY"}}"#,
-        ])
-        .await;
-        assert_eq!(events, vec![StreamEvent::Finish(FinishReason::ContentFilter)]);
+        let events = drain(&[r#"{"promptFeedback":{"blockReason":"SAFETY"}}"#]).await;
+        assert_eq!(
+            events,
+            vec![StreamEvent::Finish(FinishReason::ContentFilter)]
+        );
     }
 
     #[tokio::test]

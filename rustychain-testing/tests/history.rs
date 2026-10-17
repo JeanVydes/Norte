@@ -95,7 +95,13 @@ async fn an_empty_append_is_a_no_op() {
         .await
         .expect("append");
     assert_eq!(after.version, before.version);
-    assert!(engine.history(session.id).await.expect("history").is_empty());
+    assert!(
+        engine
+            .history(session.id)
+            .await
+            .expect("history")
+            .is_empty()
+    );
 }
 
 #[tokio::test]

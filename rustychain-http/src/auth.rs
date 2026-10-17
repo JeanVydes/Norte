@@ -14,15 +14,9 @@ pub enum AuthScheme {
     /// `Authorization: Bearer <token>`.
     Bearer(Secret<String>),
     /// An arbitrary header, e.g. `x-api-key` or `api-key`.
-    Header {
-        name: String,
-        value: Secret<String>,
-    },
+    Header { name: String, value: Secret<String> },
     /// A query parameter, for vendors that sign the URL.
-    Query {
-        name: String,
-        value: Secret<String>,
-    },
+    Query { name: String, value: Secret<String> },
 }
 
 impl AuthScheme {

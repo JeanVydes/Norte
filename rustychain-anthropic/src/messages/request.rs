@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
 
 use rustychain_core::{
-    CallId, Error, MediaKind, MediaPart, MediaSource, Message, ModelRef, ModelRequest, Part, Result,
-    Role, ToolKind, ToolResultPart, ToolSpec,
+    CallId, Error, MediaKind, MediaPart, MediaSource, Message, ModelRef, ModelRequest, Part,
+    Result, Role, ToolKind, ToolResultPart, ToolSpec,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::continuity::AnthropicContinuity;
 use crate::json::{base64_encode, opt_str};
@@ -62,15 +62,17 @@ fn build_body(
     if stream {
         body.insert(
             "max_tokens".to_owned(),
-            json!(request.params.max_output_tokens.unwrap_or(DEFAULT_MAX_TOKENS)),
+            json!(
+                request
+                    .params
+                    .max_output_tokens
+                    .unwrap_or(DEFAULT_MAX_TOKENS)
+            ),
         );
         body.insert("stream".to_owned(), Value::Bool(true));
     }
 
-    let system = system_blocks(
-        &request.messages[..instructions],
-        &request.cache_boundaries,
-    );
+    let system = system_blocks(&request.messages[..instructions], &request.cache_boundaries);
     if !system.is_empty() {
         body.insert("system".to_owned(), Value::Array(system));
     }
@@ -87,7 +89,10 @@ fn build_body(
     );
 
     if !request.tools.is_empty() {
-        body.insert("tools".to_owned(), Value::Array(build_tools(&request.tools)));
+        body.insert(
+            "tools".to_owned(),
+            Value::Array(build_tools(&request.tools)),
+        );
     }
     if stream {
         if let Some(temperature) = request.params.temperature {
@@ -277,9 +282,7 @@ fn call_index(continuity: &AnthropicContinuity, messages: &[Message]) -> CallInd
 }
 
 fn vendor_call(calls: &CallIndex, id: CallId) -> String {
-    calls
-        .get(&id)
-        .map_or_else(|| id.to_string(), Clone::clone)
+    calls.get(&id).map_or_else(|| id.to_string(), Clone::clone)
 }
 
 fn build_tools(tools: &[ToolSpec]) -> Vec<Value> {
@@ -419,12 +422,15 @@ mod tests {
 
     #[test]
     fn cache_boundaries_mark_content_blocks() {
-        let mut request = ModelRequest::new(model(), vec![Message::user("one"), Message::user("two")]);
+        let mut request =
+            ModelRequest::new(model(), vec![Message::user("one"), Message::user("two")]);
         request.cache_boundaries = vec![2];
         let body = build(&model(), &continuity(), &request).expect("build");
-        assert!(body["messages"][0]["content"][0]
-            .get("cache_control")
-            .is_none());
+        assert!(
+            body["messages"][0]["content"][0]
+                .get("cache_control")
+                .is_none()
+        );
         assert_eq!(
             body["messages"][1]["content"][0]["cache_control"]["type"],
             "ephemeral"
@@ -433,10 +439,8 @@ mod tests {
 
     #[test]
     fn a_boundary_on_the_system_prefix_marks_the_system_block() {
-        let mut request = ModelRequest::new(
-            model(),
-            vec![Message::system("rules"), Message::user("hi")],
-        );
+        let mut request =
+            ModelRequest::new(model(), vec![Message::system("rules"), Message::user("hi")]);
         request.cache_boundaries = vec![1];
         let body = build(&model(), &continuity(), &request).expect("build");
         assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
@@ -500,7 +504,10 @@ mod tests {
             MediaSource::Inline(vec![1, 2, 3]),
             MimeType::new("image/png").expect("mime"),
         );
-        let request = ModelRequest::new(model(), vec![Message::new(Role::User, vec![Part::Media(media)])]);
+        let request = ModelRequest::new(
+            model(),
+            vec![Message::new(Role::User, vec![Part::Media(media)])],
+        );
         let body = build(&model(), &continuity(), &request).expect("build");
         assert_eq!(body["messages"][0]["content"][0]["type"], "image");
         assert_eq!(
@@ -530,10 +537,8 @@ mod tests {
 
     #[test]
     fn count_tokens_body_omits_generation_parameters() {
-        let mut request = ModelRequest::new(
-            model(),
-            vec![Message::system("rules"), Message::user("hi")],
-        );
+        let mut request =
+            ModelRequest::new(model(), vec![Message::system("rules"), Message::user("hi")]);
         request.params.temperature = Some(0.5);
         request.params.max_output_tokens = Some(64);
         let body = build_count(&model(), &continuity(), &request).expect("build");
@@ -552,7 +557,10 @@ mod tests {
             MediaSource::Inline(vec![1]),
             MimeType::new("audio/wav").expect("mime"),
         );
-        let request = ModelRequest::new(model(), vec![Message::new(Role::User, vec![Part::Media(media)])]);
+        let request = ModelRequest::new(
+            model(),
+            vec![Message::new(Role::User, vec![Part::Media(media)])],
+        );
         assert!(build(&model(), &continuity(), &request).is_err());
     }
 

@@ -19,9 +19,10 @@ use crate::jsonrpc::codes::METHOD_NOT_FOUND;
 use crate::jsonrpc::{Message, Notification, Request, RequestId, Response, RpcError};
 use crate::protocol::{
     CallToolParams, CallToolResult, ClientCapabilities, GetPromptParams, GetPromptResult,
-    Implementation, InitializeParams, InitializeResult, ListPromptsResult, ListResourceTemplatesResult,
-    ListResourcesResult, ListToolsResult, PaginatedParams, PROTOCOL_VERSION, Prompt, ReadResourceParams,
-    ReadResourceResult, Resource, ResourceContents, ResourceTemplate, ServerCapabilities, ToolDefinition,
+    Implementation, InitializeParams, InitializeResult, ListPromptsResult,
+    ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, PROTOCOL_VERSION,
+    PaginatedParams, Prompt, ReadResourceParams, ReadResourceResult, Resource, ResourceContents,
+    ResourceTemplate, ServerCapabilities, ToolDefinition,
 };
 use crate::tool::RemoteTool;
 use crate::transport::Transport;
@@ -67,10 +68,7 @@ impl McpClient {
     ///
     /// Returns a transport error when the handshake cannot be delivered, and an
     /// RPC or protocol error when the peer rejects or malforms it.
-    pub async fn connect(
-        transport: Arc<dyn Transport>,
-        options: ClientOptions,
-    ) -> McpResult<Self> {
+    pub async fn connect(transport: Arc<dyn Transport>, options: ClientOptions) -> McpResult<Self> {
         let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
         let reader = tokio::spawn(read_loop(Arc::clone(&transport), Arc::clone(&pending)));
         let client = Self {
@@ -245,7 +243,9 @@ impl McpClient {
     ///
     /// Returns a transport or RPC error when the resource cannot be read.
     pub async fn read_resource(&self, uri: &str) -> McpResult<Vec<ResourceContents>> {
-        let params = serde_json::to_value(ReadResourceParams { uri: uri.to_owned() })?;
+        let params = serde_json::to_value(ReadResourceParams {
+            uri: uri.to_owned(),
+        })?;
         let value = self.request("resources/read", Some(params)).await?;
         let result: ReadResourceResult = serde_json::from_value(value)?;
         Ok(result.contents)
@@ -345,7 +345,9 @@ impl McpClient {
     /// The optional usage guidance the server provided.
     #[must_use]
     pub fn instructions(&self) -> Option<&str> {
-        self.init.get().and_then(|init| init.instructions.as_deref())
+        self.init
+            .get()
+            .and_then(|init| init.instructions.as_deref())
     }
 
     async fn paginate<T, F>(&self, method: &str, mut extract: F) -> McpResult<Vec<T>>

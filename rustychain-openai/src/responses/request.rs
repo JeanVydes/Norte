@@ -2,11 +2,11 @@ use std::collections::BTreeMap;
 
 use rustychain_core::{
     CallId, Error, ExtensionPart, MediaKind, MediaPart, MediaSource, Message, ModelRef,
-    ModelRequest, Part, ProviderToolCallPart, ProviderToolResultPart, ReasoningPart,
-    ReasoningEffort, ReasoningRequest, Result, Role, SESSION_EXTENSION, ToolCallPart, ToolKind,
+    ModelRequest, Part, ProviderToolCallPart, ProviderToolResultPart, ReasoningEffort,
+    ReasoningPart, ReasoningRequest, Result, Role, SESSION_EXTENSION, ToolCallPart, ToolKind,
     ToolResultPart, ToolSpec,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::continuity::OpenAiContinuity;
 use crate::json::{data_url, opt_str};
@@ -34,12 +34,7 @@ pub(crate) fn build(
 ) -> Result<Value> {
     let (instructions, conversation) = split_instructions(&request.messages);
     let calls = call_index(continuity, &request.messages);
-    let input = build_input(
-        continuity,
-        &calls,
-        conversation,
-        &request.cache_boundaries,
-    )?;
+    let input = build_input(continuity, &calls, conversation, &request.cache_boundaries)?;
 
     let mut body = serde_json::Map::new();
     body.insert(
@@ -53,7 +48,10 @@ pub(crate) fn build(
         body.insert("instructions".to_owned(), Value::String(instructions));
     }
     if !request.tools.is_empty() {
-        body.insert("tools".to_owned(), Value::Array(build_tools(&request.tools)));
+        body.insert(
+            "tools".to_owned(),
+            Value::Array(build_tools(&request.tools)),
+        );
     }
     if let Some(reasoning) = build_reasoning(request.reasoning) {
         body.insert("reasoning".to_owned(), reasoning);
@@ -273,7 +271,9 @@ fn push_assistant(
                 ..
             }) => items.push(continuity.decode(token)?),
             Part::ToolCall(call) => items.push(tool_call_item(calls, call)),
-            Part::Extension(ExtensionPart { namespace, data }) if namespace.starts_with("openai") => {
+            Part::Extension(ExtensionPart { namespace, data })
+                if namespace.starts_with("openai") =>
+            {
                 items.push(data.clone());
             }
             _ => {}
@@ -443,10 +443,7 @@ mod tests {
     }
 
     fn continuity() -> OpenAiContinuity {
-        OpenAiContinuity::new(
-            WireFamily::new(WIRE_RESPONSES).expect("family"),
-            model(),
-        )
+        OpenAiContinuity::new(WireFamily::new(WIRE_RESPONSES).expect("family"), model())
     }
 
     #[test]
@@ -484,16 +481,19 @@ mod tests {
 
     #[test]
     fn cache_boundaries_place_prompt_cache_breakpoints() {
-        let mut request = ModelRequest::new(model(), vec![Message::user("one"), Message::user("two")]);
+        let mut request =
+            ModelRequest::new(model(), vec![Message::user("one"), Message::user("two")]);
         request.cache_boundaries = vec![1];
         let body = build(&model(), &continuity(), &request).expect("build");
         assert_eq!(
             body["input"][0]["content"][0]["prompt_cache_breakpoint"]["mode"],
             "explicit"
         );
-        assert!(body["input"][1]["content"][0]
-            .get("prompt_cache_breakpoint")
-            .is_none());
+        assert!(
+            body["input"][1]["content"][0]
+                .get("prompt_cache_breakpoint")
+                .is_none()
+        );
     }
 
     #[test]
@@ -533,7 +533,10 @@ mod tests {
             MediaSource::Inline(vec![1, 2, 3]),
             MimeType::new("image/png").expect("mime"),
         );
-        let request = ModelRequest::new(model(), vec![Message::new(Role::User, vec![Part::Media(media)])]);
+        let request = ModelRequest::new(
+            model(),
+            vec![Message::new(Role::User, vec![Part::Media(media)])],
+        );
         let body = build(&model(), &continuity(), &request).expect("build");
         let url = body["input"][0]["content"][0]["image_url"]
             .as_str()

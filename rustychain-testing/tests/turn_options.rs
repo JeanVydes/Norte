@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use rustychain_core::{
     Engine, EngineBuilder, EngineConfig, EngineEvent, Error, FnExecutor, GenerationParams, Message,
-    Model, ModelRequest, Observer, ReasoningEffort, ReasoningRequest, Result, ToolName, ToolRegistry,
-    TurnOptions,
+    Model, ModelRequest, Observer, ReasoningEffort, ReasoningRequest, Result, ToolName,
+    ToolRegistry, TurnOptions,
 };
 use rustychain_testing::{
     InMemoryBlobStore, InMemoryStore, ProbeModel, RecordingObserver, ScriptedModel, model,
@@ -231,14 +231,22 @@ async fn every_parameter_vector_is_reflected() {
             },
         )
         .await;
-        assert_eq!(request.params, expected, "a parameter vector was not applied");
+        assert_eq!(
+            request.params, expected,
+            "a parameter vector was not applied"
+        );
     }
 }
 
 #[tokio::test]
 async fn every_reasoning_mode_is_reflected() {
     let probe = probe();
-    let engine = build(probe.clone(), registry(), Vec::new(), EngineConfig::default());
+    let engine = build(
+        probe.clone(),
+        registry(),
+        Vec::new(),
+        EngineConfig::default(),
+    );
 
     let modes = [
         ReasoningRequest::Disabled,
@@ -268,7 +276,12 @@ async fn every_reasoning_mode_is_reflected() {
 #[tokio::test]
 async fn tool_subset_is_canonical_and_deduplicated() {
     let probe = probe();
-    let engine = build(probe.clone(), registry(), Vec::new(), EngineConfig::default());
+    let engine = build(
+        probe.clone(),
+        registry(),
+        Vec::new(),
+        EngineConfig::default(),
+    );
 
     let all = request_for(&engine, &probe, TurnOptions::default()).await;
     assert_eq!(names(&all), vec!["alpha", "beta", "gamma"]);
@@ -310,7 +323,12 @@ async fn tool_subset_is_canonical_and_deduplicated() {
 #[tokio::test]
 async fn an_unknown_tool_is_a_typed_error() {
     let probe = probe();
-    let engine = build(probe.clone(), registry(), Vec::new(), EngineConfig::default());
+    let engine = build(
+        probe.clone(),
+        registry(),
+        Vec::new(),
+        EngineConfig::default(),
+    );
     let session = engine.create().await.expect("create");
 
     let error = engine
@@ -395,7 +413,10 @@ async fn export_captures_and_import_restores_request_config() {
     let engine_a = build(probe_a.clone(), registry(), Vec::new(), config.clone());
     let session = engine_a.create().await.expect("create");
     engine_a
-        .append_history(session.id, vec![Message::system("sys"), Message::user("q1")])
+        .append_history(
+            session.id,
+            vec![Message::system("sys"), Message::user("q1")],
+        )
         .await
         .expect("seed");
     engine_a
@@ -410,7 +431,9 @@ async fn export_captures_and_import_restores_request_config() {
     let conversation = engine_a.export(session.id).await.expect("export");
     assert_eq!(conversation.options, Some(expected));
     assert!(
-        !conversation.metadata.contains_key("rustychain.turn_options"),
+        !conversation
+            .metadata
+            .contains_key("rustychain.turn_options"),
         "the reserved key must be lifted out of host metadata"
     );
 
@@ -446,7 +469,10 @@ async fn export_captures_and_import_restores_request_config() {
     assert_eq!(request_b.params.temperature, Some(1.0));
     assert_eq!(request_b.params.top_k, Some(7));
     assert_eq!(request_b.params.top_p, Some(0.5));
-    assert_eq!(request_b.reasoning, ReasoningRequest::Effort(ReasoningEffort::High));
+    assert_eq!(
+        request_b.reasoning,
+        ReasoningRequest::Effort(ReasoningEffort::High)
+    );
     assert_eq!(names(&request_b), vec!["beta"]);
     assert_eq!(
         serde_json::to_string(&request_a).expect("bytes a"),

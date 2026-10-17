@@ -83,13 +83,17 @@ mod tests {
 
     #[test]
     fn endpoint_keeps_the_base_path_without_a_trailing_slash() {
-        let url = profile("https://api.example.com/v1").endpoint("/responses").expect("url");
+        let url = profile("https://api.example.com/v1")
+            .endpoint("/responses")
+            .expect("url");
         assert_eq!(url.as_str(), "https://api.example.com/v1/responses");
     }
 
     #[test]
     fn endpoint_handles_a_trailing_slash() {
-        let url = profile("https://api.example.com/v1/").endpoint("responses").expect("url");
+        let url = profile("https://api.example.com/v1/")
+            .endpoint("responses")
+            .expect("url");
         assert_eq!(url.as_str(), "https://api.example.com/v1/responses");
     }
 

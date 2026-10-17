@@ -12,7 +12,9 @@ pub mod store;
 pub use blob::InMemoryBlobStore;
 pub use conformance::{model_conformance, store_conformance};
 pub use fixtures::{model, system, user};
-pub use model::{FailingModel, OpaqueContinuity, ScriptedModel, StrictContinuity, text_capabilities};
+pub use model::{
+    FailingModel, OpaqueContinuity, ScriptedModel, StrictContinuity, text_capabilities,
+};
 pub use observer::RecordingObserver;
 pub use probe::ProbeModel;
 pub use store::InMemoryStore;

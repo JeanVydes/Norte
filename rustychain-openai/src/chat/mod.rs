@@ -2,14 +2,13 @@ mod request;
 mod stream;
 
 use rustychain_core::{
-    Capabilities, ContinuityAdapter, Model, ModelRef, ModelRequest, ModelStream, Result,
-    WireFamily,
+    Capabilities, ContinuityAdapter, Model, ModelRef, ModelRequest, ModelStream, Result, WireFamily,
 };
 use rustychain_http::{HttpClient, VendorProfile};
 use serde_json::Value;
 
-use crate::continuity::OpenAiContinuity;
 use crate::WIRE_CHAT;
+use crate::continuity::OpenAiContinuity;
 
 /// Path appended to the vendor base `URL`.
 const PATH: &str = "chat/completions";

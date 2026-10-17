@@ -2,7 +2,7 @@ use rustychain_core::{
     CallId, Error, MediaPart, MediaSource, Message, ModelRef, ModelRequest, Part, ReasoningEffort,
     ReasoningRequest, Result, Role, ToolKind, ToolResultPart, ToolSpec,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::continuity::GeminiContinuity;
 use crate::json::{base64_encode, opt_str};
@@ -468,10 +468,19 @@ mod tests {
             MediaSource::Inline(vec![1, 2, 3]),
             rustychain_core::MimeType::new("image/png").expect("mime"),
         );
-        let request = ModelRequest::new(model(), vec![Message::new(Role::User, vec![Part::Media(media)])]);
+        let request = ModelRequest::new(
+            model(),
+            vec![Message::new(Role::User, vec![Part::Media(media)])],
+        );
         let body = build(&model(), &continuity(), &request).expect("build");
-        assert_eq!(body["contents"][0]["parts"][0]["inlineData"]["mimeType"], "image/png");
-        assert_eq!(body["contents"][0]["parts"][0]["inlineData"]["data"], "AQID");
+        assert_eq!(
+            body["contents"][0]["parts"][0]["inlineData"]["mimeType"],
+            "image/png"
+        );
+        assert_eq!(
+            body["contents"][0]["parts"][0]["inlineData"]["data"],
+            "AQID"
+        );
     }
 
     #[test]
@@ -485,7 +494,10 @@ mod tests {
             approval: None,
         }];
         let body = build(&model(), &continuity(), &request).expect("build");
-        assert_eq!(body["tools"][0]["functionDeclarations"][0]["name"], "lookup");
+        assert_eq!(
+            body["tools"][0]["functionDeclarations"][0]["name"],
+            "lookup"
+        );
     }
 
     #[test]
@@ -493,16 +505,17 @@ mod tests {
         let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
         request.params.output_schema = Some(serde_json::json!({ "type": "object" }));
         let body = build(&model(), &continuity(), &request).expect("build");
-        assert_eq!(body["generationConfig"]["responseMimeType"], "application/json");
+        assert_eq!(
+            body["generationConfig"]["responseMimeType"],
+            "application/json"
+        );
         assert_eq!(body["generationConfig"]["responseSchema"]["type"], "object");
     }
 
     #[test]
     fn count_tokens_body_omits_generation_config() {
-        let mut request = ModelRequest::new(
-            model(),
-            vec![Message::system("rules"), Message::user("hi")],
-        );
+        let mut request =
+            ModelRequest::new(model(), vec![Message::system("rules"), Message::user("hi")]);
         request.params.temperature = Some(0.5);
         request.reasoning = ReasoningRequest::Budget(256);
         let body = build_count(&model(), &continuity(), &request).expect("build");
@@ -516,8 +529,14 @@ mod tests {
         let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
         request.reasoning = ReasoningRequest::Budget(1024);
         let body = build(&model(), &continuity(), &request).expect("build");
-        assert_eq!(body["generationConfig"]["thinkingConfig"]["thinkingBudget"], 1024);
-        assert_eq!(body["generationConfig"]["thinkingConfig"]["includeThoughts"], true);
+        assert_eq!(
+            body["generationConfig"]["thinkingConfig"]["thinkingBudget"],
+            1024
+        );
+        assert_eq!(
+            body["generationConfig"]["thinkingConfig"]["includeThoughts"],
+            true
+        );
     }
 
     #[test]

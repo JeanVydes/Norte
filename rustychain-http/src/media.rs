@@ -72,7 +72,10 @@ impl HttpMedia {
         if !response.status().is_success() {
             return Err(Error::provider(ProviderError::new(
                 ProviderErrorKind::Transport,
-                format!("media fetch failed with status {}", response.status().as_u16()),
+                format!(
+                    "media fetch failed with status {}",
+                    response.status().as_u16()
+                ),
             )));
         }
         let bytes = response.bytes().await.map_err(|error| transport(&error))?;
@@ -96,7 +99,10 @@ impl HttpMedia {
         mime: &MimeType,
         blobs: &dyn BlobStore,
     ) -> Result<ProviderFileRef> {
-        let key = (reference.provider.as_str().to_owned(), reference.file_id.clone());
+        let key = (
+            reference.provider.as_str().to_owned(),
+            reference.file_id.clone(),
+        );
         if let Some(cached) = self.cached(&key) {
             return Ok(cached);
         }
@@ -120,15 +126,14 @@ impl HttpMedia {
     }
 
     fn cached(&self, key: &(String, String)) -> Option<ProviderFileRef> {
-        self.restored
-            .lock()
-            .expect("media cache")
-            .get(key)
-            .cloned()
+        self.restored.lock().expect("media cache").get(key).cloned()
     }
 
     fn remember(&self, key: (String, String), reference: ProviderFileRef) {
-        self.restored.lock().expect("media cache").insert(key, reference);
+        self.restored
+            .lock()
+            .expect("media cache")
+            .insert(key, reference);
     }
 }
 
@@ -259,7 +264,11 @@ mod tests {
         MimeType::new("application/pdf").expect("mime")
     }
 
-    fn reference(file_id: &str, expires_at: Option<DateTime<Utc>>, blob: Option<BlobId>) -> ProviderFileRef {
+    fn reference(
+        file_id: &str,
+        expires_at: Option<DateTime<Utc>>,
+        blob: Option<BlobId>,
+    ) -> ProviderFileRef {
         ProviderFileRef {
             provider: ProviderId::new("test").expect("provider"),
             file_id: file_id.to_owned(),
@@ -272,7 +281,11 @@ mod tests {
         DateTime::from_timestamp(0, 0).expect("timestamp")
     }
 
-    fn provider_file(file_id: &str, expires_at: Option<DateTime<Utc>>, blob: Option<BlobId>) -> MediaPart {
+    fn provider_file(
+        file_id: &str,
+        expires_at: Option<DateTime<Utc>>,
+        blob: Option<BlobId>,
+    ) -> MediaPart {
         MediaPart::new(
             MediaKind::Document,
             MediaSource::ProviderFile(reference(file_id, expires_at, blob)),

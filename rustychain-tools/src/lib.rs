@@ -3,4 +3,6 @@
 
 pub mod command;
 
-pub use command::{CommandCapabilities, CommandCode, CommandLine, CommandOutput, CommandRequest, CommandTool};
+pub use command::{
+    CommandCapabilities, CommandCode, CommandLine, CommandOutput, CommandRequest, CommandTool,
+};

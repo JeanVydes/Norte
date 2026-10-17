@@ -203,9 +203,7 @@ mod tests {
 
         let mut fuzz = Fuzz(99);
         for _ in 0..128 {
-            let chunks: Vec<usize> = (0..=fuzz.below(12))
-                .map(|_| 1 + fuzz.below(6))
-                .collect();
+            let chunks: Vec<usize> = (0..=fuzz.below(12)).map(|_| 1 + fuzz.below(6)).collect();
             assert_eq!(whole, decode_in_chunks(stream, &chunks));
         }
     }

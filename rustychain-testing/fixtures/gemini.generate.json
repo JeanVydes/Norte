@@ -1,0 +1,4 @@
+[
+  "{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Hello\"}]}}]}",
+  "{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\", world\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":7,\"candidatesTokenCount\":2,\"cachedContentTokenCount\":3}}"
+]

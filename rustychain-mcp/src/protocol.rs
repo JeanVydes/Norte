@@ -347,7 +347,11 @@ impl ResourceContents {
 
     /// Builds binary resource contents from a base64 payload.
     #[must_use]
-    pub fn blob(uri: impl Into<String>, mime_type: impl Into<String>, blob: impl Into<String>) -> Self {
+    pub fn blob(
+        uri: impl Into<String>,
+        mime_type: impl Into<String>,
+        blob: impl Into<String>,
+    ) -> Self {
         Self {
             uri: uri.into(),
             mime_type: Some(mime_type.into()),
@@ -620,10 +624,7 @@ mod tests {
         let unknown = json!({ "type": "video", "url": "https://x", "extra": 1 });
         let block: ContentBlock = serde_json::from_value(unknown.clone()).expect("decode");
         assert_eq!(block.kind, "video");
-        assert_eq!(
-            serde_json::to_value(&block).expect("encode"),
-            unknown
-        );
+        assert_eq!(serde_json::to_value(&block).expect("encode"), unknown);
     }
 
     #[test]
@@ -638,13 +639,13 @@ mod tests {
 
     #[test]
     fn resource_contents_support_text_and_blob() {
-        let text = serde_json::to_value(ResourceContents::text("file://a", "body")).expect("encode");
+        let text =
+            serde_json::to_value(ResourceContents::text("file://a", "body")).expect("encode");
         assert_eq!(text["uri"], "file://a");
         assert_eq!(text["text"], "body");
 
-        let blob =
-            serde_json::to_value(ResourceContents::blob("file://b", "image/png", "BBBB"))
-                .expect("encode");
+        let blob = serde_json::to_value(ResourceContents::blob("file://b", "image/png", "BBBB"))
+            .expect("encode");
         assert_eq!(blob["blob"], "BBBB");
         assert!(blob.get("text").is_none());
     }

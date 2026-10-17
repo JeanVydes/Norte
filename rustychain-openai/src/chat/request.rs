@@ -5,7 +5,7 @@ use rustychain_core::{
     ReasoningEffort, ReasoningRequest, Result, Role, SESSION_EXTENSION, ToolKind, ToolResultPart,
     ToolSpec,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::continuity::OpenAiContinuity;
 use crate::json::{data_url, opt_str};
@@ -43,10 +43,16 @@ pub(crate) fn build(
         json!({ "include_usage": true }),
     );
     if !request.tools.is_empty() {
-        body.insert("tools".to_owned(), Value::Array(build_tools(&request.tools)));
+        body.insert(
+            "tools".to_owned(),
+            Value::Array(build_tools(&request.tools)),
+        );
     }
     if let Some(effort) = build_effort(request.reasoning) {
-        body.insert("reasoning_effort".to_owned(), Value::String(effort.to_owned()));
+        body.insert(
+            "reasoning_effort".to_owned(),
+            Value::String(effort.to_owned()),
+        );
     }
     if let Some(format) = build_response_format(request) {
         body.insert("response_format".to_owned(), format);
@@ -81,10 +87,7 @@ pub(crate) fn build(
         .get(SESSION_EXTENSION)
         .and_then(Value::as_str)
     {
-        body.insert(
-            "prompt_cache_key".to_owned(),
-            Value::String(key.to_owned()),
-        );
+        body.insert("prompt_cache_key".to_owned(), Value::String(key.to_owned()));
     }
     Ok(Value::Object(body))
 }
@@ -152,9 +155,7 @@ fn call_index(continuity: &OpenAiContinuity, messages: &[Message]) -> CallIndex 
 }
 
 fn vendor_call(calls: &CallIndex, id: CallId) -> String {
-    calls
-        .get(&id)
-        .map_or_else(|| id.to_string(), Clone::clone)
+    calls.get(&id).map_or_else(|| id.to_string(), Clone::clone)
 }
 
 fn push_message(calls: &CallIndex, message: &Message, out: &mut Vec<Value>) -> Result<()> {
@@ -166,12 +167,7 @@ fn push_message(calls: &CallIndex, message: &Message, out: &mut Vec<Value>) -> R
     Ok(())
 }
 
-fn push_user(
-    calls: &CallIndex,
-    role: Role,
-    message: &Message,
-    out: &mut Vec<Value>,
-) -> Result<()> {
+fn push_user(calls: &CallIndex, role: Role, message: &Message, out: &mut Vec<Value>) -> Result<()> {
     let content = user_content(message)?;
     out.push(json!({
         "role": chat_role(role),
@@ -367,7 +363,10 @@ mod tests {
         assert_eq!(body["messages"][0]["role"], "assistant");
         assert_eq!(body["messages"][0]["content"], "using tool");
         assert_eq!(body["messages"][0]["tool_calls"][0]["id"], "call_1");
-        assert_eq!(body["messages"][0]["tool_calls"][0]["function"]["name"], "lookup");
+        assert_eq!(
+            body["messages"][0]["tool_calls"][0]["function"]["name"],
+            "lookup"
+        );
         assert_eq!(body["messages"][1]["role"], "tool");
         assert_eq!(body["messages"][1]["tool_call_id"], "call_1");
         assert_eq!(body["messages"][1]["content"], "42");

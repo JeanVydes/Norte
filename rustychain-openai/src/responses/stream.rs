@@ -4,8 +4,8 @@ use base64::Engine as _;
 use futures_util::StreamExt;
 use rustychain_core::{
     CallId, Citation, CitationSource, Error, ExtensionPart, FinishReason, MediaKind, MediaMetadata,
-    MimeType, ModelStream, Part, ProviderError, ProviderErrorKind, ProviderId,
-    ReasoningVisibility, RefusalPart, Result, StreamEvent, Usage,
+    MimeType, ModelStream, Part, ProviderError, ProviderErrorKind, ProviderId, ReasoningVisibility,
+    RefusalPart, Result, StreamEvent, Usage,
 };
 use rustychain_http::SseStream;
 use serde_json::Value;
@@ -140,7 +140,10 @@ impl Decoder {
             events.push(StreamEvent::ReasoningStart { index, visibility });
             let summary = summary_text(item);
             if !summary.is_empty() {
-                events.push(StreamEvent::ReasoningDelta { index, text: summary });
+                events.push(StreamEvent::ReasoningDelta {
+                    index,
+                    text: summary,
+                });
             }
         }
         events.push(StreamEvent::Continuity {
@@ -242,9 +245,7 @@ fn citation_of(annotation: &Value) -> Citation {
             ),
             title: opt_str(annotation, "title").map(ToOwned::to_owned),
         },
-        "file_citation" | "container_file_citation" | "file_path" => {
-            file_citation(annotation)
-        }
+        "file_citation" | "container_file_citation" | "file_path" => file_citation(annotation),
         _ => Citation {
             source: extension_citation(annotation),
             title: None,
@@ -426,6 +427,45 @@ mod tests {
         events
     }
 
+    /// Loads a recorded transcript — a JSON array of SSE `data` payloads — and
+    /// maps it through the wire, so live-provider behaviour is pinned hermetically
+    /// (FR-TEST-2).
+    async fn drain_fixture(fixture: &str) -> Vec<StreamEvent> {
+        let data: Vec<String> = serde_json::from_str(fixture).expect("fixture json");
+        let refs: Vec<&str> = data.iter().map(String::as_str).collect();
+        drain(&refs).await
+    }
+
+    #[tokio::test]
+    async fn recorded_transcript_pins_the_critical_path() {
+        let events = drain_fixture(include_str!(
+            "../../../rustychain-testing/fixtures/openai.responses.json"
+        ))
+        .await;
+        let text: String = events
+            .iter()
+            .filter_map(|event| match event {
+                StreamEvent::TextDelta { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text, "Hello, world");
+        let usage = events
+            .iter()
+            .find_map(|event| match event {
+                StreamEvent::Usage(usage) => Some(usage),
+                _ => None,
+            })
+            .expect("usage");
+        assert_eq!(usage.input_tokens, Some(12));
+        assert_eq!(usage.output_tokens, Some(3));
+        assert_eq!(usage.cache_read_tokens, Some(8));
+        assert_eq!(
+            events.last(),
+            Some(&StreamEvent::Finish(FinishReason::Stop))
+        );
+    }
+
     #[tokio::test]
     async fn text_deltas_and_usage_survive_the_decode() {
         let events = drain(&[
@@ -434,8 +474,20 @@ mod tests {
             r#"{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":7,"output_tokens":2,"input_tokens_details":{"cached_tokens":3}}}}"#,
         ])
         .await;
-        assert_eq!(events[0], StreamEvent::TextDelta { index: 0, text: "Hel".to_owned() });
-        assert_eq!(events[1], StreamEvent::TextDelta { index: 0, text: "lo".to_owned() });
+        assert_eq!(
+            events[0],
+            StreamEvent::TextDelta {
+                index: 0,
+                text: "Hel".to_owned()
+            }
+        );
+        assert_eq!(
+            events[1],
+            StreamEvent::TextDelta {
+                index: 0,
+                text: "lo".to_owned()
+            }
+        );
         let StreamEvent::Usage(usage) = &events[2] else {
             panic!("expected usage");
         };
@@ -464,15 +516,28 @@ mod tests {
         let mut fragment = None;
         for event in &events[1..] {
             match event {
-                StreamEvent::ToolCallDelta { arguments: delta, .. } => arguments.push_str(delta),
-                StreamEvent::Continuity { fragment: value, .. } => fragment = Some(value.clone()),
+                StreamEvent::ToolCallDelta {
+                    arguments: delta, ..
+                } => arguments.push_str(delta),
+                StreamEvent::Continuity {
+                    fragment: value, ..
+                } => fragment = Some(value.clone()),
                 _ => {}
             }
         }
         assert_eq!(arguments, r#"{"q":1}"#);
-        let decoded = continuity().decode(&continuity().merge(None, fragment.expect("fragment")).expect("merge")).expect("decode");
+        let decoded = continuity()
+            .decode(
+                &continuity()
+                    .merge(None, fragment.expect("fragment"))
+                    .expect("merge"),
+            )
+            .expect("decode");
         assert_eq!(decoded["call_id"], "call_1");
-        assert_eq!(events.last(), Some(&StreamEvent::Finish(FinishReason::ToolCalls)));
+        assert_eq!(
+            events.last(),
+            Some(&StreamEvent::Finish(FinishReason::ToolCalls))
+        );
     }
 
     #[tokio::test]
@@ -491,7 +556,13 @@ mod tests {
                 visibility: ReasoningVisibility::Summary,
             }
         );
-        assert_eq!(events[1], StreamEvent::ReasoningDelta { index: 0, text: "think".to_owned() });
+        assert_eq!(
+            events[1],
+            StreamEvent::ReasoningDelta {
+                index: 0,
+                text: "think".to_owned()
+            }
+        );
         let StreamEvent::Continuity { fragment, .. } = &events[2] else {
             panic!("expected continuity");
         };
@@ -508,7 +579,10 @@ mod tests {
             r#"{"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"usage":{}}}"#,
         ])
         .await;
-        assert_eq!(events.last(), Some(&StreamEvent::Finish(FinishReason::Length)));
+        assert_eq!(
+            events.last(),
+            Some(&StreamEvent::Finish(FinishReason::Length))
+        );
     }
 
     #[tokio::test]
@@ -517,7 +591,13 @@ mod tests {
             r#"{"type":"response.output_item.done","output_index":0,"item":{"type":"image_generation_call","result":"AQID","status":"completed","size":"16x16"}}"#,
         ])
         .await;
-        let StreamEvent::MediaStart { kind, mime, metadata, .. } = &events[0] else {
+        let StreamEvent::MediaStart {
+            kind,
+            mime,
+            metadata,
+            ..
+        } = &events[0]
+        else {
             panic!("expected media start");
         };
         assert_eq!(*kind, MediaKind::Image);

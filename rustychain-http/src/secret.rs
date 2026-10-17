@@ -65,7 +65,10 @@ mod tests {
     #[test]
     fn serializes_transparently() {
         let secret = Secret::new("token");
-        assert_eq!(serde_json::to_string(&secret).expect("serialize"), "\"token\"");
+        assert_eq!(
+            serde_json::to_string(&secret).expect("serialize"),
+            "\"token\""
+        );
         let back: Secret<String> = serde_json::from_str("\"token\"").expect("deserialize");
         assert_eq!(*back.expose(), "token");
     }

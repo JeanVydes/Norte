@@ -79,7 +79,9 @@ impl ContinuityAdapter for AnthropicContinuity {
         }
         let payload = match fragment.semantics {
             ContinuitySemantics::Append => {
-                let mut bytes = base.map(|token| token.payload().to_vec()).unwrap_or_default();
+                let mut bytes = base
+                    .map(|token| token.payload().to_vec())
+                    .unwrap_or_default();
                 bytes.extend_from_slice(&fragment.bytes);
                 bytes
             }

@@ -9,8 +9,8 @@
 use rustychain_core::{Capabilities, ModelRef, ProviderId, Result, WireFamily};
 use rustychain_http::{AuthScheme, VendorProfile};
 
-use crate::generate::GeminiGenerate;
 use crate::WIRE_GENERATE;
+use crate::generate::GeminiGenerate;
 
 /// Provider id of `Google`.
 const GOOGLE_PROVIDER: &str = "google";

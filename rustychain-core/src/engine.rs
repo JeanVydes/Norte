@@ -567,7 +567,8 @@ impl Engine {
         cancellation: CancellationToken,
     ) -> Result<TurnOutcome> {
         let mut session = self.store.load(session_id).await?;
-        let effective = options.over(&session_turn_options(&session).over(&self.default_turn_options()));
+        let effective =
+            options.over(&session_turn_options(&session).over(&self.default_turn_options()));
         if let Some(message) = input {
             session = self.append_turn(&session, message, &sender).await?;
         }

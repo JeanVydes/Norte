@@ -136,11 +136,7 @@ impl Store for InMemoryStore {
     }
 
     async fn save_approval(&self, record: ApprovalRecord) -> Result<()> {
-        self.inner
-            .write()
-            .await
-            .approvals
-            .insert(record.id, record);
+        self.inner.write().await.approvals.insert(record.id, record);
         Ok(())
     }
 

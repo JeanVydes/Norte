@@ -126,7 +126,11 @@ impl From<McpError> for RpcError {
                 code,
                 message,
                 data,
-            } => Self { code, message, data },
+            } => Self {
+                code,
+                message,
+                data,
+            },
             McpError::Unsupported(message) | McpError::Protocol(message) => {
                 Self::new(codes::METHOD_NOT_FOUND, message, None)
             }
@@ -318,8 +322,10 @@ mod tests {
 
     #[test]
     fn an_idless_error_answer_is_rejected() {
-        let error = Message::from_value(json!({ "jsonrpc": "2.0", "error": { "code": 1, "message": "x" } }))
-            .expect_err("rejected");
+        let error = Message::from_value(
+            json!({ "jsonrpc": "2.0", "error": { "code": 1, "message": "x" } }),
+        )
+        .expect_err("rejected");
         assert!(matches!(error, McpError::Protocol(_)));
     }
 

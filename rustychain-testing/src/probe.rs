@@ -1,7 +1,8 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use rustychain_core::{
-    Capabilities, ContinuityAdapter, Model, ModelRef, ModelRequest, ModelStream, Result, StreamEvent,
+    Capabilities, ContinuityAdapter, Model, ModelRef, ModelRequest, ModelStream, Result,
+    StreamEvent,
 };
 
 fn guard<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {

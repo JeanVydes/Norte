@@ -9,8 +9,8 @@
 use rustychain_core::{Capabilities, ModelRef, ProviderId, Result, WireFamily};
 use rustychain_http::{AuthScheme, VendorProfile};
 
-use crate::messages::AnthropicMessages;
 use crate::WIRE_MESSAGES;
+use crate::messages::AnthropicMessages;
 
 /// Provider id of `Anthropic`.
 const ANTHROPIC_PROVIDER: &str = "anthropic";

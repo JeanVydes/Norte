@@ -106,7 +106,13 @@ mod tests {
     #[test]
     fn retry_after_overrides_backoff_but_stays_capped() {
         let policy = RetryPolicy::new(3, Duration::from_millis(100), Duration::from_secs(1));
-        assert_eq!(policy.delay(0, Some(Duration::from_secs(5))), Some(Duration::from_secs(1)));
-        assert_eq!(policy.delay(0, Some(Duration::from_millis(20))), Some(Duration::from_millis(20)));
+        assert_eq!(
+            policy.delay(0, Some(Duration::from_secs(5))),
+            Some(Duration::from_secs(1))
+        );
+        assert_eq!(
+            policy.delay(0, Some(Duration::from_millis(20))),
+            Some(Duration::from_millis(20))
+        );
     }
 }

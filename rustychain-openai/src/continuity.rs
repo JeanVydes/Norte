@@ -79,7 +79,9 @@ impl ContinuityAdapter for OpenAiContinuity {
         }
         let payload = match fragment.semantics {
             ContinuitySemantics::Append => {
-                let mut bytes = base.map(|token| token.payload().to_vec()).unwrap_or_default();
+                let mut bytes = base
+                    .map(|token| token.payload().to_vec())
+                    .unwrap_or_default();
                 bytes.extend_from_slice(&fragment.bytes);
                 bytes
             }
@@ -155,11 +157,7 @@ mod tests {
 
     #[test]
     fn an_exact_token_replays_for_its_own_model() {
-        let decision = continuity().replay(
-            &model_ref("openai/gpt-5"),
-            &[],
-            &token("openai/gpt-5"),
-        );
+        let decision = continuity().replay(&model_ref("openai/gpt-5"), &[], &token("openai/gpt-5"));
         assert_eq!(decision, ReplayDecision::Replay);
     }
 

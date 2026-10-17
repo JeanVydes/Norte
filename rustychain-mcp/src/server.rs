@@ -20,7 +20,7 @@ use crate::jsonrpc::{Message, Request, Response, RpcError};
 use crate::protocol::{
     CallToolParams, CallToolResult, Implementation, InitializeParams, InitializeResult,
     ListPromptsResult, ListResourceTemplatesResult, ListResourcesResult, ListToolsResult,
-    PaginatedParams, PROTOCOL_VERSION, ServerCapabilities, ToolsCapability, ToolDefinition,
+    PROTOCOL_VERSION, PaginatedParams, ServerCapabilities, ToolDefinition, ToolsCapability,
 };
 use crate::transport::Transport;
 
@@ -148,9 +148,8 @@ impl McpServer {
 
     fn tools_list(&self, params: Option<Value>) -> McpResult<Value> {
         let PaginatedParams { cursor } = match params {
-            Some(value) => serde_json::from_value(value).map_err(|error| {
-                crate::error::McpError::rpc(INVALID_PARAMS, error.to_string())
-            })?,
+            Some(value) => serde_json::from_value(value)
+                .map_err(|error| crate::error::McpError::rpc(INVALID_PARAMS, error.to_string()))?,
             None => PaginatedParams::default(),
         };
         let specs = self.registry.specs();
@@ -184,12 +183,12 @@ impl McpServer {
         let context = ToolContext::new().with_call(CallId::new());
         match self.registry.execute(&context, &name, arguments).await {
             Ok(output) => Ok(serde_json::to_value(output_to_result(output))?),
-            Err(
-                error @ (CoreError::ToolNotFound(_) | CoreError::InvalidToolArguments { .. }),
-            ) => Err(crate::error::McpError::rpc(
-                INVALID_PARAMS,
-                error.to_string(),
-            )),
+            Err(error @ (CoreError::ToolNotFound(_) | CoreError::InvalidToolArguments { .. })) => {
+                Err(crate::error::McpError::rpc(
+                    INVALID_PARAMS,
+                    error.to_string(),
+                ))
+            }
             Err(error) => Ok(serde_json::to_value(CallToolResult::error(
                 error.to_string(),
             ))?),
@@ -228,9 +227,8 @@ fn spec_to_definition(spec: &ToolSpec) -> ToolDefinition {
 
 fn decode_params<T: DeserializeOwned>(params: Option<Value>) -> McpResult<T> {
     let value = params.unwrap_or_else(|| Value::Object(serde_json::Map::new()));
-    serde_json::from_value(value).map_err(|error| {
-        crate::error::McpError::rpc(INVALID_PARAMS, error.to_string())
-    })
+    serde_json::from_value(value)
+        .map_err(|error| crate::error::McpError::rpc(INVALID_PARAMS, error.to_string()))
 }
 
 #[cfg(test)]
@@ -308,9 +306,7 @@ mod tests {
         Arc::new(ToolRegistry::with_tools(tools).expect("registry"))
     }
 
-    async fn connect(
-        server: McpServer,
-    ) -> (Arc<McpClient>, tokio::task::JoinHandle<()>) {
+    async fn connect(server: McpServer) -> (Arc<McpClient>, tokio::task::JoinHandle<()>) {
         let (client_transport, server_transport) = ChannelTransport::pair();
         let handle = tokio::spawn(async move {
             let _ = server.serve(Arc::new(server_transport)).await;
@@ -330,7 +326,10 @@ mod tests {
 
         assert_eq!(client.protocol_version(), Some(PROTOCOL_VERSION));
         assert!(client.capabilities().tools.is_some());
-        assert_eq!(client.server_info().map(|info| info.name.as_str()), Some("rustychain-mcp"));
+        assert_eq!(
+            client.server_info().map(|info| info.name.as_str()),
+            Some("rustychain-mcp")
+        );
 
         let tools = client.tools("local").await.expect("tools");
         assert_eq!(tools.len(), 1);
@@ -358,10 +357,12 @@ mod tests {
             .await
             .expect("call returns a result");
         assert!(result.is_error);
-        assert!(result.content[0]
-            .text
-            .as_deref()
-            .is_some_and(|text| text.contains("kaboom")));
+        assert!(
+            result.content[0]
+                .text
+                .as_deref()
+                .is_some_and(|text| text.contains("kaboom"))
+        );
         handle.abort();
     }
 
@@ -370,7 +371,10 @@ mod tests {
         let server = McpServer::new(registry_with(vec![Arc::new(EchoTool)]));
         let (client, handle) = connect(server).await;
 
-        let error = client.request("does/not/exist", None).await.expect_err("unknown");
+        let error = client
+            .request("does/not/exist", None)
+            .await
+            .expect_err("unknown");
         assert!(error.is_method_not_found());
 
         let error = client

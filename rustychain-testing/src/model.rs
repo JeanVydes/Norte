@@ -6,9 +6,9 @@ use futures_util::StreamExt;
 
 use rustychain_core::{
     Capabilities, ContinuityAdapter, ContinuityFragment, ContinuityScope, ContinuitySemantics,
-    ContinuityToken, FinishReason, Model, ModelRef, ModelRequest, ModelStream, Modality, Part,
-    Reasoning, ReasoningEffort, ReplayDecision, Result, StreamEvent, StreamingGranularity, ToolKind,
-    WireFamily,
+    ContinuityToken, FinishReason, Modality, Model, ModelRef, ModelRequest, ModelStream, Part,
+    Reasoning, ReasoningEffort, ReplayDecision, Result, StreamEvent, StreamingGranularity,
+    ToolKind, WireFamily,
 };
 use serde_json::Value;
 
@@ -282,13 +282,12 @@ impl Model for ScriptedModel {
         let (events, delay) = guard(&self.turns)
             .pop_front()
             .unwrap_or_else(|| (Vec::new(), Duration::ZERO));
-        let stream = futures_util::stream::iter(events)
-            .then(move |event| async move {
-                if !delay.is_zero() {
-                    tokio::time::sleep(delay).await;
-                }
-                Ok(event)
-            });
+        let stream = futures_util::stream::iter(events).then(move |event| async move {
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
+            Ok(event)
+        });
         Ok(Box::pin(stream))
     }
 }

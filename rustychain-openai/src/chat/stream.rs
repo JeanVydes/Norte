@@ -181,7 +181,11 @@ impl Decoder {
         };
 
         if let Some(name) = name {
-            if self.tools.get(&tool_index).is_some_and(|state| !state.named) {
+            if self
+                .tools
+                .get(&tool_index)
+                .is_some_and(|state| !state.named)
+            {
                 if let Some(state) = self.tools.get_mut(&tool_index) {
                     state.named = true;
                 }
@@ -309,7 +313,13 @@ mod tests {
             "[DONE]",
         ])
         .await;
-        assert_eq!(events[0], StreamEvent::TextDelta { index: TEXT_INDEX, text: "hi".to_owned() });
+        assert_eq!(
+            events[0],
+            StreamEvent::TextDelta {
+                index: TEXT_INDEX,
+                text: "hi".to_owned()
+            }
+        );
         let StreamEvent::ToolCallStart { index, name, .. } = &events[1] else {
             panic!("expected tool call start");
         };
@@ -319,14 +329,22 @@ mod tests {
         let mut fragment = None;
         for event in &events {
             match event {
-                StreamEvent::ToolCallDelta { arguments: delta, .. } => arguments.push_str(delta),
-                StreamEvent::Continuity { fragment: value, .. } => fragment = Some(value.clone()),
+                StreamEvent::ToolCallDelta {
+                    arguments: delta, ..
+                } => arguments.push_str(delta),
+                StreamEvent::Continuity {
+                    fragment: value, ..
+                } => fragment = Some(value.clone()),
                 _ => {}
             }
         }
         assert_eq!(arguments, r#"{"q":1}"#);
         let decoded = continuity()
-            .decode(&continuity().merge(None, fragment.expect("fragment")).expect("merge"))
+            .decode(
+                &continuity()
+                    .merge(None, fragment.expect("fragment"))
+                    .expect("merge"),
+            )
             .expect("decode");
         assert_eq!(decoded["call_id"], "call_1");
         assert!(events.contains(&StreamEvent::Finish(FinishReason::ToolCalls)));
@@ -363,7 +381,13 @@ mod tests {
                 text: "why".to_owned(),
             }
         );
-        assert_eq!(events[2], StreamEvent::TextDelta { index: TEXT_INDEX, text: "because".to_owned() });
+        assert_eq!(
+            events[2],
+            StreamEvent::TextDelta {
+                index: TEXT_INDEX,
+                text: "because".to_owned()
+            }
+        );
         assert_eq!(events[3], StreamEvent::Finish(FinishReason::Stop));
     }
 

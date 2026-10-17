@@ -3,8 +3,8 @@ use std::time::Duration;
 
 use rustychain_core::{
     CallId, ContinuityFragment, ContinuityScope, ContinuitySemantics, Engine, EngineBuilder,
-    EngineConfig, EngineEvent, Error, FinishReason, FnExecutor, Message, MessageStatus, Phase,
-    PolicySet, Result, Role, Store, StreamEvent, ToolApprovalPolicy, ToolContext, ToolName,
+    EngineConfig, EngineEvent, Error, FinishReason, FnExecutor, Message, MessageStatus, Part,
+    Phase, PolicySet, Result, Role, Store, StreamEvent, ToolApprovalPolicy, ToolContext, ToolName,
     ToolRegistry, WireFamily,
 };
 use rustychain_testing::{
@@ -311,6 +311,86 @@ async fn a_required_approval_blocks_then_resumes() {
     assert!(!result.is_error);
     assert_eq!(result.structured, Some(json!({ "echoed": "secret" })));
     assert!(!outcome.session.grants.is_empty());
+}
+
+#[tokio::test]
+async fn a_denied_call_comes_back_to_the_model_as_a_failure() {
+    let call_id = CallId::new();
+    let scripted = Arc::new(
+        ScriptedModel::new(model("test/echo"))
+            .turn_tool_call(call_id, "echo", &json!({ "text": "secret" }))
+            .turn_text("understood, I will not run it"),
+    );
+    let mut tools = ToolRegistry::new();
+    tools.register_declarator(&Echo).expect("register echo");
+    let policies = PolicySet::new(vec![Arc::new(ToolApprovalPolicy::new(
+        "guard",
+        vec![ToolName::new("echo").expect("tool")],
+        "echo touches the world",
+    ))]);
+    let harness = harness(scripted, tools, policies);
+
+    let session = harness.engine.create().await.expect("create");
+    let outcome = harness
+        .engine
+        .send(session.id, Message::user("go"))
+        .finish()
+        .await
+        .expect("turn");
+    assert_eq!(outcome.session.phase, Phase::AwaitingApproval);
+
+    let pending = harness
+        .engine
+        .pending_approvals(session.id)
+        .await
+        .expect("pending");
+    assert_eq!(pending.len(), 1);
+    harness
+        .engine
+        .deny(pending[0].id, "tester", "not on my watch")
+        .await
+        .expect("deny");
+
+    let outcome = harness
+        .engine
+        .resume(session.id)
+        .finish()
+        .await
+        .expect("resume");
+    assert_eq!(outcome.session.phase, Phase::Idle);
+    assert_eq!(
+        outcome.message.as_ref().map(Message::text).as_deref(),
+        Some("understood, I will not run it"),
+        "the turn carries on and the model answers"
+    );
+
+    let history = harness
+        .store
+        .history(outcome.session.head)
+        .await
+        .expect("history");
+    let result = history[2].tool_results()[0];
+    assert!(
+        result.is_error,
+        "a denial is a failed call, not a dead turn"
+    );
+    assert!(
+        result
+            .parts
+            .iter()
+            .filter_map(Part::as_text)
+            .any(|text| text.contains("not on my watch")),
+        "the reason must reach the model"
+    );
+    assert!(
+        harness
+            .engine
+            .pending_approvals(session.id)
+            .await
+            .expect("pending")
+            .is_empty(),
+        "a denied call is decided, so it is no longer pending"
+    );
 }
 
 #[tokio::test]

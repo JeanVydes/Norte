@@ -307,12 +307,95 @@ where
     }
 }
 
+/// Expands a schemars document into a self-contained one.
+///
+/// Every local `$ref` is replaced by the definition it points at and `$defs` is
+/// dropped, so a model that does not resolve references still sees the whole
+/// shape. Keywords sitting next to a `$ref` (a `default`, say) are kept. A
+/// reference that cannot be inlined — an unknown name, or a type that is
+/// recursive and therefore infinite — is left alone, and then `$defs` stays so
+/// the document remains valid.
+fn inline_schema(schema: &Schema) -> Result<Value> {
+    let value = serde_json::to_value(schema)?;
+    let defs = value
+        .get("$defs")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let mut expanded = expand_refs(&value, &defs, &mut Vec::new());
+    if !has_ref(&expanded) {
+        if let Some(object) = expanded.as_object_mut() {
+            object.remove("$defs");
+            object.remove("definitions");
+        }
+    }
+    Ok(expanded)
+}
+
+/// Recursively replaces `{"$ref": "#/$defs/…"}` with the definition, keeping any
+/// sibling keywords. `open` holds the names currently being expanded, which is
+/// how a recursive type terminates instead of looping forever.
+fn expand_refs(
+    value: &Value,
+    defs: &serde_json::Map<String, Value>,
+    open: &mut Vec<String>,
+) -> Value {
+    match value {
+        Value::Object(object) => {
+            if let Some(name) = object
+                .get("$ref")
+                .and_then(Value::as_str)
+                .and_then(|reference| reference.strip_prefix("#/$defs/"))
+                .filter(|name| !open.iter().any(|entry| entry == name))
+            {
+                if let Some(target) = defs.get(name) {
+                    open.push(name.to_owned());
+                    let mut resolved = expand_refs(target, defs, open);
+                    open.pop();
+                    if let Some(fields) = resolved.as_object_mut() {
+                        for (key, sibling) in object {
+                            if key != "$ref" {
+                                fields.insert(key.clone(), expand_refs(sibling, defs, open));
+                            }
+                        }
+                    }
+                    return resolved;
+                }
+            }
+            Value::Object(
+                object
+                    .iter()
+                    .map(|(key, item)| (key.clone(), expand_refs(item, defs, open)))
+                    .collect(),
+            )
+        }
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|item| expand_refs(item, defs, open))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+/// Whether any `$ref` survived expansion.
+fn has_ref(value: &Value) -> bool {
+    match value {
+        Value::Object(object) => object.contains_key("$ref") || object.values().any(has_ref),
+        Value::Array(items) => items.iter().any(has_ref),
+        _ => false,
+    }
+}
+
 /// Everything the engine and adapters need to know about one tool.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ToolSpec {
     pub name: ToolName,
     pub description: String,
     pub kind: ToolKind,
+    /// The argument schema, self-contained: local references are already
+    /// resolved, so a model that does not follow `$ref` sees the whole shape.
     pub parameters: Value,
     /// The provider-side declaration of a tool the host does not execute (a
     /// built-in such as `web_search`), re-emitted verbatim on the wire (Section
@@ -514,7 +597,7 @@ pub trait AnyFunction: Send + Sync + Debug {
             name: ToolName::new(self.name())?,
             description: self.description().to_owned(),
             kind: self.kind(),
-            parameters: serde_json::to_value(self.parameters_schema())?,
+            parameters: inline_schema(self.parameters_schema())?,
             declaration: self.declaration(),
             approval: self.approval().map(str::to_owned),
         })
@@ -655,6 +738,52 @@ mod tests {
     fn the_attribute_carries_the_metadata() {
         assert_eq!(ReadFile::NAME, "read_file");
         assert_eq!(ReadFile::DESCRIPTION, "Read a file");
+    }
+
+    #[derive(Debug, JsonSchema, serde::Serialize, serde::Deserialize)]
+    #[serde(tag = "kind", rename_all = "snake_case")]
+    enum Mode {
+        Fast { retries: u32 },
+        Slow,
+    }
+
+    #[derive(Debug, JsonSchema, serde::Serialize, serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct NestedArgs {
+        mode: Mode,
+    }
+
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    struct NestedOutput {
+        ok: bool,
+    }
+
+    #[rustychain_core::tool(name = "nested", description = "Nested arguments")]
+    #[derive(Debug)]
+    struct Nested;
+
+    #[async_trait::async_trait]
+    impl FnExecutor<NestedArgs, NestedOutput> for Nested {
+        async fn call(&self, _args: NestedArgs) -> Result<NestedOutput> {
+            Ok(NestedOutput { ok: true })
+        }
+    }
+
+    #[test]
+    fn the_wire_schema_is_self_contained() {
+        // Schemars emits `$defs` plus `$ref` for a nested type. Models that do
+        // not follow references then guess the shape and send nonsense, so the
+        // declaration must reach the wire already expanded.
+        let declaration: FunctionDeclaration<NestedArgs, NestedOutput> = Nested.declare();
+        let function: Arc<dyn AnyFunction> = declaration.into();
+        let spec = function.spec().expect("spec");
+        let rendered = serde_json::to_string(&spec.parameters).expect("bytes");
+        assert!(!rendered.contains("$ref"), "references must be inlined");
+        assert!(!rendered.contains("$defs"), "definitions must be dropped");
+        assert!(
+            rendered.contains("\"retries\""),
+            "the inlined definition must carry its content"
+        );
     }
 
     #[tokio::test]

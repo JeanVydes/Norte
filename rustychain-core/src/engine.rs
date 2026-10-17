@@ -12,7 +12,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::approval::{ApprovalRecord, ApprovalStatus, GrantScope};
+use crate::approval::{ApprovalRecord, ApprovalStatus, AuditAction, GrantScope};
 use crate::capability::{Capabilities, ReasoningRequest};
 use crate::domain::commit::Commit;
 use crate::domain::continuity::{ContinuityToken, ReplayDecision};
@@ -157,6 +157,30 @@ fn cache_boundaries(messages: &[Message]) -> Vec<u32> {
 
 /// The pure state machine over a session.
 ///
+/// How a gated call resolved.
+enum Authorization {
+    /// A matching, verified grant is in force: run the call.
+    Granted,
+    /// The host said no: the model gets a failed call carrying the reason.
+    Denied(String),
+    /// The operator has not decided yet: park until they do.
+    Pending,
+}
+
+/// The reason the host gave when it denied a call, shaped for the model to read.
+fn denial_reason(record: &ApprovalRecord) -> String {
+    let reason = record
+        .audit
+        .iter()
+        .rev()
+        .find(|entry| entry.action == AuditAction::Denied)
+        .and_then(|entry| entry.detail.clone());
+    match reason {
+        Some(reason) => format!("the operator denied this call: {reason}"),
+        None => "the operator denied this call".to_owned(),
+    }
+}
+
 /// It holds configuration only; every piece of durable state lives in the
 /// store. One transition produces exactly one atomic commit.
 #[derive(Clone)]
@@ -1242,14 +1266,21 @@ impl Engine {
             }
             PolicyOutcome::Transform { arguments, .. } => arguments,
             PolicyOutcome::RequireApproval { .. } => {
-                if self
-                    .authorize(session, call, &tool_name, sender)
-                    .await?
-                    .is_none()
-                {
-                    return Ok(Some(self.await_approval(session, sender).await?));
+                match self.authorize(session, call, &tool_name, sender).await? {
+                    Authorization::Granted => call.arguments.clone(),
+                    Authorization::Pending => {
+                        return Ok(Some(self.await_approval(session, sender).await?));
+                    }
+                    Authorization::Denied(reason) => {
+                        // The operator said no: the model gets that back as a
+                        // failed call so it can adapt, exactly like a policy
+                        // denial or a tool that errored.
+                        results.push(ToolResultPart::error(call.call_id, reason));
+                        self.finish_call(session, sender, call, &tool_name, true, 0)
+                            .await;
+                        return Ok(None);
+                    }
                 }
-                call.arguments.clone()
             }
             PolicyOutcome::Allow => call.arguments.clone(),
         };
@@ -1294,31 +1325,35 @@ impl Engine {
         .await;
     }
 
+    /// Resolves the approval state of one gated call.
+    ///
+    /// A call with no record gets one here, and the host is told. This is what
+    /// makes a parked conversation resume: the request is rebuilt from the head
+    /// message's tool calls, with a fresh record and a fresh id, rather than
+    /// from a ledger that may never have travelled.
     async fn authorize(
         &self,
         session: &Session,
         call: &ToolCallPart,
         tool: &ToolName,
         sender: &mpsc::Sender<EngineEvent>,
-    ) -> Result<Option<()>> {
+    ) -> Result<Authorization> {
         let records = self.store.approvals(session.id).await?;
         if let Some(record) = records.iter().find(|record| record.call_id == call.call_id) {
             if record.is_expired_at(Utc::now()) {
                 return Err(Error::ApprovalExpired(record.id));
             }
             if record.status == ApprovalStatus::Denied {
-                return Err(Error::ApprovalDenied(
-                    "the host denied this call".to_owned(),
-                ));
+                return Ok(Authorization::Denied(denial_reason(record)));
             }
             let granted = session
                 .grants
                 .iter()
                 .any(|grant| grant.is_active() && grant.applies_to(session.id, call.call_id, tool));
             if granted && record.verify_arguments(&call.arguments).is_ok() {
-                return Ok(Some(()));
+                return Ok(Authorization::Granted);
             }
-            return Ok(None);
+            return Ok(Authorization::Pending);
         }
 
         let record = ApprovalRecord::new(
@@ -1340,7 +1375,7 @@ impl Engine {
             },
         )
         .await;
-        Ok(None)
+        Ok(Authorization::Pending)
     }
 
     async fn await_approval(

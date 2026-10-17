@@ -54,7 +54,6 @@ Not published yet; depend on the repository:
 [dependencies]
 rustychain-core = { git = "https://github.com/JeanVydes/rustychain", branch = "dev" }
 rustychain-openai = { git = "https://github.com/JeanVydes/rustychain", branch = "dev" }
-rustychain-testing = { git = "https://github.com/JeanVydes/rustychain", branch = "dev" }
 ```
 
 ## Quickstart
@@ -62,9 +61,10 @@ rustychain-testing = { git = "https://github.com/JeanVydes/rustychain", branch =
 ```rust
 use std::sync::Arc;
 
-use rustychain_core::{Capabilities, EngineBuilder, Message, Modality, ToolRegistry};
+use rustychain_core::{
+    Capabilities, EngineBuilder, InMemoryBlobStore, InMemoryStore, Message, Modality, ToolRegistry,
+};
 use rustychain_openai::presets::openai;
-use rustychain_testing::{InMemoryBlobStore, InMemoryStore};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -88,8 +88,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-That is the whole wiring. Streams, tool loops, approvals and storage are
-configuration on top of it.
+`Store` and `BlobStore` are ports. The in-memory pair above is ready to use and
+implements the whole contract — one atomic commit per turn, optimistic
+concurrency, the tool-approval ledger, content-addressed bytes. It is the right
+default for a CLI, a desktop app, a prototype or a single-process worker; when a
+session has to outlive the process, implement the two traits over your own
+database and object storage. Nothing else in the engine touches infrastructure.
 
 ## Examples
 

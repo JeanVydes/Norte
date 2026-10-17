@@ -3,27 +3,30 @@
 
 use std::sync::Arc;
 
-use rustychain_core::{Capabilities, EngineBuilder, Message, Modality, ToolRegistry};
+use rustychain_core::{
+    Capabilities, Engine, EngineBuilder, InMemoryBlobStore, InMemoryStore, Message, Modality,
+    ToolRegistry,
+};
 use rustychain_openai::presets::openai;
-use rustychain_testing::{InMemoryBlobStore, InMemoryStore};
 
-fn readme_engine() -> rustychain_core::Engine {
+fn readme_engine() -> Result<Engine, Box<dyn std::error::Error>> {
     let capabilities = Capabilities::builder()
         .input(Modality::Text)
         .output(Modality::Text)
         .build();
-    let model = openai("gpt-5", "sk-test", capabilities).expect("model");
-    EngineBuilder::new()
+    let model = openai("gpt-5", "sk-test", capabilities)?;
+
+    let engine = EngineBuilder::new()
         .store(Arc::new(InMemoryStore::new()))
         .blobs(Arc::new(InMemoryBlobStore::new()))
         .model(Arc::new(model))
         .tools(ToolRegistry::new())
-        .build()
-        .expect("build engine")
+        .build()?;
+    Ok(engine)
 }
 
 #[test]
 fn the_readme_quickstart_wiring_compiles() {
-    let _engine = readme_engine();
+    let _engine = readme_engine().expect("build engine");
     let _ = Message::user("Hello!");
 }

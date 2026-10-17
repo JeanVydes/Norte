@@ -8,7 +8,9 @@ workflow for contributing.
 
 - `rustychain-core/` — the neutral domain model, engine, streaming pipeline,
   policies, layers, capabilities and every contract (port). It carries
-  abstractions only: no vendor names, model tables or persistence backends.
+  abstractions only — no vendor names, model tables or external persistence —
+  plus the in-memory `Store` and `BlobStore` implementations for running with
+  nothing else.
 - `rustychain-http/` — shared HTTP transport, `VendorProfile`, auth schemes and
   `HttpMedia`.
 - `rustychain-openai/`, `rustychain-anthropic/`, `rustychain-gemini/` — the wire
@@ -17,8 +19,8 @@ workflow for contributing.
   executor.
 - `rustychain-media/` — media preprocessing helpers.
 - `rustychain-mcp/` — Model Context Protocol integration.
-- `rustychain-testing/` — reference in-memory stores, the scripted model and the
-  conformance suites.
+- `rustychain-testing/` — the scripted model, fixture replayer, request probe
+  and conformance suites.
 - `rustychain-macros/` — the procedural macros used across the workspace.
 - `docs/SRS.md` — the single source of truth for behaviour.
 - top-level `Cargo.toml` — the workspace manifest.

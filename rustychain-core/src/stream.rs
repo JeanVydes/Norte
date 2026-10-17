@@ -75,6 +75,16 @@ pub enum StreamEvent {
         bytes: Vec<u8>,
         last: bool,
     },
+    /// Replaces the metadata of the in-flight media part at `index`.
+    ///
+    /// A vendor that streams media also streams the descriptive fields the
+    /// container is created from (an audio transcript, a vendor media id) after
+    /// the bytes have started, so the adapter settles them here before closing
+    /// the part.
+    MediaMetadata {
+        index: u32,
+        metadata: MediaMetadata,
+    },
     ProviderToolCall {
         index: u32,
         call_id: CallId,
@@ -226,38 +236,39 @@ impl StreamAccumulator {
                 },
             )),
             StreamEvent::MediaChunk { index, bytes, last } => self.grow_media(index, &bytes, last),
+            StreamEvent::MediaMetadata { index, metadata } => {
+                self.set_media_metadata(index, metadata)
+            }
             StreamEvent::ProviderToolCall {
                 index,
                 call_id,
                 tool,
                 input,
-            } => {
-                let part = Part::ProviderToolCall(ProviderToolCallPart {
+            } => Ok(Some(self.provider_call(
+                index,
+                ProviderToolCallPart {
                     call_id,
                     tool,
                     input,
-                    continuity: self.continuity.remove(&index),
-                });
-                self.complete(index, part.clone());
-                Ok(Some(part))
-            }
+                    continuity: None,
+                },
+            ))),
             StreamEvent::ProviderToolResult {
                 index,
                 call_id,
                 tool,
                 output,
                 citations,
-            } => {
-                let part = Part::ProviderToolResult(ProviderToolResultPart {
+            } => Ok(Some(self.provider_result(
+                index,
+                ProviderToolResultPart {
                     call_id,
                     tool,
                     output,
                     citations,
-                    continuity: self.continuity.remove(&index),
-                });
-                self.complete(index, part.clone());
-                Ok(Some(part))
-            }
+                    continuity: None,
+                },
+            ))),
             StreamEvent::Citation { index, citation } => self.add_citation(index, citation),
             StreamEvent::Part { index, part } => {
                 self.complete(index, part.clone());
@@ -278,6 +289,20 @@ impl StreamAccumulator {
     fn begin(&mut self, index: u32, partial: Partial) -> Option<Part> {
         self.partials.insert(index, partial);
         None
+    }
+
+    fn provider_call(&mut self, index: u32, mut part: ProviderToolCallPart) -> Part {
+        part.continuity = self.continuity.remove(&index);
+        let part = Part::ProviderToolCall(part);
+        self.complete(index, part.clone());
+        part
+    }
+
+    fn provider_result(&mut self, index: u32, mut part: ProviderToolResultPart) -> Part {
+        part.continuity = self.continuity.remove(&index);
+        let part = Part::ProviderToolResult(part);
+        self.complete(index, part.clone());
+        part
     }
 
     fn add_citation(&mut self, index: u32, citation: Citation) -> Result<Option<Part>> {
@@ -434,6 +459,26 @@ impl StreamAccumulator {
         });
         self.complete.insert(index, part.clone());
         Ok(Some(part))
+    }
+
+    /// Replaces the metadata of the media partial at `index` (FR-STREAM-1).
+    ///
+    /// # Errors
+    ///
+    /// Returns a codec error when no media partial is open at `index`.
+    fn set_media_metadata(&mut self, index: u32, metadata: MediaMetadata) -> Result<Option<Part>> {
+        match self.partials.get_mut(&index) {
+            Some(Partial::Media { metadata: held, .. }) => {
+                *held = metadata;
+                Ok(None)
+            }
+            Some(other) => Err(Error::Codec(format!(
+                "media metadata for a non-media part: {other:?}"
+            ))),
+            None => Err(Error::Codec(format!(
+                "media metadata for a closed part at index {index}"
+            ))),
+        }
     }
 
     fn grow_media(&mut self, index: u32, bytes: &[u8], last: bool) -> Result<Option<Part>> {
@@ -792,6 +837,48 @@ mod tests {
         assert_eq!(media.metadata.width, Some(1024));
         assert_eq!(media.metadata.height, Some(768));
         assert_eq!(media.source, MediaSource::Inline(vec![1, 2, 3, 4]));
+    }
+
+    #[test]
+    fn media_metadata_settles_after_the_bytes_start() {
+        let mut accumulator = accumulator();
+        accumulator
+            .apply(StreamEvent::MediaStart {
+                index: 0,
+                kind: MediaKind::Audio,
+                mime: MimeType::new("audio/pcm16").expect("mime"),
+                metadata: MediaMetadata::default(),
+            })
+            .expect("start");
+        accumulator
+            .apply(StreamEvent::MediaChunk {
+                index: 0,
+                bytes: vec![1, 2],
+                last: false,
+            })
+            .expect("chunk");
+        accumulator
+            .apply(StreamEvent::MediaMetadata {
+                index: 0,
+                metadata: MediaMetadata {
+                    transcript: Some("hi".to_owned()),
+                    ..MediaMetadata::default()
+                },
+            })
+            .expect("metadata");
+        let completed = accumulator
+            .apply(StreamEvent::MediaChunk {
+                index: 0,
+                bytes: Vec::new(),
+                last: true,
+            })
+            .expect("chunk")
+            .expect("completed part");
+        let Part::Media(media) = completed else {
+            panic!("expected a media part");
+        };
+        assert_eq!(media.metadata.transcript.as_deref(), Some("hi"));
+        assert_eq!(media.source, MediaSource::Inline(vec![1, 2]));
     }
 
     #[test]

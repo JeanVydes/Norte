@@ -16,8 +16,6 @@ use crate::json::{opt_str, str_field, u32_field};
 /// The audio-output events carry no index, so the single audio stream is pinned
 /// to a fixed part index well clear of the item indices.
 const AUDIO_INDEX: u32 = 10_000;
-/// The spoken transcript that accompanies streamed audio output.
-const TRANSCRIPT_INDEX: u32 = 10_001;
 /// The Responses wire streams raw 16-bit little-endian PCM at 24 kHz.
 const AUDIO_MIME: &str = "audio/pcm16";
 
@@ -54,6 +52,7 @@ struct Decoder {
     started_reasoning: BTreeMap<u32, ReasoningVisibility>,
     saw_tool_call: bool,
     audio_started: bool,
+    audio_transcript: String,
 }
 
 impl Decoder {
@@ -64,6 +63,7 @@ impl Decoder {
             started_reasoning: BTreeMap::new(),
             saw_tool_call: false,
             audio_started: false,
+            audio_transcript: String::new(),
         }
     }
 
@@ -88,7 +88,7 @@ impl Decoder {
             "response.refusal.done" => Self::refusal(&value),
             "response.audio.delta" => self.audio_delta(&value),
             "response.audio.done" => Ok(self.audio_done()),
-            "response.audio.transcript.delta" => Self::transcript_delta(&value),
+            "response.audio.transcript.delta" => self.transcript_delta(&value),
             "response.completed" | "response.incomplete" => Ok(self.finish(&value)),
             "response.failed" => Err(failed_error(&value)),
             "error" => Err(stream_error(&value)),
@@ -260,18 +260,26 @@ impl Decoder {
             return Vec::new();
         }
         self.audio_started = false;
-        vec![StreamEvent::MediaChunk {
+        let mut events = Vec::new();
+        if !self.audio_transcript.is_empty() {
+            let mut metadata = MediaMetadata::default();
+            metadata.transcript = Some(std::mem::take(&mut self.audio_transcript));
+            events.push(StreamEvent::MediaMetadata {
+                index: AUDIO_INDEX,
+                metadata,
+            });
+        }
+        events.push(StreamEvent::MediaChunk {
             index: AUDIO_INDEX,
             bytes: Vec::new(),
             last: true,
-        }]
+        });
+        events
     }
 
-    fn transcript_delta(value: &Value) -> Result<Vec<StreamEvent>> {
-        Ok(vec![StreamEvent::TextDelta {
-            index: TRANSCRIPT_INDEX,
-            text: str_field(value, "delta")?.to_owned(),
-        }])
+    fn transcript_delta(&mut self, value: &Value) -> Result<Vec<StreamEvent>> {
+        self.audio_transcript.push_str(str_field(value, "delta")?);
+        Ok(Vec::new())
     }
 
     fn finish(&self, value: &Value) -> Vec<StreamEvent> {
@@ -714,16 +722,9 @@ mod tests {
             r#"{"type":"response.audio.done","response_id":"r"}"#,
         ])
         .await;
-        assert_eq!(
-            events[0],
-            StreamEvent::TextDelta {
-                index: TRANSCRIPT_INDEX,
-                text: "hello".to_owned(),
-            }
-        );
         let StreamEvent::MediaStart {
             index, kind, mime, ..
-        } = &events[1]
+        } = &events[0]
         else {
             panic!("expected media start");
         };
@@ -731,7 +732,7 @@ mod tests {
         assert_eq!(*kind, MediaKind::Audio);
         assert_eq!(mime.as_str(), "audio/pcm16");
         assert_eq!(
-            events[2],
+            events[1],
             StreamEvent::MediaChunk {
                 index: AUDIO_INDEX,
                 bytes: vec![1, 2, 3],
@@ -739,13 +740,18 @@ mod tests {
             }
         );
         assert_eq!(
-            events[3],
+            events[2],
             StreamEvent::MediaChunk {
                 index: AUDIO_INDEX,
                 bytes: vec![4, 5],
                 last: false,
             }
         );
+        let StreamEvent::MediaMetadata { index, metadata } = &events[3] else {
+            panic!("expected media metadata");
+        };
+        assert_eq!(*index, AUDIO_INDEX);
+        assert_eq!(metadata.transcript.as_deref(), Some("hello"));
         assert_eq!(
             events[4],
             StreamEvent::MediaChunk {

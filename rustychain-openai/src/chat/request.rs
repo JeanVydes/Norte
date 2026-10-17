@@ -244,10 +244,25 @@ fn push_assistant(calls: &CallIndex, message: &Message, out: &mut Vec<Value>) {
     if !refusal.is_empty() {
         object.insert("refusal".to_owned(), Value::String(refusal));
     }
+    if let Some(id) = assistant_audio_id(message) {
+        object.insert("audio".to_owned(), json!({ "id": id }));
+    }
     if !tool_calls.is_empty() {
         object.insert("tool_calls".to_owned(), Value::Array(tool_calls));
     }
     out.push(Value::Object(object));
+}
+
+/// The vendor id of a previous audio response, replayed by reference.
+fn assistant_audio_id(message: &Message) -> Option<&str> {
+    message.parts.iter().find_map(|part| match part {
+        Part::Media(media) => media
+            .metadata
+            .extension
+            .get(super::AUDIO_ID_KEY)
+            .and_then(Value::as_str),
+        _ => None,
+    })
 }
 
 fn assistant_tool_calls(calls: &CallIndex, message: &Message) -> Vec<Value> {
@@ -399,8 +414,8 @@ fn filename(media: &MediaPart) -> String {
 mod tests {
     use super::*;
     use rustychain_core::{
-        ContinuityAdapter, MimeType, ModelId, ProviderId, RefusalPart, ToolCallPart, ToolName,
-        ToolResultPart, WireFamily,
+        ContinuityAdapter, MediaMetadata, MimeType, ModelId, ProviderId, RefusalPart, ToolCallPart,
+        ToolName, ToolResultPart, WireFamily,
     };
 
     use crate::WIRE_CHAT;
@@ -493,6 +508,26 @@ mod tests {
         let body = build(&model(), &continuity(), &Quirks::new(), &request).expect("build");
         assert_eq!(body["messages"][0]["role"], "assistant");
         assert_eq!(body["messages"][0]["refusal"], "I cannot help");
+    }
+
+    #[test]
+    fn an_assistant_audio_turn_is_replayed_by_reference() {
+        let mut metadata = MediaMetadata::default();
+        metadata.transcript = Some("hi".to_owned());
+        metadata
+            .extension
+            .insert("openai.audio_id".to_owned(), json!("audio_1"));
+        let media = MediaPart {
+            kind: MediaKind::Audio,
+            source: MediaSource::Inline(vec![1, 2, 3]),
+            mime: MimeType::new("audio/pcm16").expect("mime"),
+            metadata,
+        };
+        let message = Message::new(Role::Assistant, vec![Part::Media(media)]);
+        let request = ModelRequest::new(model(), vec![message]);
+        let body = build(&model(), &continuity(), &Quirks::new(), &request).expect("build");
+        assert_eq!(body["messages"][0]["role"], "assistant");
+        assert_eq!(body["messages"][0]["audio"]["id"], "audio_1");
     }
 
     #[test]

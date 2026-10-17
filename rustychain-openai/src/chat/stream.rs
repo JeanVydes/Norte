@@ -2,20 +2,25 @@ use std::collections::BTreeMap;
 
 use futures_util::StreamExt;
 use rustychain_core::{
-    CallId, Citation, CitationSource, Error, FinishReason, ModelStream, ProviderError,
-    ProviderErrorKind, ReasoningVisibility, Result, StreamEvent, Usage,
+    CallId, Citation, CitationSource, Error, FinishReason, MediaKind, MediaMetadata, MimeType,
+    ModelStream, ProviderError, ProviderErrorKind, ReasoningVisibility, Result, StreamEvent, Usage,
 };
 use rustychain_http::SseStream;
 use serde_json::Value;
 
 use crate::continuity::OpenAiContinuity;
-use crate::json::opt_str;
+use crate::json::{base64_decode, opt_str};
+
+use super::AUDIO_ID_KEY;
 
 const REASONING_INDEX: u32 = 0;
 const TEXT_INDEX: u32 = 1;
 const REFUSAL_INDEX: u32 = 2;
+const AUDIO_INDEX: u32 = 3;
 const TOOL_BASE: u32 = 1000;
 const FUNCTION_CALL_INDEX: u32 = TOOL_BASE - 1;
+/// Chat Completions streams output audio as raw 16-bit little-endian PCM.
+const AUDIO_MIME: &str = "audio/pcm16";
 
 /// Maps the vendor `SSE` stream into core stream events.
 pub(crate) fn map(sse: SseStream, continuity: OpenAiContinuity) -> ModelStream {
@@ -62,6 +67,9 @@ struct Decoder {
     tools: BTreeMap<u32, ToolState>,
     legacy: Option<LegacyCall>,
     reasoning_started: bool,
+    audio_started: bool,
+    audio_id: Option<String>,
+    audio_transcript: String,
 }
 
 impl Decoder {
@@ -71,12 +79,15 @@ impl Decoder {
             tools: BTreeMap::new(),
             legacy: None,
             reasoning_started: false,
+            audio_started: false,
+            audio_id: None,
+            audio_transcript: String::new(),
         }
     }
 
     fn decode(&mut self, data: &str) -> Result<Vec<StreamEvent>> {
         if data == "[DONE]" {
-            return Ok(Vec::new());
+            return Ok(self.flush_audio());
         }
         let value: Value = serde_json::from_str(data)?;
         if let Some(error) = value.get("error").filter(|error| !error.is_null()) {
@@ -96,6 +107,7 @@ impl Decoder {
                 self.delta(delta, &mut events)?;
             }
             if let Some(finish) = choice.get("finish_reason").and_then(Value::as_str) {
+                events.extend(self.flush_audio());
                 events.push(StreamEvent::Finish(finish_reason(finish)));
             }
         }
@@ -134,7 +146,68 @@ impl Decoder {
         if let Some(call) = delta.get("function_call").filter(|call| !call.is_null()) {
             self.function_call(call, events);
         }
+        if let Some(audio) = delta.get("audio").filter(|audio| !audio.is_null()) {
+            self.audio(audio, events)?;
+        }
         Ok(())
+    }
+
+    /// Streams audio output: the bytes become media chunks, while the vendor id
+    /// and the transcript are settled into the part metadata when the block
+    /// closes so an assistant turn can be replayed by reference.
+    fn audio(&mut self, audio: &Value, events: &mut Vec<StreamEvent>) -> Result<()> {
+        if self.audio_id.is_none() {
+            self.audio_id = opt_str(audio, "id").map(ToOwned::to_owned);
+        }
+        if let Some(text) = opt_str(audio, "transcript").filter(|text| !text.is_empty()) {
+            self.audio_transcript.push_str(text);
+        }
+        if let Some(data) = opt_str(audio, "data").filter(|data| !data.is_empty()) {
+            let bytes = base64_decode(data)?;
+            if !self.audio_started {
+                self.audio_started = true;
+                events.push(StreamEvent::MediaStart {
+                    index: AUDIO_INDEX,
+                    kind: MediaKind::Audio,
+                    mime: MimeType::new(AUDIO_MIME)?,
+                    metadata: MediaMetadata::default(),
+                });
+            }
+            events.push(StreamEvent::MediaChunk {
+                index: AUDIO_INDEX,
+                bytes,
+                last: false,
+            });
+        }
+        Ok(())
+    }
+
+    fn flush_audio(&mut self) -> Vec<StreamEvent> {
+        if !self.audio_started {
+            return Vec::new();
+        }
+        self.audio_started = false;
+        let mut metadata = MediaMetadata::default();
+        if let Some(id) = self.audio_id.take() {
+            metadata
+                .extension
+                .insert(AUDIO_ID_KEY.to_owned(), Value::String(id));
+        }
+        let transcript = std::mem::take(&mut self.audio_transcript);
+        if !transcript.is_empty() {
+            metadata.transcript = Some(transcript);
+        }
+        vec![
+            StreamEvent::MediaMetadata {
+                index: AUDIO_INDEX,
+                metadata,
+            },
+            StreamEvent::MediaChunk {
+                index: AUDIO_INDEX,
+                bytes: Vec::new(),
+                last: true,
+            },
+        ]
     }
 
     /// Maps the deprecated `function_call` delta shape, which carries the name
@@ -604,6 +677,59 @@ mod tests {
             .collect();
         assert_eq!(arguments, r#"{"q":1}"#);
         assert!(events.contains(&StreamEvent::Finish(FinishReason::ToolCalls)));
+    }
+
+    #[tokio::test]
+    async fn streamed_audio_output_is_materialized_with_its_id_and_transcript() {
+        let events = drain(&[
+            r#"{"choices":[{"index":0,"delta":{"audio":{"id":"audio_1","transcript":"hi","data":"AQID"}},"finish_reason":null}]}"#,
+            r#"{"choices":[{"index":0,"delta":{"audio":{"transcript":" there","data":"BAU="}},"finish_reason":null}]}"#,
+            r#"{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
+        ])
+        .await;
+        let StreamEvent::MediaStart {
+            index, kind, mime, ..
+        } = &events[0]
+        else {
+            panic!("expected media start");
+        };
+        assert_eq!(*index, AUDIO_INDEX);
+        assert_eq!(*kind, MediaKind::Audio);
+        assert_eq!(mime.as_str(), "audio/pcm16");
+        assert_eq!(
+            events[1],
+            StreamEvent::MediaChunk {
+                index: AUDIO_INDEX,
+                bytes: vec![1, 2, 3],
+                last: false,
+            }
+        );
+        assert_eq!(
+            events[2],
+            StreamEvent::MediaChunk {
+                index: AUDIO_INDEX,
+                bytes: vec![4, 5],
+                last: false,
+            }
+        );
+        let StreamEvent::MediaMetadata { index, metadata } = &events[3] else {
+            panic!("expected media metadata");
+        };
+        assert_eq!(*index, AUDIO_INDEX);
+        assert_eq!(metadata.transcript.as_deref(), Some("hi there"));
+        assert_eq!(
+            metadata.extension.get(AUDIO_ID_KEY).and_then(Value::as_str),
+            Some("audio_1")
+        );
+        assert_eq!(
+            events[4],
+            StreamEvent::MediaChunk {
+                index: AUDIO_INDEX,
+                bytes: Vec::new(),
+                last: true,
+            }
+        );
+        assert_eq!(events[5], StreamEvent::Finish(FinishReason::Stop));
     }
 
     #[tokio::test]

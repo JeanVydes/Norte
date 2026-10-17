@@ -13,6 +13,10 @@ use crate::continuity::OpenAiContinuity;
 /// Path appended to the vendor base `URL`.
 const PATH: &str = "chat/completions";
 
+/// The vendor key under which a streamed audio id is preserved in a media
+/// part's metadata, so an assistant turn can be replayed by reference.
+pub(crate) const AUDIO_ID_KEY: &str = "openai.audio_id";
+
 /// The `OpenAI` `Chat Completions` adapter.
 ///
 /// It exists for the many wire-compatible vendors that never adopted the

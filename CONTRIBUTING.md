@@ -1,128 +1,143 @@
 # Contributing to RustyChain
 
-Thank you for your interest in contributing! This repository is organized as a Rust monorepo. Below you'll find how the workspace is structured and the preferred workflow for contributing.
+Thank you for your interest in contributing! This repository is organized as a
+Rust monorepo. Below you'll find how the workspace is structured and the preferred
+workflow for contributing.
 
 ## Repository layout
 
-- `rustychain-macros/` — a library crate containing procedural macros used by other crates in the workspace.
-- `rustychain/` — the core library (crate) that provides the main functionality.
-- `examples/` — a binary crate containing example programs and demos. Use this to run example apps.
-- `rustychain-tools-suite/` — a library crate (and collection of tools) that builds on `rustychain`.
-- top-level `Cargo.toml` — workspace manifest that includes the crates above as workspace members.
+- `rustychain-core/` — the neutral domain model, engine, streaming pipeline,
+  policies, layers, capabilities and every contract (port). It carries
+  abstractions only: no vendor names, model tables or persistence backends.
+- `rustychain-http/` — shared HTTP transport, `VendorProfile`, auth schemes and
+  `HttpMedia`.
+- `rustychain-openai/`, `rustychain-anthropic/`, `rustychain-gemini/` — the wire
+  adapters and the native vendor presets.
+- `rustychain-tools/` — the default host tool suite, including the `command`
+  executor.
+- `rustychain-media/` — media preprocessing helpers.
+- `rustychain-mcp/` — Model Context Protocol integration.
+- `rustychain-testing/` — reference in-memory stores, the scripted model and the
+  conformance suites.
+- `rustychain-macros/` — the procedural macros used across the workspace.
+- `docs/SRS.md` — the single source of truth for behaviour.
+- top-level `Cargo.toml` — the workspace manifest.
 
 ## How to Contribute
 
-1. **Fork the repository** and create your branch from `main`.
-2. **Make changes in the appropriate crate**: fix bugs or add features in `rustychain/` when they affect core behavior; add examples to `examples/`; add or improve tools in `rustychain-tools-suite/`.
-3. **Write clear, well-documented code** and include tests when possible. Keep changes scoped to the crate that owns the functionality.
-4. **Run formatting and linters** (see commands below) and include tests where applicable.
-5. **Open a pull request** with a clear description of your changes and reference related issues.
+1. **Fork the repository** and create your branch from `dev`.
+2. **Make changes in the crate that owns the behaviour.** Core contracts live in
+   `rustychain-core`; vendor translations live in the wire crates; host tools
+   live in `rustychain-tools`.
+3. **Write clear, well-documented code** and include tests. Keep changes scoped.
+4. **Run the local checks** (see below).
+5. **Open a pull request** with a clear description and reference related issues.
 6. Be respectful and constructive in code reviews and discussions.
 
 ## Code style
-- Follow Rust best practices and formatting. Run `cargo fmt` across the workspace:
+
+- Format the whole workspace:
 
 ```bash
 cargo fmt --all
 ```
 
-- Document public APIs with doc comments. Keep public surface stable and documented.
+- There are no cargo features; every crate builds with its full surface.
+- Document public APIs with doc comments. Keep the public surface stable and
+  documented.
+- Clippy runs with `all` and `pedantic` denied (see `.github/workflows/rust.yml`).
+  Do not add `#[allow(...)]` attributes; fix the lint.
 
 ## Local checks (pre-commit / pre-push)
 
-Run the same checks CI runs to catch problems early. Use workspace flags for changes spanning crates, or `-p <name>` for a single crate.
-
-- Clippy (fix mode for local auto-fixes; run per-package or workspace):
-
-```bash
-# Work on whole workspace (may be slower):
-cargo clippy --workspace --all-targets --all-features
-
-# Or for a single package (faster during development):
-cargo clippy -p rustychain --all-targets --all-features
-```
-
-- Formatting check (CI uses `--check`):
+These mirror CI so problems are caught before opening a PR.
 
 ```bash
 cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo doc --workspace --no-deps
+bash scripts/check-dependencies.sh
 ```
 
-- Generate docs (for local verification):
-
-```bash
-cargo doc --workspace --no-deps --all-features
-```
-
-These commands mirror CI so running them locally helps catch issues before creating a PR.
+`scripts/check-dependencies.sh` enforces the dependency rule (NFR-ARCH-1): the
+core depends on nothing internal, and wire crates never depend on each other.
 
 ## Building and running
 
-- Build the entire workspace:
-
 ```bash
-cargo build --workspace --all-features
-```
+# Build the whole workspace:
+cargo build --workspace
 
-- Build a specific crate (example: the core library):
+# Build a single crate:
+cargo build -p rustychain-core
 
-```bash
-cargo build -p rustychain --all-features
-```
-
-- Run the example crate (if it contains binaries):
-
-```bash
-# Run the default binary in `examples` crate
-cargo run -p examples -- <args>
-
-# Or run a specific binary by name (if defined in the crate)
-cargo run -p examples --bin <binary-name> -- <args>
+# Run a single crate's tests:
+cargo test -p rustychain-tools
 ```
 
 ## Running tests
 
-- Run all tests in the workspace:
+- All tests, including the README wiring test and the adapter conformance suites:
 
 ```bash
-cargo test --workspace --all-features
+cargo test --workspace
 ```
 
-- Run tests for a single crate:
+- Doctests:
 
 ```bash
-cargo test -p rustychain --all-features
+cargo test --doc --workspace
 ```
 
-- Run doctests for the workspace:
-
-```bash
-cargo test --doc --workspace --all-features
-```
-
-- Integration tests that need external services (e.g., Postgres with `pgvector`) may rely on Docker or `testcontainers`. If a test requires a local DB, export `DATABASE_URL` before running the tests:
-
-```bash
-export DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/test_db
-cargo test -p rustychain --test <test_name> --all-features
-```
+Tests are hermetic: there are no live API keys and no external services. Provider
+behaviour is pinned by recorded fixtures; live smoke tests are run separately on a
+schedule (see `docs/SRS.md`, FR-TEST-2).
 
 ## Adding a new crate to the workspace
 
-1. Add the new crate folder at the repo root (e.g., `crates/my_crate` or top-level `my_crate/`).
-2. Add the crate to the top-level `Cargo.toml` under the `[workspace]` -> `members` list.
-3. Ensure CI and workspace scripts (if any) include the new crate where appropriate.
+1. Add the crate folder at the repo root.
+2. Add it to the top-level `Cargo.toml` under `[workspace]` → `members` and to
+   `[workspace.dependencies]`.
+3. Extend `scripts/check-dependencies.sh` if the crate introduces a new layer in
+   the dependency rule.
+4. Add conformance coverage if it implements an adapter or a port.
+
+## API stability (NFR-2)
+
+RustyChain follows [semantic versioning](https://semver.org/).
+
+- **Patch** releases fix behaviour without changing the public API.
+- **Minor** releases add public API in a backwards-compatible way.
+- **Major** releases may change the public API. **Breaking changes to the neutral
+  model — the domain types, capability descriptors, ports and engine surface in
+  `rustychain-core` — require a major version.**
+
+Practically:
+
+- The neutral model is the stable surface. Internal modules may move in a minor
+  release; re-exports from a crate root may not be removed in a minor release.
+- Types marked `#[non_exhaustive]` may gain variants in a minor release; match
+  them with a `_` arm.
+- `capabilities_from_json` is a host-configuration bridge. Its schema tracks the
+  neutral model and is versioned with it.
+- Every public item carries a doc comment; run `cargo doc --workspace --no-deps`
+  with warnings denied before publishing.
 
 ## Publishing crates
 
-- If crates are intended to be published to crates.io, publish from the crate directory and follow semver. Update changelogs and the crate's `Cargo.toml` version before publishing.
-- The monorepo itself is not published as a single package — individual crates are published separately.
+- Crates are published individually from their directory. Update the version in
+  `[workspace.package]` (or per crate) and the changelog before publishing.
+- The monorepo itself is not published as a single package.
 
 ## Reporting issues
+
 - Use the issue tracker for bugs, feature requests, or questions.
-- Provide as much detail as possible (logs, OS, steps to reproduce, crate name and version).
+- Provide as much detail as possible (logs, OS, steps to reproduce, crate name and
+  version).
 
 ## Code of Conduct
+
 - Be kind, inclusive, and respectful to others.
 
 ---

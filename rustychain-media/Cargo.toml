@@ -1,0 +1,17 @@
+[package]
+name = "rustychain-media"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+rustychain-core = { workspace = true }
+async-trait = { workspace = true }
+image = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[lints]
+workspace = true

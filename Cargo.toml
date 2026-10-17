@@ -1,3 +1,65 @@
 [workspace]
 resolver = "3"
-members = ["rustychain", "rustychain-tools-suite", "examples"]
+members = [
+    "rustychain-macros",
+    "rustychain-core",
+    "rustychain-http",
+    "rustychain-anthropic",
+    "rustychain-openai",
+    "rustychain-gemini",
+    "rustychain-tools",
+    "rustychain-media",
+    "rustychain-testing",
+    "rustychain-mcp",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/JeanVydes/rustychain"
+homepage = "https://github.com/JeanVydes/rustychain"
+authors = ["Jean Vides <j@lojur.com>"]
+
+[workspace.dependencies]
+rustychain-macros = { path = "rustychain-macros", version = "0.1.0" }
+rustychain-core = { path = "rustychain-core", version = "0.1.0" }
+rustychain-http = { path = "rustychain-http", version = "0.1.0" }
+rustychain-anthropic = { path = "rustychain-anthropic", version = "0.1.0" }
+rustychain-openai = { path = "rustychain-openai", version = "0.1.0" }
+rustychain-gemini = { path = "rustychain-gemini", version = "0.1.0" }
+rustychain-tools = { path = "rustychain-tools", version = "0.1.0" }
+rustychain-media = { path = "rustychain-media", version = "0.1.0" }
+rustychain-testing = { path = "rustychain-testing", version = "0.1.0" }
+rustychain-mcp = { path = "rustychain-mcp", version = "0.1.0" }
+
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full", "extra-traits"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "1.1.0"
+thiserror = "2.0.17"
+strum = { version = "0.27", features = ["derive"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+sha2 = "0.10"
+base64 = "0.22.1"
+bytes = "1"
+async-trait = "0.1.89"
+futures-core = "0.3.31"
+futures-util = "0.3.31"
+tokio = { version = "1", features = ["rt", "sync", "time", "process", "io-util", "macros"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+tracing = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "http2"] }
+url = "2.5.7"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }

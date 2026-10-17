@@ -25,7 +25,7 @@ use crate::domain::role::Role;
 use crate::domain::session::{Phase, Session};
 use crate::error::{Error, Result};
 use crate::event::{EngineEvent, EventSink, StreamDelta};
-use crate::id::{ApprovalId, Digest, GenerationId, ModelRef, NodeId, SessionId, ToolName};
+use crate::id::{ApprovalId, CallId, Digest, GenerationId, ModelRef, NodeId, SessionId, ToolName};
 use crate::layer::{LayerContext, LayerStack, ModelContinuation};
 use crate::media_adapter::MediaAdapter;
 use crate::model::{
@@ -50,6 +50,15 @@ pub struct EngineConfig {
     pub approval_ttl: Duration,
     pub max_iterations: usize,
     pub auto_execute_tools: bool,
+    /// When `true` (and `auto_execute_tools` is also `true`), a tool call whose
+    /// arguments complete mid-stream begins executing before the assistant
+    /// message finishes, subject to the host's tool policy (FR-STREAM-4).
+    ///
+    /// The policy is evaluated against the assistant message as known at that
+    /// point, so a host enables this only when its tool policies do not depend
+    /// on the message tail. Calls that need approval, are denied or are rate
+    /// limited are always deferred to the normal path. Defaults to `false`.
+    pub early_tool_execution: bool,
 }
 
 impl Default for EngineConfig {
@@ -62,6 +71,7 @@ impl Default for EngineConfig {
             approval_ttl: Duration::from_secs(10 * 60),
             max_iterations: 16,
             auto_execute_tools: true,
+            early_tool_execution: false,
         }
     }
 }
@@ -574,6 +584,7 @@ impl Engine {
         }
 
         let mut last = None;
+        let mut early_results: Vec<ToolResultPart> = Vec::new();
         let mut iterations = 0usize;
         loop {
             iterations += 1;
@@ -607,7 +618,10 @@ impl Engine {
                     });
                 }
                 Phase::AwaitingTool => {
-                    session = self.run_tools(&session, &sender, &cancellation).await?;
+                    session = self
+                        .run_tools(&session, &sender, &cancellation, &early_results)
+                        .await?;
+                    early_results.clear();
                 }
                 Phase::Idle | Phase::Streaming => {
                     let Some(head) = session.head else {
@@ -616,9 +630,10 @@ impl Engine {
                             message: last,
                         });
                     };
-                    let (message, interrupted) = self
+                    let (message, interrupted, pending) = self
                         .generate(&session, head, &effective, &sender, &cancellation)
                         .await?;
+                    early_results = pending;
                     let node = Node::message(message.clone(), Some(head));
                     let node_id = node.id;
                     let phase = if interrupted {
@@ -715,7 +730,7 @@ impl Engine {
         options: &TurnOptions,
         sender: &mpsc::Sender<EngineEvent>,
         cancellation: &CancellationToken,
-    ) -> Result<(Message, bool)> {
+    ) -> Result<(Message, bool, Vec<ToolResultPart>)> {
         let model_ref = self.model.reference().clone();
         let capabilities = self.model.capabilities();
         let (history, invalidated) = self
@@ -787,7 +802,7 @@ impl Engine {
             model: &*self.model,
         };
         let mut stream = self.layers.run(&context, request, &continuation).await?;
-        let (accumulated, interrupted) = self
+        let (accumulated, interrupted, early_results) = self
             .drain_stream(session, sender, cancellation, &mut stream)
             .await?;
 
@@ -812,7 +827,7 @@ impl Engine {
             status,
             request_digest: Some(request_digest),
         });
-        Ok((message, interrupted))
+        Ok((message, interrupted, early_results))
     }
 
     async fn drain_stream(
@@ -821,10 +836,12 @@ impl Engine {
         sender: &mpsc::Sender<EngineEvent>,
         cancellation: &CancellationToken,
         stream: &mut ModelStream,
-    ) -> Result<(Accumulated, bool)> {
+    ) -> Result<(Accumulated, bool, Vec<ToolResultPart>)> {
         let mut accumulator = StreamAccumulator::new(self.config.limits);
         let mut continuity: BTreeMap<u32, ContinuityToken> = BTreeMap::new();
         let mut interrupted = false;
+        let mut completed: Vec<Part> = Vec::new();
+        let mut early: Vec<(CallId, JoinHandle<ToolResultPart>)> = Vec::new();
 
         loop {
             let event = tokio::select! {
@@ -871,13 +888,23 @@ impl Engine {
                         EngineEvent::PartCompleted {
                             session: session.id,
                             turn: session.turn,
-                            part,
+                            part: part.clone(),
                         },
                     )
                     .await;
                 if !delivered {
                     interrupted = true;
                     break;
+                }
+                let ready = match &part {
+                    Part::ToolCall(call) => Some(call.clone()),
+                    _ => None,
+                };
+                completed.push(part);
+                if let Some(call) = ready {
+                    if let Some(handle) = self.dispatch_early(session, sender, &call, &completed) {
+                        early.push((call.call_id, handle));
+                    }
                 }
             }
             if let Some(delta) = stream_delta(&event) {
@@ -888,7 +915,68 @@ impl Engine {
             }
         }
 
-        Ok((accumulator.finish()?, interrupted))
+        let mut results = Vec::with_capacity(early.len());
+        for (call_id, handle) in early {
+            match handle.await {
+                Ok(result) => results.push(result),
+                Err(error) => results.push(ToolResultPart::error(
+                    call_id,
+                    format!("early tool task failed: {error}"),
+                )),
+            }
+        }
+        Ok((accumulator.finish()?, interrupted, results))
+    }
+
+    /// Dispatches a tool call whose arguments just completed for execution before
+    /// the assistant message finishes, when the host enabled early tool execution
+    /// and the tool policy allows it (FR-STREAM-4).
+    ///
+    /// The policy is evaluated against the assistant message as known so far.
+    /// Calls that need approval, are denied or are rate limited return `None` and
+    /// take the normal path.
+    fn dispatch_early(
+        &self,
+        session: &Session,
+        sender: &mpsc::Sender<EngineEvent>,
+        call: &ToolCallPart,
+        completed: &[Part],
+    ) -> Option<JoinHandle<ToolResultPart>> {
+        if !(self.config.early_tool_execution && self.config.auto_execute_tools) {
+            return None;
+        }
+        let Ok(tool_name) = ToolName::new(call.name.clone()) else {
+            return None;
+        };
+        self.tools.spec(&tool_name)?;
+        let message = Message::new(Role::Assistant, completed.to_vec());
+        let view = PolicyView {
+            session,
+            model: self.model.reference(),
+            capabilities: self.model.capabilities(),
+            call,
+            message: &message,
+            prior: &[],
+        };
+        let arguments = match combine(&self.policies.evaluate(&view)) {
+            PolicyOutcome::Allow => call.arguments.clone(),
+            PolicyOutcome::Transform { arguments, .. } => arguments,
+            PolicyOutcome::Deny { .. }
+            | PolicyOutcome::RateLimit { .. }
+            | PolicyOutcome::RequireApproval { .. } => return None,
+        };
+        Some(tokio::spawn(execute_call(
+            Arc::clone(&self.tools),
+            Arc::clone(&self.observers),
+            sender.clone(),
+            CallSite {
+                session: session.id,
+                turn: session.turn,
+            },
+            call.clone(),
+            tool_name,
+            arguments,
+        )))
     }
 
     /// The reconstructed request: the message sequence plus deterministic cache
@@ -1023,6 +1111,7 @@ impl Engine {
         session: &Session,
         sender: &mpsc::Sender<EngineEvent>,
         _cancellation: &CancellationToken,
+        early: &[ToolResultPart],
     ) -> Result<Session> {
         let Some(head) = session.head else {
             return Ok(session.clone());
@@ -1042,6 +1131,10 @@ impl Engine {
         let mut results: Vec<ToolResultPart> = Vec::with_capacity(calls.len());
 
         for call in &calls {
+            if let Some(result) = early.iter().find(|result| result.call_id == call.call_id) {
+                results.push(result.clone());
+                continue;
+            }
             if let Some(parked) = self
                 .run_one_tool(
                     session,
@@ -1131,44 +1224,20 @@ impl Engine {
             PolicyOutcome::Allow => call.arguments.clone(),
         };
 
-        let context = ToolContext::new()
-            .with_session(session.id)
-            .with_call(call.call_id);
-        self.emit(
-            sender,
-            EngineEvent::ToolCallStarted {
+        let result = execute_call(
+            Arc::clone(&self.tools),
+            Arc::clone(&self.observers),
+            sender.clone(),
+            CallSite {
                 session: session.id,
                 turn: session.turn,
-                call_id: call.call_id,
-                tool: tool_name.clone(),
             },
+            call.clone(),
+            tool_name,
+            arguments,
         )
         .await;
-
-        let started = Instant::now();
-        let output = self
-            .tools
-            .execute(&context, &tool_name, arguments.clone())
-            .await;
-        let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        let is_error = match output {
-            Ok(output) => {
-                let is_error = output.is_error;
-                results.push(into_result(call, output));
-                is_error
-            }
-            Err(error) => {
-                results.push(ToolResultPart {
-                    call_id: call.call_id,
-                    parts: vec![Part::text(error.to_string())],
-                    structured: None,
-                    is_error: true,
-                });
-                true
-            }
-        };
-        self.finish_call(session, sender, call, &tool_name, is_error, duration_ms)
-            .await;
+        results.push(result);
         Ok(None)
     }
 
@@ -1341,6 +1410,70 @@ fn into_result(call: &ToolCallPart, output: ToolOutput) -> ToolResultPart {
         structured: output.structured,
         is_error: output.is_error,
     }
+}
+
+/// The session and turn a tool call belongs to. Grouped so it can be moved into
+/// an early-execution task (FR-STREAM-4).
+#[derive(Clone, Copy)]
+struct CallSite {
+    session: SessionId,
+    turn: u64,
+}
+
+/// Executes one prepared tool call and emits its lifecycle events (FR-TOOL-1).
+///
+/// It is a free function so it can run inside a spawned task for early tool
+/// execution (FR-STREAM-4); [`Engine::run_one_tool`] calls it inline.
+async fn execute_call(
+    tools: Arc<ToolRegistry>,
+    observers: Arc<ObserverSet>,
+    sender: mpsc::Sender<EngineEvent>,
+    site: CallSite,
+    call: ToolCallPart,
+    tool: ToolName,
+    arguments: Value,
+) -> ToolResultPart {
+    let started = EngineEvent::ToolCallStarted {
+        session: site.session,
+        turn: site.turn,
+        call_id: call.call_id,
+        tool: tool.clone(),
+    };
+    observers.emit(&started);
+    let _ = sender.send(started).await;
+
+    let context = ToolContext::new()
+        .with_session(site.session)
+        .with_call(call.call_id);
+    let clock = Instant::now();
+    let output = tools.execute(&context, &tool, arguments).await;
+    let duration_ms = u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let (result, is_error) = match output {
+        Ok(output) => {
+            let is_error = output.is_error;
+            (into_result(&call, output), is_error)
+        }
+        Err(error) => (
+            ToolResultPart {
+                call_id: call.call_id,
+                parts: vec![Part::text(error.to_string())],
+                structured: None,
+                is_error: true,
+            },
+            true,
+        ),
+    };
+    let finished = EngineEvent::ToolCallFinished {
+        session: site.session,
+        turn: site.turn,
+        call_id: call.call_id,
+        tool,
+        is_error,
+        duration_ms,
+    };
+    observers.emit(&finished);
+    let _ = sender.send(finished).await;
+    result
 }
 
 fn stream_delta(event: &StreamEvent) -> Option<StreamDelta> {

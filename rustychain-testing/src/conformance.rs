@@ -11,8 +11,8 @@ use rustychain_core::{
 /// Runs the [`Model`] contract every adapter must satisfy (FR-TEST-1).
 ///
 /// The suite is socket-free: it checks the trait surface an adapter reports and
-/// the determinism of its [`ContinuityAdapter`], so it can run in the hermetic
-/// test suite against every wire.
+/// the determinism of its [`rustychain_core::ContinuityAdapter`], so it can run
+/// in the hermetic test suite against every wire.
 ///
 /// # Panics
 ///

@@ -111,10 +111,13 @@ impl Decoder {
                     "call_id": opt_str(item, "call_id"),
                     "id": opt_str(item, "id"),
                 });
-                Ok(vec![StreamEvent::Continuity {
-                    index,
-                    fragment: self.continuity.fragment(&meta)?,
-                }])
+                Ok(vec![
+                    StreamEvent::Continuity {
+                        index,
+                        fragment: self.continuity.fragment(&meta)?,
+                    },
+                    StreamEvent::ToolCallDone { index },
+                ])
             }
             Some("image_generation_call") => image_output(index, item),
             Some("message") => Ok(Vec::new()),

@@ -4,6 +4,7 @@
 pub mod auth;
 pub mod client;
 pub mod media;
+pub mod quirk;
 pub mod retry;
 pub mod secret;
 pub mod sse;
@@ -12,6 +13,7 @@ pub mod vendor;
 pub use auth::AuthScheme;
 pub use client::{HttpClient, SseStream, is_retryable};
 pub use media::HttpMedia;
+pub use quirk::{Quirk, Quirks};
 pub use retry::{RetryPolicy, parse_retry_after};
 pub use secret::Secret;
 pub use sse::{SseDecoder, SseEvent};

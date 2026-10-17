@@ -302,6 +302,58 @@ mod tests {
         events
     }
 
+    /// Loads a recorded transcript — a JSON array of SSE `data` payloads — and
+    /// maps it through the wire, so live-provider behaviour is pinned hermetically
+    /// (FR-TEST-2).
+    async fn drain_fixture(fixture: &str) -> Vec<StreamEvent> {
+        let data: Vec<String> = serde_json::from_str(fixture).expect("fixture json");
+        let refs: Vec<&str> = data.iter().map(String::as_str).collect();
+        drain(&refs).await
+    }
+
+    #[tokio::test]
+    async fn recorded_transcript_pins_the_critical_path() {
+        let events = drain_fixture(include_str!(
+            "../../../rustychain-testing/fixtures/openai.chat.json"
+        ))
+        .await;
+        let text: String = events
+            .iter()
+            .filter_map(|event| match event {
+                StreamEvent::TextDelta { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text, "Hello, world");
+        let reasoning: String = events
+            .iter()
+            .filter_map(|event| match event {
+                StreamEvent::ReasoningDelta { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(reasoning.contains("Hello, world"));
+        let usage = events
+            .iter()
+            .find_map(|event| match event {
+                StreamEvent::Usage(usage) => Some(usage.clone()),
+                _ => None,
+            })
+            .expect("usage");
+        assert_eq!(usage.input_tokens, Some(23));
+        assert_eq!(usage.output_tokens, Some(91));
+        assert_eq!(usage.reasoning_tokens, Some(86));
+        assert_eq!(usage.cache_read_tokens, Some(0));
+        let finish = events
+            .iter()
+            .find_map(|event| match event {
+                StreamEvent::Finish(reason) => Some(reason.clone()),
+                _ => None,
+            })
+            .expect("finish");
+        assert_eq!(finish, FinishReason::Stop);
+    }
+
     #[tokio::test]
     async fn content_tool_calls_usage_and_finish_decode() {
         let events = drain(&[

@@ -48,6 +48,14 @@ pub enum StreamEvent {
         #[serde(default, skip_serializing_if = "String::is_empty")]
         arguments: String,
     },
+    /// The tool call at `index` has received its complete arguments.
+    ///
+    /// Adapters emit it at the wire's tool-block boundary so a host that enables
+    /// early tool execution can start the call before the message finishes
+    /// (FR-STREAM-4).
+    ToolCallDone {
+        index: u32,
+    },
     MediaStart {
         index: u32,
         kind: MediaKind,
@@ -192,6 +200,7 @@ impl StreamAccumulator {
                 name,
                 arguments,
             } => self.grow_tool_call(index, call_id, name, &arguments),
+            StreamEvent::ToolCallDone { index } => self.close_tool_call(index),
             StreamEvent::MediaStart {
                 index,
                 kind,
@@ -356,6 +365,44 @@ impl StreamAccumulator {
         };
         self.check(grown)?;
         Ok(None)
+    }
+
+    /// Closes the tool call at `index`, parsing its accumulated arguments, and
+    /// returns the completed part (FR-STREAM-4).
+    ///
+    /// # Errors
+    ///
+    /// Returns a codec error when the index holds a non-tool part or the
+    /// accumulated arguments are not valid JSON.
+    fn close_tool_call(&mut self, index: u32) -> Result<Option<Part>> {
+        let Some(partial) = self.partials.remove(&index) else {
+            return Ok(None);
+        };
+        let Partial::ToolCall {
+            call_id,
+            name,
+            arguments,
+        } = partial
+        else {
+            self.partials.insert(index, partial);
+            return Err(Error::Codec(format!(
+                "tool call done for a non-tool part at index {index}"
+            )));
+        };
+        let arguments = if arguments.trim().is_empty() {
+            serde_json::json!({})
+        } else {
+            serde_json::from_str(&arguments)
+                .map_err(|error| Error::Codec(format!("tool arguments: {error}")))?
+        };
+        let part = Part::ToolCall(ToolCallPart {
+            call_id,
+            name,
+            arguments,
+            continuity: self.continuity.remove(&index),
+        });
+        self.complete.insert(index, part.clone());
+        Ok(Some(part))
     }
 
     fn grow_media(&mut self, index: u32, bytes: &[u8], last: bool) -> Result<Option<Part>> {

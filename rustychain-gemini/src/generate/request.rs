@@ -16,11 +16,11 @@ use crate::json::{base64_encode, opt_str};
 ///
 /// [`MediaAdapter`]: rustychain_core::MediaAdapter
 pub(crate) fn build(
-    _model: &ModelRef,
+    model: &ModelRef,
     continuity: &GeminiContinuity,
     request: &ModelRequest,
 ) -> Result<Value> {
-    build_body(continuity, request, true)
+    build_body(model, continuity, request, true)
 }
 
 /// Builds the wire body for a `countTokens` call, which accepts the prompt but
@@ -30,14 +30,15 @@ pub(crate) fn build(
 ///
 /// Returns an error when a part cannot be expressed on this wire.
 pub(crate) fn build_count(
-    _model: &ModelRef,
+    model: &ModelRef,
     continuity: &GeminiContinuity,
     request: &ModelRequest,
 ) -> Result<Value> {
-    build_body(continuity, request, false)
+    build_body(model, continuity, request, false)
 }
 
 fn build_body(
+    model: &ModelRef,
     continuity: &GeminiContinuity,
     request: &ModelRequest,
     generation: bool,
@@ -71,7 +72,7 @@ fn build_body(
         body.insert(
             "tools".to_owned(),
             Value::Array(vec![json!({
-                "functionDeclarations": build_tools(&request.tools),
+                "functionDeclarations": build_tools(model, &request.tools)?,
             })]),
         );
     }
@@ -255,18 +256,26 @@ fn media_part(media: &MediaPart) -> Result<Value> {
     }
 }
 
-fn build_tools(tools: &[ToolSpec]) -> Vec<Value> {
-    tools
-        .iter()
-        .filter(|tool| matches!(tool.kind, ToolKind::Function))
-        .map(|tool| {
-            json!({
-                "name": tool.name.as_str(),
-                "description": tool.description,
-                "parameters": tool.parameters,
-            })
-        })
-        .collect()
+/// # Errors
+///
+/// Returns [`Error::Capability`] for a tool kind this wire cannot express, so a
+/// non-function tool is never silently dropped (Section 12 preamble).
+fn build_tools(model: &ModelRef, tools: &[ToolSpec]) -> Result<Vec<Value>> {
+    let mut out = Vec::with_capacity(tools.len());
+    for tool in tools {
+        if !matches!(tool.kind, ToolKind::Function) {
+            return Err(Error::Capability {
+                model: model.clone(),
+                feature: format!("tool kind {:?} on the generateContent wire", tool.kind),
+            });
+        }
+        out.push(json!({
+            "name": tool.name.as_str(),
+            "description": tool.description,
+            "parameters": tool.parameters,
+        }));
+    }
+    Ok(out)
 }
 
 fn generation_config(request: &ModelRequest) -> serde_json::Map<String, Value> {
@@ -498,6 +507,20 @@ mod tests {
             body["tools"][0]["functionDeclarations"][0]["name"],
             "lookup"
         );
+    }
+
+    #[test]
+    fn a_non_function_tool_is_a_typed_error() {
+        let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
+        request.tools = vec![ToolSpec {
+            name: ToolName::new("google_search").expect("tool"),
+            description: "provider tool".to_owned(),
+            kind: ToolKind::ProviderExecuted,
+            parameters: serde_json::json!({ "type": "object" }),
+            approval: None,
+        }];
+        let error = build(&model(), &continuity(), &request).expect_err("error");
+        assert!(matches!(error, Error::Capability { .. }));
     }
 
     #[test]

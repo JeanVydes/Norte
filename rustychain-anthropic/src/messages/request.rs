@@ -91,7 +91,7 @@ fn build_body(
     if !request.tools.is_empty() {
         body.insert(
             "tools".to_owned(),
-            Value::Array(build_tools(&request.tools)),
+            Value::Array(build_tools(model, &request.tools)?),
         );
     }
     if stream {
@@ -201,6 +201,9 @@ fn push_user(
                     blocks.push(continuity.decode(token)?);
                 }
             }
+            Part::Extension(extension) if extension.namespace.starts_with("anthropic") => {
+                blocks.push(extension.data.clone());
+            }
             _ => {}
         }
     }
@@ -285,18 +288,26 @@ fn vendor_call(calls: &CallIndex, id: CallId) -> String {
     calls.get(&id).map_or_else(|| id.to_string(), Clone::clone)
 }
 
-fn build_tools(tools: &[ToolSpec]) -> Vec<Value> {
-    tools
-        .iter()
-        .filter(|tool| matches!(tool.kind, ToolKind::Function))
-        .map(|tool| {
-            json!({
-                "name": tool.name.as_str(),
-                "description": tool.description,
-                "input_schema": tool.parameters,
-            })
-        })
-        .collect()
+/// # Errors
+///
+/// Returns [`Error::Capability`] for a tool kind this wire cannot express, so a
+/// non-function tool is never silently dropped (Section 12 preamble).
+fn build_tools(model: &ModelRef, tools: &[ToolSpec]) -> Result<Vec<Value>> {
+    let mut out = Vec::with_capacity(tools.len());
+    for tool in tools {
+        if !matches!(tool.kind, ToolKind::Function) {
+            return Err(Error::Capability {
+                model: model.clone(),
+                feature: format!("tool kind {:?} on the messages wire", tool.kind),
+            });
+        }
+        out.push(json!({
+            "name": tool.name.as_str(),
+            "description": tool.description,
+            "input_schema": tool.parameters,
+        }));
+    }
+    Ok(out)
 }
 
 fn tool_result_block(calls: &CallIndex, result: &ToolResultPart) -> Result<Value> {
@@ -363,8 +374,8 @@ fn media_source(media: &MediaPart) -> Result<Value> {
 mod tests {
     use super::*;
     use rustychain_core::{
-        ContinuityAdapter, MimeType, ModelId, ProviderId, ReasoningPart, ReasoningVisibility,
-        ToolCallPart, ToolName, WireFamily,
+        ContinuityAdapter, ExtensionPart, MimeType, ModelId, ProviderId, ReasoningPart,
+        ReasoningVisibility, ToolCallPart, ToolName, WireFamily,
     };
 
     use crate::WIRE_MESSAGES;
@@ -533,6 +544,42 @@ mod tests {
         let body = build(&model(), &continuity(), &request).expect("build");
         assert_eq!(body["tools"][0]["name"], "lookup");
         assert_eq!(body["tools"][0]["input_schema"]["type"], "object");
+    }
+
+    #[test]
+    fn a_non_function_tool_is_a_typed_error() {
+        let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
+        request.tools = vec![ToolSpec {
+            name: ToolName::new("web_search").expect("tool"),
+            description: "provider tool".to_owned(),
+            kind: ToolKind::ProviderSchema,
+            parameters: serde_json::json!({ "type": "object" }),
+            approval: None,
+        }];
+        let error = build(&model(), &continuity(), &request).expect_err("error");
+        assert!(matches!(error, Error::Capability { .. }));
+    }
+
+    #[test]
+    fn user_message_extensions_round_trip_verbatim() {
+        let block = serde_json::json!({
+            "type": "server_tool_use",
+            "id": "srvtoolu_1",
+            "name": "web_search",
+            "input": { "query": "rust" },
+        });
+        let request = ModelRequest::new(
+            model(),
+            vec![Message::new(
+                Role::User,
+                vec![Part::Extension(ExtensionPart {
+                    namespace: "anthropic".to_owned(),
+                    data: block.clone(),
+                })],
+            )],
+        );
+        let body = build(&model(), &continuity(), &request).expect("build");
+        assert_eq!(body["messages"][0]["content"][0], block);
     }
 
     #[test]

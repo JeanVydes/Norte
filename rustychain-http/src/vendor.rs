@@ -5,9 +5,11 @@ use url::Url;
 use rustychain_core::{Error, ProviderId, Result, WireFamily};
 
 use crate::auth::AuthScheme;
+use crate::quirk::{Quirk, Quirks};
 
 /// Everything that makes a wire-compatible vendor reachable: where to send
-/// requests, how to authenticate and which extra headers to attach.
+/// requests, how to authenticate, which extra headers to attach and which known
+/// deviations to honour.
 ///
 /// The framework ships no vendor table. Hosts build a profile from their own
 /// configuration and hand it to an adapter.
@@ -18,6 +20,7 @@ pub struct VendorProfile {
     pub base_url: Url,
     pub auth: AuthScheme,
     pub headers: BTreeMap<String, String>,
+    pub quirks: Quirks,
 }
 
 impl VendorProfile {
@@ -34,6 +37,7 @@ impl VendorProfile {
             base_url,
             auth: AuthScheme::None,
             headers: BTreeMap::new(),
+            quirks: Quirks::new(),
         })
     }
 
@@ -47,6 +51,18 @@ impl VendorProfile {
     pub fn with_header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
         self.headers.insert(name.into(), value.into());
         self
+    }
+
+    /// Declares a known deviation from the reference wire (FR-OAI-2).
+    #[must_use]
+    pub fn with_quirk(mut self, quirk: Quirk) -> Self {
+        self.quirks.insert(quirk);
+        self
+    }
+
+    #[must_use]
+    pub fn quirks(&self) -> &Quirks {
+        &self.quirks
     }
 
     /// Joins `path` onto the base URL, keeping the base path intact even when it
@@ -101,5 +117,15 @@ mod tests {
     fn wire_family_round_trips() {
         let model_wire = WireFamily::from_str("anthropic-messages").expect("wire");
         assert_eq!(model_wire.as_str(), "anthropic-messages");
+    }
+
+    #[test]
+    fn quirks_are_declared_on_the_profile() {
+        let profile = profile("https://api.example.com/v1")
+            .with_quirk(Quirk::NoStreamUsage)
+            .with_quirk(Quirk::NoSeed);
+        assert!(profile.quirks().contains(Quirk::NoStreamUsage));
+        assert!(profile.quirks().contains(Quirk::NoSeed));
+        assert!(!profile.quirks().contains(Quirk::NoStructuredOutput));
     }
 }

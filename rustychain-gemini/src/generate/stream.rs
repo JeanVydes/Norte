@@ -36,15 +36,6 @@ pub(crate) fn map(sse: SseStream, continuity: GeminiContinuity) -> ModelStream {
     Box::pin(stream)
 }
 
-/// Server-side tool parts the `generateContent` API returns. They carry no
-/// call-id pairing, so they round-trip verbatim as extension parts.
-const EXTENSION_KEYS: [&str; 4] = [
-    "executableCode",
-    "codeExecutionResult",
-    "toolCall",
-    "toolResponse",
-];
-
 #[derive(Clone, Debug)]
 struct Decoder {
     continuity: GeminiContinuity,
@@ -178,25 +169,23 @@ impl Decoder {
         if let Some(data) = part.get("fileData").filter(|data| !data.is_null()) {
             return self.file_data(data, events);
         }
-        if self.extension(part, events) {
-            return Ok(());
-        }
         if let Some(text) = opt_str(part, "text") {
             let thought = part
                 .get("thought")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
-            self.text(part, text, thought, events)?;
+            return self.text(part, text, thought, events);
         }
+        self.extension(part, events);
         Ok(())
     }
 
-    fn extension(&mut self, part: &Value, events: &mut Vec<StreamEvent>) -> bool {
-        let known = EXTENSION_KEYS
-            .iter()
-            .any(|key| part.get(key).is_some_and(|value| !value.is_null()));
-        if !known {
-            return false;
+    /// Captures any part this decoder does not model — including server-side tool
+    /// parts — as an opaque `Extension`, so unknown wire blocks round-trip
+    /// unchanged (FR-ADP-3).
+    fn extension(&mut self, part: &Value, events: &mut Vec<StreamEvent>) {
+        if part.as_object().is_none_or(serde_json::Map::is_empty) {
+            return;
         }
         let index = self.alloc();
         events.push(StreamEvent::Part {
@@ -207,7 +196,6 @@ impl Decoder {
             }),
         });
         self.break_text();
-        true
     }
 
     fn text(
@@ -294,6 +282,7 @@ impl Decoder {
             index,
             fragment: self.continuity.fragment(part)?,
         });
+        events.push(StreamEvent::ToolCallDone { index });
         self.break_text();
         Ok(())
     }
@@ -666,6 +655,32 @@ mod tests {
         };
         assert_eq!(extension.namespace, "google");
         assert_eq!(extension.data["executableCode"]["code"], "1+1");
+    }
+
+    #[tokio::test]
+    async fn unknown_parts_round_trip_as_extensions() {
+        let events = drain(&[
+            r#"{"candidates":[{"content":{"parts":[{"vendorExtension":{"payload":[1,2,3]}}]}}]}"#,
+        ])
+        .await;
+        let StreamEvent::Part {
+            part: Part::Extension(extension),
+            ..
+        } = &events[0]
+        else {
+            panic!("expected extension part");
+        };
+        assert_eq!(extension.namespace, "google");
+        assert_eq!(
+            extension.data["vendorExtension"]["payload"],
+            json!([1, 2, 3])
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_parts_are_ignored() {
+        let events = drain(&[r#"{"candidates":[{"content":{"parts":[{}]}}]}"#]).await;
+        assert!(events.is_empty());
     }
 
     #[tokio::test]

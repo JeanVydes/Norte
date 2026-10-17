@@ -234,6 +234,9 @@ impl Decoder {
                 }),
             }]);
         }
+        if self.calls.remove(&index).is_some() {
+            return Ok(vec![StreamEvent::ToolCallDone { index }]);
+        }
         Ok(Vec::new())
     }
 

@@ -2,9 +2,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rustychain_core::{
-    CallId, ContinuityFragment, ContinuityScope, ContinuitySemantics, Engine, EngineBuilder, Error,
-    FinishReason, FnExecutor, Message, MessageStatus, Phase, PolicySet, Result, Role, Store,
-    StreamEvent, ToolApprovalPolicy, ToolContext, ToolName, ToolRegistry, WireFamily,
+    CallId, ContinuityFragment, ContinuityScope, ContinuitySemantics, Engine, EngineBuilder,
+    EngineConfig, EngineEvent, Error, FinishReason, FnExecutor, Message, MessageStatus, Phase,
+    PolicySet, Result, Role, Store, StreamEvent, ToolApprovalPolicy, ToolContext, ToolName,
+    ToolRegistry, WireFamily,
 };
 use rustychain_testing::{
     InMemoryBlobStore, InMemoryStore, ScriptedModel, StrictContinuity, model, text_capabilities,
@@ -41,6 +42,15 @@ struct Harness {
 }
 
 fn harness(model: Arc<ScriptedModel>, tools: ToolRegistry, policies: PolicySet) -> Harness {
+    harness_with_config(model, tools, policies, EngineConfig::default())
+}
+
+fn harness_with_config(
+    model: Arc<ScriptedModel>,
+    tools: ToolRegistry,
+    policies: PolicySet,
+    config: EngineConfig,
+) -> Harness {
     let store = Arc::new(InMemoryStore::new());
     let blobs = Arc::new(InMemoryBlobStore::new());
     let engine = EngineBuilder::new()
@@ -49,6 +59,7 @@ fn harness(model: Arc<ScriptedModel>, tools: ToolRegistry, policies: PolicySet) 
         .model(model.clone())
         .tools(tools)
         .policies(policies)
+        .config(config)
         .build()
         .expect("build engine");
     Harness {
@@ -135,6 +146,73 @@ async fn tool_calls_run_and_feed_the_next_turn() {
         .find(|message| message.role == Role::Tool)
         .expect("tool message reached the model");
     assert_eq!(tool_message.tool_results()[0].call_id, call_id);
+}
+
+/// Runs one echo turn and reports how many commits had succeeded when the tool
+/// finished, so early and sequential execution can be compared.
+async fn tool_finish_commit_offset(config: EngineConfig) -> usize {
+    use futures_util::StreamExt;
+
+    let call_id = CallId::new();
+    let events = vec![
+        StreamEvent::ToolCallStart {
+            index: 0,
+            call_id,
+            name: "echo".to_owned(),
+        },
+        StreamEvent::ToolCallDelta {
+            index: 0,
+            call_id,
+            name: None,
+            arguments: json!({ "text": "hi" }).to_string(),
+        },
+        StreamEvent::ToolCallDone { index: 0 },
+        StreamEvent::Finish(FinishReason::ToolCalls),
+    ];
+    let scripted = Arc::new(
+        ScriptedModel::new(model("test/echo"))
+            .turn(events)
+            .turn_text("all done"),
+    );
+    let mut tools = ToolRegistry::new();
+    tools.register_declarator(&Echo).expect("register echo");
+
+    let harness = harness_with_config(scripted, tools, PolicySet::default(), config);
+    let session = harness.engine.create().await.expect("create");
+
+    let mut stream = harness
+        .engine
+        .send(session.id, Message::user("please echo"));
+    let mut commits = 0usize;
+    let mut offset = None;
+    while let Some(event) = stream.next().await {
+        match event.expect("event") {
+            EngineEvent::CommitSucceeded { .. } => commits += 1,
+            EngineEvent::ToolCallFinished { .. } if offset.is_none() => offset = Some(commits),
+            _ => {}
+        }
+    }
+    stream.finish().await.expect("turn");
+    offset.expect("the tool finished")
+}
+
+#[tokio::test]
+async fn early_tool_execution_finishes_during_the_stream() {
+    let early = tool_finish_commit_offset(EngineConfig {
+        early_tool_execution: true,
+        ..EngineConfig::default()
+    })
+    .await;
+    let sequential = tool_finish_commit_offset(EngineConfig::default()).await;
+    assert!(
+        early < sequential,
+        "early execution finishes while the assistant message streams, before its commit"
+    );
+    assert_eq!(
+        early + 1,
+        sequential,
+        "early execution finishes exactly one commit earlier"
+    );
 }
 
 #[tokio::test]

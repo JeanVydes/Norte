@@ -50,7 +50,7 @@ pub(crate) fn build(
     if !request.tools.is_empty() {
         body.insert(
             "tools".to_owned(),
-            Value::Array(build_tools(&request.tools)),
+            Value::Array(build_tools(model, &request.tools)?),
         );
     }
     if let Some(reasoning) = build_reasoning(request.reasoning) {
@@ -129,20 +129,28 @@ fn build_text(request: &ModelRequest) -> Option<Value> {
     }))
 }
 
-fn build_tools(tools: &[ToolSpec]) -> Vec<Value> {
-    tools
-        .iter()
-        .filter(|tool| matches!(tool.kind, ToolKind::Function))
-        .map(|tool| {
-            json!({
-                "type": "function",
-                "name": tool.name.as_str(),
-                "description": tool.description,
-                "parameters": tool.parameters,
-                "strict": false,
-            })
-        })
-        .collect()
+/// # Errors
+///
+/// Returns [`Error::Capability`] for a tool kind this wire cannot express, so a
+/// non-function tool is never silently dropped (Section 12 preamble).
+fn build_tools(model: &ModelRef, tools: &[ToolSpec]) -> Result<Vec<Value>> {
+    let mut out = Vec::with_capacity(tools.len());
+    for tool in tools {
+        if !matches!(tool.kind, ToolKind::Function) {
+            return Err(Error::Capability {
+                model: model.clone(),
+                feature: format!("tool kind {:?} on the responses wire", tool.kind),
+            });
+        }
+        out.push(json!({
+            "type": "function",
+            "name": tool.name.as_str(),
+            "description": tool.description,
+            "parameters": tool.parameters,
+            "strict": false,
+        }));
+    }
+    Ok(out)
 }
 
 fn call_index(continuity: &OpenAiContinuity, messages: &[Message]) -> CallIndex {
@@ -238,6 +246,13 @@ fn push_content_message(message: &Message, role: &str, items: &mut Vec<Value>) -
             "role": role,
             "content": content,
         }));
+    }
+    for part in &message.parts {
+        if let Part::Extension(ExtensionPart { namespace, data }) = part {
+            if namespace.starts_with("openai") {
+                items.push(data.clone());
+            }
+        }
     }
     Ok(())
 }
@@ -610,5 +625,38 @@ mod tests {
         let request = ModelRequest::new(model(), vec![Message::user("q"), assistant]);
         let body = build(&model(), &continuity(), &request).expect("build");
         assert_eq!(body["input"][1], item);
+    }
+
+    #[test]
+    fn user_message_extensions_are_replayed_verbatim() {
+        let item = serde_json::json!({
+            "type": "web_search_call",
+            "id": "ws_2",
+            "status": "completed",
+        });
+        let user = Message::new(
+            Role::User,
+            vec![Part::Extension(ExtensionPart {
+                namespace: "openai".to_owned(),
+                data: item.clone(),
+            })],
+        );
+        let request = ModelRequest::new(model(), vec![user]);
+        let body = build(&model(), &continuity(), &request).expect("build");
+        assert_eq!(body["input"][0], item);
+    }
+
+    #[test]
+    fn a_non_function_tool_is_a_typed_error() {
+        let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
+        request.tools = vec![ToolSpec {
+            name: ToolName::new("web_search").expect("tool"),
+            description: "provider tool".to_owned(),
+            kind: ToolKind::ProviderExecuted,
+            parameters: serde_json::json!({ "type": "object" }),
+            approval: None,
+        }];
+        let error = build(&model(), &continuity(), &request).expect_err("error");
+        assert!(matches!(error, Error::Capability { .. }));
     }
 }

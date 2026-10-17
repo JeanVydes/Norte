@@ -417,18 +417,20 @@ fn usage_of(response: &Value) -> Usage {
     let Some(usage) = response.get("usage") else {
         return Usage::default();
     };
+    let input = usage.get("input_tokens_details");
+    let output = usage.get("output_tokens_details");
     let mut mapped = Usage::default();
     mapped.input_tokens = usage.get("input_tokens").and_then(Value::as_u64);
     mapped.output_tokens = usage.get("output_tokens").and_then(Value::as_u64);
-    mapped.reasoning_tokens = usage
-        .get("output_tokens_details")
-        .and_then(|details| details.get("reasoning_tokens"))
-        .and_then(Value::as_u64);
-    mapped.cache_read_tokens = usage
-        .get("input_tokens_details")
-        .and_then(|details| details.get("cached_tokens"))
-        .and_then(Value::as_u64);
+    mapped.reasoning_tokens = counter(output, "reasoning_tokens");
+    mapped.cache_read_tokens = counter(input, "cached_tokens");
+    mapped.cache_write_tokens = counter(input, "cache_write_tokens");
     mapped
+}
+
+/// Reads one vendor counter out of a details object, if present.
+fn counter(details: Option<&Value>, key: &str) -> Option<u64> {
+    details?.get(key).and_then(Value::as_u64)
 }
 
 fn failed_error(value: &Value) -> Error {
@@ -534,7 +536,7 @@ mod tests {
         let events = drain(&[
             r#"{"type":"response.output_text.delta","output_index":0,"delta":"Hel"}"#,
             r#"{"type":"response.output_text.delta","output_index":0,"delta":"lo"}"#,
-            r#"{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":7,"output_tokens":2,"input_tokens_details":{"cached_tokens":3}}}}"#,
+            r#"{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":7,"output_tokens":2,"input_tokens_details":{"cached_tokens":3,"cache_write_tokens":1}}}}"#,
         ])
         .await;
         assert_eq!(
@@ -557,6 +559,7 @@ mod tests {
         assert_eq!(usage.input_tokens, Some(7));
         assert_eq!(usage.output_tokens, Some(2));
         assert_eq!(usage.cache_read_tokens, Some(3));
+        assert_eq!(usage.cache_write_tokens, Some(1));
         assert_eq!(events[3], StreamEvent::Finish(FinishReason::Stop));
     }
 

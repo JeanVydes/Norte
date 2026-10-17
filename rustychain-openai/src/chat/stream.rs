@@ -301,18 +301,48 @@ fn finish_reason(reason: &str) -> FinishReason {
 }
 
 fn usage_of(usage: &Value) -> Usage {
+    let prompt = usage.get("prompt_tokens_details");
+    let completion = usage.get("completion_tokens_details");
     let mut mapped = Usage::default();
     mapped.input_tokens = usage.get("prompt_tokens").and_then(Value::as_u64);
     mapped.output_tokens = usage.get("completion_tokens").and_then(Value::as_u64);
-    mapped.reasoning_tokens = usage
-        .get("completion_tokens_details")
-        .and_then(|details| details.get("reasoning_tokens"))
-        .and_then(Value::as_u64);
-    mapped.cache_read_tokens = usage
-        .get("prompt_tokens_details")
-        .and_then(|details| details.get("cached_tokens"))
-        .and_then(Value::as_u64);
+    mapped.reasoning_tokens = counter(completion, "reasoning_tokens");
+    mapped.cache_read_tokens = counter(prompt, "cached_tokens");
+    mapped.cache_write_tokens = counter(prompt, "cache_write_tokens");
+    mapped.audio_input_tokens = counter(prompt, "audio_tokens");
+    mapped.audio_output_tokens = counter(completion, "audio_tokens");
+    collect_counters(
+        &mut mapped,
+        prompt,
+        &[
+            ("prompt_text_tokens", "text_tokens"),
+            ("prompt_image_tokens", "image_tokens"),
+        ],
+    );
+    collect_counters(
+        &mut mapped,
+        completion,
+        &[
+            ("completion_text_tokens", "text_tokens"),
+            ("accepted_prediction_tokens", "accepted_prediction_tokens"),
+            ("rejected_prediction_tokens", "rejected_prediction_tokens"),
+        ],
+    );
     mapped
+}
+
+/// Reads one vendor counter out of a details object, if present.
+fn counter(details: Option<&Value>, key: &str) -> Option<u64> {
+    details?.get(key).and_then(Value::as_u64)
+}
+
+/// Preserves vendor counters that have no neutral field, so none is lost.
+fn collect_counters(mapped: &mut Usage, details: Option<&Value>, keys: &[(&str, &str)]) {
+    for (neutral, vendor) in keys {
+        if let Some(value) = counter(details, vendor) {
+            mapped.extension.insert((*neutral).to_owned(), value);
+        }
+    }
 }
 
 fn stream_error(error: &Value) -> Error {
@@ -502,6 +532,31 @@ mod tests {
             }
         );
         assert_eq!(events[3], StreamEvent::Finish(FinishReason::Stop));
+    }
+
+    #[tokio::test]
+    async fn audio_and_prediction_token_counters_are_preserved() {
+        let events = drain(&[
+            r#"{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":4,"prompt_tokens_details":{"cached_tokens":2,"cache_write_tokens":1,"audio_tokens":3,"text_tokens":5,"image_tokens":2},"completion_tokens_details":{"reasoning_tokens":1,"audio_tokens":2,"text_tokens":1,"accepted_prediction_tokens":1,"rejected_prediction_tokens":0}}}"#,
+        ])
+        .await;
+        let usage = events
+            .iter()
+            .find_map(|event| match event {
+                StreamEvent::Usage(usage) => Some(usage),
+                _ => None,
+            })
+            .expect("usage");
+        assert_eq!(usage.input_tokens, Some(10));
+        assert_eq!(usage.audio_input_tokens, Some(3));
+        assert_eq!(usage.audio_output_tokens, Some(2));
+        assert_eq!(usage.cache_read_tokens, Some(2));
+        assert_eq!(usage.cache_write_tokens, Some(1));
+        assert_eq!(usage.extension.get("prompt_text_tokens"), Some(&5));
+        assert_eq!(usage.extension.get("prompt_image_tokens"), Some(&2));
+        assert_eq!(usage.extension.get("completion_text_tokens"), Some(&1));
+        assert_eq!(usage.extension.get("accepted_prediction_tokens"), Some(&1));
+        assert_eq!(usage.extension.get("rejected_prediction_tokens"), Some(&0));
     }
 
     #[tokio::test]

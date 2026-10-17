@@ -11,22 +11,44 @@
   <img src="https://img.shields.io/badge/edition-2024-blue.svg" alt="Edition: 2024">
 </p>
 
-Streaming-first, type-safe Rust for LLM apps, chains and agents. A neutral core
-with no vendor names, plus adapters for OpenAI, Anthropic and Gemini.
+**Provider-agnostic infrastructure for LLM agents in Rust.** One core, three
+first-class provider SDKs, and a streaming engine built to ship.
 
-- **Neutral core** — vendor types never leave an adapter.
-- **Stream-first** — text, reasoning, tool arguments, media and safety ratings
-  arrive as deltas; blocking is `collect()`.
-- **Durable sessions** — a turn is a commit on an append-only node graph.
-- **Lossless export** — `Conversation` round-trips byte-for-byte, cache prefix
-  included.
-- **Policy-gated tools** — allow, deny, require approval, rewrite or rate-limit.
-- **Ports, not backends** — implement `Store` and `BlobStore`; in-memory versions
-  ship for tests.
+Write your agent once and run it on OpenAI, Anthropic or Gemini — or on any
+OpenAI-compatible endpoint — without touching a line of application code. No
+provider leaks into your application, and no model catalogue is baked in: you
+declare what your models can do and the library does the rest.
+
+## Why RustyChain
+
+- **Provider-agnostic, for real.** Point the same agent at OpenAI, Anthropic or
+  Gemini with a config change, not a rewrite.
+- **Streaming from the first token.** Reasoning, answers, tool calls and media
+  arrive live, never batched behind a finished response.
+- **Durable by construction.** Every turn is an atomic commit. Sessions survive
+  restarts, scale across workers and move between processes intact.
+- **Lossless history.** Export a conversation and re-import it byte-for-byte —
+  the provider cache prefix included.
+- **Safe to hand it the keys.** Tool calls follow auditable policies, and an
+  approval is bound to the exact arguments it was granted for.
+- **Production-ready, not a demo.** Typed errors, retries, fuzzed parsers, no
+  unsafe, pinned MSRV.
+
+## Providers
+
+| Provider | SDK | Compatibility |
+| --- | --- | --- |
+| OpenAI | `rustychain-openai` | 100% |
+| Anthropic | `rustychain-anthropic` | 100% |
+| Google Gemini | `rustychain-gemini` | 100% |
+
+Measured against each provider's documented API — nothing is silently dropped.
+OpenRouter, Groq, Together, vLLM and any other OpenAI-compatible endpoint work
+through the OpenAI SDK with a different base URL.
 
 ## Install
 
-Not published yet:
+Not published yet; depend on the repository:
 
 ```toml
 [dependencies]
@@ -60,216 +82,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
 
     let session = engine.create().await?;
-    let outcome = engine
-        .send(session.id, Message::user("Hello!"))
-        .finish()
-        .await?;
-
-    println!(
-        "{}",
-        outcome.message.as_ref().map(Message::text).unwrap_or_default()
-    );
+    let outcome = engine.send(session.id, Message::user("Hello!")).finish().await?;
+    println!("{}", outcome.message.as_ref().map(Message::text).unwrap_or_default());
     Ok(())
 }
 ```
 
-The in-memory store is a test reference; production hosts implement `Store` and
-`BlobStore` against their own database and object storage.
+That is the whole wiring. Streams, tool loops, approvals and storage are
+configuration on top of it.
 
-## Streaming
+## Examples
 
-A turn yields `EngineEvent`s as they arrive; `finish()` returns the outcome.
-Dropping the stream cancels the turn. Tools run automatically, up to
-`EngineConfig::max_iterations`.
+Runnable, end-to-end programs live in [`examples/`](examples/):
 
-```rust
-use futures_util::StreamExt;
-use rustychain_core::{Engine, EngineEvent, Message, SessionId, StreamDelta};
+- [`react-agent`](examples/react-agent) — a streaming ReAct agent on OpenRouter
+  with live reasoning, an approval-gated shell tool, a custom fetch tool, and a
+  two-model fan-out once the data is gathered.
 
-async fn stream_turn(
-    engine: &Engine,
-    session: SessionId,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut stream = engine.send(session, Message::user("Hello!"));
+## Documentation
 
-    while let Some(event) = stream.next().await {
-        match event? {
-            EngineEvent::StreamDelta {
-                delta: StreamDelta::Text { text, .. },
-                ..
-            } => print!("{text}"),
-            EngineEvent::StreamDelta {
-                delta: StreamDelta::Reasoning { text, .. },
-                ..
-            } => eprint!("{text}"),
-            EngineEvent::ToolCallStarted { tool, .. } => eprintln!("\n→ {tool}"),
-            _ => {}
-        }
-    }
-
-    let outcome = stream.finish().await?;
-    let _ = outcome;
-    Ok(())
-}
-```
-
-## Tools
-
-```rust
-use rustychain_core::{FnExecutor, Result, ToolRegistry};
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, JsonSchema, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct EchoArgs {
-    text: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct EchoResult {
-    echoed: String,
-}
-
-#[rustychain_core::tool(name = "echo", description = "Echo the provided text")]
-struct Echo;
-
-#[async_trait::async_trait]
-impl FnExecutor<EchoArgs, EchoResult> for Echo {
-    async fn call(&self, args: EchoArgs) -> Result<EchoResult> {
-        Ok(EchoResult { echoed: args.text })
-    }
-}
-
-fn build_registry() -> Result<ToolRegistry> {
-    let mut tools = ToolRegistry::new();
-    tools.register_declarator(&Echo)?;
-    Ok(tools)
-}
-```
-
-The argument schema is generated from `EchoArgs`. Rich tools use
-`ToolRegistry::register_tool` and can stream progress or observe cancellation.
-
-## Approvals
-
-`ToolApprovalPolicy` gates a tool: the session parks at `Phase::AwaitingApproval`
-until the host grants or denies the call. Grants are bound to the arguments, so
-they cannot be replayed for different input.
-
-```rust
-use std::sync::Arc;
-
-use rustychain_core::{GrantScope, Message, Phase, PolicySet, ToolApprovalPolicy, ToolName};
-
-fn shell_approvals() -> Result<PolicySet, Box<dyn std::error::Error>> {
-    Ok(PolicySet::new(vec![Arc::new(ToolApprovalPolicy::new(
-        "shell-approval",
-        vec![ToolName::new("command")?],
-        "the agent wants to run a shell command",
-    ))]))
-}
-
-async fn run_guarded(
-    engine: &rustychain_core::Engine,
-    session: rustychain_core::SessionId,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let outcome = engine
-        .send(session, Message::user("Clean the build directory."))
-        .finish()
-        .await?;
-
-    if outcome.session.phase == Phase::AwaitingApproval {
-        let pending = engine.pending_approvals(session).await?;
-        for record in &pending {
-            println!("approve `{}`?", record.tool);
-        }
-        let record = &pending[0];
-        // Deny instead with `engine.deny(record.id, "operator", reason)`.
-        engine
-            .approve(record.id, GrantScope::Call(record.call_id), "operator")
-            .await?;
-        engine.resume(session).finish().await?;
-    }
-    Ok(())
-}
-```
-
-## Turn control
-
-`send` and `resume` use the engine defaults. Configure one turn — sampling,
-reasoning, exposed tools — with the turn builder. Overrides layer per field:
-engine ← session ← turn.
-
-```rust
-use rustychain_core::{Message, ReasoningEffort, ReasoningRequest, ToolName};
-
-async fn turn(engine: &rustychain_core::Engine, session: rustychain_core::SessionId)
-    -> Result<(), Box<dyn std::error::Error>> {
-    let outcome = engine
-        .turn(session)
-        .input(Message::user("Summarise this."))
-        .temperature(0.2)
-        .top_k(40)
-        .reasoning(ReasoningRequest::Effort(ReasoningEffort::High))
-        .tools([ToolName::new("echo")?])
-        .start()
-        .finish()
-        .await?;
-    let _ = outcome;
-    Ok(())
-}
-```
-
-## Other vendors
-
-An adapter is a `ModelRef` + a `VendorProfile` (endpoint, auth) + `Capabilities`.
-OpenAI-compatible vendors need no preset:
-
-```rust
-use rustychain_core::{Capabilities, ModelRef, Modality, ProviderId, WireFamily};
-use rustychain_http::{AuthScheme, VendorProfile};
-use rustychain_openai::OpenAiChat;
-
-fn openrouter() -> Result<OpenAiChat, Box<dyn std::error::Error>> {
-    let profile = VendorProfile::new(
-        ProviderId::new("openrouter")?,
-        WireFamily::new("openai.chat")?,
-        "https://openrouter.ai/api/v1",
-    )?
-    .with_auth(AuthScheme::bearer(std::env::var("OPENROUTER_API_KEY")?));
-    let reference = ModelRef::new(
-        profile.provider.clone(),
-        "anthropic/claude-sonnet-4".parse()?,
-    );
-    let capabilities = Capabilities::builder()
-        .input(Modality::Text)
-        .output(Modality::Text)
-        .build();
-    OpenAiChat::new(reference, profile, capabilities)
-}
-```
-
-Presets: `rustychain_openai::presets::openai`,
-`rustychain_anthropic::presets::anthropic`, `rustychain_gemini::presets::gemini`.
-
-## Export & import
-
-```rust
-use rustychain_core::Conversation;
-
-async fn handover(engine: &rustychain_core::Engine, session: rustychain_core::SessionId)
-    -> Result<(), Box<dyn std::error::Error>> {
-    let conversation = engine.export(session).await?;
-    let json = conversation.to_json()?; // store it, ship it
-    let restored = Conversation::from_json(&json)?;
-    let imported = engine.import(restored).await?;
-    let _ = imported;
-    Ok(())
-}
-```
-
-A re-import reproduces the exact wire prefix, so it costs no cache miss.
+Every crate carries module-level rustdoc (`cargo doc --workspace --no-deps
+--open`). [`docs/SRS.md`](docs/SRS.md) is the source of truth for behaviour, and
+[`CONTRIBUTING.md`](CONTRIBUTING.md) covers the build and lint policies.
 
 ## Development
 
@@ -280,9 +114,8 @@ cargo test --workspace
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items
 ```
 
-[`docs/SRS.md`](docs/SRS.md) is the source of truth for behaviour;
-[`CONTRIBUTING.md`](CONTRIBUTING.md) covers the build and lint policies. Wire
-parsers are fuzzed with `cargo-fuzz` (`fuzz/`); live tests are `#[ignore]`d.
+Wire parsers are fuzzed with `cargo-fuzz` (`fuzz/`); live provider tests are
+`#[ignore]`d.
 
 ## License
 

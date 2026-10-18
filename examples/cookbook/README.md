@@ -25,6 +25,7 @@ the second calls the shipped executors directly.
 | `policy` | Denying and rewriting tool calls before they run |
 | `policy_context` | A policy that decides on what the request already did |
 | `tools` | Declaring tools: macro, explicit, and rich `ToolOutput` |
+| `agent` | An agent turn: the model edits a file through the host tools |
 | `executors` | Calling `read`, `write`, `edit` and `command` directly |
 | `observers` | Observers and stream transforms |
 

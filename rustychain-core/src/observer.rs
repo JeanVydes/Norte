@@ -96,9 +96,10 @@ impl ObserverSet {
 
     /// Runs a delta through the registered transforms in registration order.
     ///
-    /// Transforms shape the observer side-channel only: they may annotate, split
-    /// or drop deltas, but they never touch the accumulator the engine commits,
-    /// so durability ordering is unaffected (FR-OBS-2).
+    /// Transforms shape the delta side-channel that the host stream and the
+    /// observers read: they may annotate, split or even drop deltas. They never
+    /// touch the accumulator the engine commits, so durability is unaffected
+    /// (FR-OBS-2).
     #[must_use]
     pub fn project(&self, delta: StreamDelta) -> Vec<StreamDelta> {
         let mut current = vec![delta];

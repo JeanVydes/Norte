@@ -24,16 +24,30 @@ struct WordCount;
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct WordCountArgs {
-    // A nested type: the engine replaces the local `$ref` with its definition
-    // before putting the schema on the wire, so a model that does not follow
-    // references still sees the whole shape (FR-TOOL-6).
+    /// The document to count.
+    ///
+    /// A nested type: the engine replaces the local `$ref` with its definition
+    /// before putting the schema on the wire, so a model that does not follow
+    /// references still sees the whole shape (FR-TOOL-6).
+    ///
+    /// A `///` comment is the description the model reads. Where the developer's
+    /// prose and the model's instruction differ, `#[schemars(description = ..)]`
+    /// replaces it on the wire and the rustdoc stays for the reader;
+    /// `#[schemars(example = ..)]` adds an entry to `examples`, which is how a
+    /// nested shape gets shown rather than described.
+    #[schemars(
+        description = "The document whose words are counted.",
+        example = serde_json::json!({"title": "Notes", "body": "one two three"})
+    )]
     document: Document,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct Document {
+    /// The document's title. Its words count too.
     title: String,
+    /// The document's body.
     body: String,
 }
 
@@ -93,6 +107,8 @@ impl ToolMetadata for ReadFile {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct ReadFileArgs {
+    /// The path to read, relative to the host's working directory.
+    #[schemars(example = &"src/main.rs")]
     path: String,
 }
 

@@ -48,8 +48,12 @@ pub struct EditSpec {
 #[serde(deny_unknown_fields)]
 pub struct EditRequest {
     /// The file to edit.
+    #[schemars(example = &"src/main.rs")]
     pub path: PathBuf,
     /// Applied in order, each one over the result of the previous.
+    #[schemars(
+        example = serde_json::json!([{"search": "let x = 1;", "replace": "let x = 2;"}])
+    )]
     pub edits: Vec<EditSpec>,
 }
 

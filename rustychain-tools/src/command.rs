@@ -52,15 +52,26 @@ const READ_BUFFER: usize = 8192;
 #[non_exhaustive]
 pub enum CommandLine {
     /// Run a program with its arguments, with no shell in between.
+    #[schemars(
+        example = serde_json::json!({"kind": "program", "program": "cargo", "args": ["test"]})
+    )]
     Program {
+        #[schemars(description = "The program to run.", example = &"cargo")]
         program: String,
         #[serde(default)]
+        #[schemars(description = "The program's arguments, in order.")]
         args: Vec<String>,
     },
     /// Run a script through `shell -c`.
+    #[schemars(
+        description = "Run a script with the shell's -c flag.",
+        example = serde_json::json!({"kind": "shell", "shell": "sh", "script": "echo $HOME"})
+    )]
     Shell {
         /// The interpreter; [`CommandRequest::shell`] fills in [`DEFAULT_SHELL`].
+        #[schemars(description = "The shell to run the script with.", example = &"sh")]
         shell: String,
+        #[schemars(description = "The script to run.")]
         script: String,
     },
 }
@@ -71,14 +82,21 @@ pub enum CommandLine {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
+#[schemars(
+    description = "The command to run and the bounds for it. The host caps the run time and the output size, so asking for more than it allows is clamped, not honoured."
+)]
 pub struct CommandRequest {
     pub command: CommandLine,
     /// Working directory for the process.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(example = &"/srv/app")]
     pub cwd: Option<PathBuf>,
     /// Variables to add to the process. The process does not inherit anything
     /// else, and a variable the host set cannot be overridden here
     /// (FR-TOOL-BASH-6).
+    #[schemars(
+        description = "Extra environment variables for the process. The process inherits nothing else, and a variable the host already set cannot be replaced here."
+    )]
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
     /// How long the process may run, in milliseconds. A value above the host's
@@ -88,6 +106,9 @@ pub struct CommandRequest {
     /// How many bytes of each stream the executor keeps. A value above the
     /// host's ceiling is clamped to it; the model sees at most
     /// [`CommandLimits::max_model_bytes`] of it.
+    #[schemars(
+        description = "How many bytes of each stream to keep. Above the host's ceiling it is clamped to it, and what reaches you is capped further by the host."
+    )]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output_bytes: Option<usize>,
     /// Bytes for the process's standard input.
@@ -95,6 +116,7 @@ pub struct CommandRequest {
     pub stdin: Option<String>,
     /// A blob holding standard input; takes precedence over `stdin`
     /// (FR-TOOL-BASH-1).
+    #[schemars(description = "A blob holding the standard input; it wins over the inline stdin.")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stdin_blob: Option<BlobId>,
     /// Merge stderr into stdout for both the live stream and the final text.
@@ -102,6 +124,9 @@ pub struct CommandRequest {
     pub merge_stderr: bool,
     /// Lines to include in the structured summary when they contain any of
     /// these literal patterns (FR-TOOL-BASH-3).
+    #[schemars(
+        description = "Report the lines that contain any of these literal strings in the structured summary."
+    )]
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub summary_patterns: Vec<String>,
     /// The last N lines of the output to include in the structured summary.

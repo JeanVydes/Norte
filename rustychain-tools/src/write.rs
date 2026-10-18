@@ -16,11 +16,16 @@ use crate::fs::write_atomic;
 #[serde(deny_unknown_fields)]
 pub struct WriteRequest {
     /// The file to write. Parent directories are created.
+    #[schemars(example = &"src/greeting.rs")]
     pub path: PathBuf,
     /// The complete contents of the file, verbatim.
     pub content: String,
     /// `true` replaces a file that already exists. `false` makes an existing
     /// file a failed call instead of a replacement.
+    #[schemars(
+        description = "true replaces a file that already exists; false makes an existing file a failed call.",
+        example = false
+    )]
     pub overwrite: bool,
 }
 

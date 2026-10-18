@@ -44,35 +44,60 @@ pub struct LineRange {
 #[serde(deny_unknown_fields)]
 pub struct ReadRequest {
     /// The file to read.
+    #[schemars(example = &"src/lib.rs")]
     pub path: PathBuf,
     /// A range of lines. Omitted reads from the first line, for as many lines
     /// as one result may show.
+    #[schemars(
+        description = "A range of lines. Omit it to read from the first line; the host decides how many lines one result may show.",
+        example = serde_json::json!({"start": 1, "end": 40})
+    )]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lines: Option<LineRange>,
     /// How many lines to take from the end of the file. Conflicts with `lines`
     /// and with `pattern`.
+    #[schemars(
+        description = "How many lines to take from the end of the file. Cannot be combined with a line range or a pattern."
+    )]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tail: Option<usize>,
     /// A regular expression, applied line by line. Only the lines it selects
     /// are shown; without `lines`, the whole file is searched.
+    #[schemars(
+        description = "A regular expression applied line by line. Only the lines it selects are shown; without a line range the whole file is searched.",
+        example = &"fn main"
+    )]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pattern: Option<String>,
     /// How many lines to show around each selected line. Needs `pattern`.
+    #[schemars(
+        description = "How many lines to show around each selected line. Only with a pattern."
+    )]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<usize>,
     /// Select the lines that do *not* match the pattern instead. Needs
     /// `pattern`.
+    #[schemars(
+        description = "Select the lines that do not match the pattern instead. Only with a pattern."
+    )]
     #[serde(default)]
     pub invert: bool,
     /// Match without regard to case. Needs `pattern`.
+    #[schemars(description = "Match without regard to case. Only with a pattern.")]
     #[serde(default)]
     pub ignore_case: bool,
     /// Report how many lines the pattern selects, without showing them. Needs
     /// `pattern`.
+    #[schemars(
+        description = "Report how many lines the pattern selects instead of showing them. Only with a pattern."
+    )]
     #[serde(default)]
     pub count_only: bool,
     /// How many selected lines to take at most. Needs `pattern`. Defaults to
     /// [`ReadLimits::max_matches`].
+    #[schemars(
+        description = "How many selected lines to show at most. Only with a pattern; the host caps it."
+    )]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_matches: Option<usize>,
 }

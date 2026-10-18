@@ -24,9 +24,26 @@ use crate::fs::read_bytes;
 
 /// Columns a line number takes in the rendered result.
 const NUMBER_WIDTH: usize = 5;
+/// Bytes a rendered line costs beyond its text and its number: the marker
+/// between them and the newline.
+const MARKER_OVERHEAD: usize = 3;
 /// Bytes a rendered line costs on top of its text: the number, the separator
 /// and the newline.
-const LINE_OVERHEAD: usize = NUMBER_WIDTH + 3;
+const LINE_OVERHEAD: usize = NUMBER_WIDTH + MARKER_OVERHEAD;
+/// Capture groups kept from one pattern. A model-written pattern can declare
+/// hundreds and each one is a string in the result, so a pattern that declares
+/// more is refused before it can be run (FR-TOOL-READ-4).
+const MAX_GROUPS: usize = 16;
+/// Longest pattern accepted, before the regex engine sees it.
+const MAX_PATTERN_BYTES: usize = 4096;
+/// Cap on the compiled program of one pattern, and on its lazy DFA. The
+/// engine's defaults (10 MB and 2 MB) are sized for an application's own
+/// patterns, not for a pattern a model wrote this turn.
+const REGEX_SIZE_LIMIT: usize = 1024 * 1024;
+const REGEX_DFA_LIMIT: usize = 256 * 1024;
+/// Bytes a capture group costs in a result beyond its text: the index that
+/// names it and the separators around it.
+const GROUP_OVERHEAD: usize = 4;
 
 /// An inclusive, 1-based range of lines.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -151,7 +168,8 @@ pub struct ReadLine {
     pub matched: bool,
     /// The capture groups of the first match on the line, from group 1 on; a
     /// group that did not participate is `None`. Empty when the line did not
-    /// match the pattern, or the pattern has no groups.
+    /// match the pattern, or the pattern has no groups. A group is clipped to
+    /// [`ReadLimits::max_line_width`] like the line itself.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<Option<String>>,
     /// The 1-based column the match starts at, counted in characters. Present
@@ -173,7 +191,8 @@ pub struct ReadOutput {
     /// Lines in the file, terminators not counted.
     pub total_lines: usize,
     /// How many lines the request selected, before the output caps: the lines
-    /// of the range, or the lines the pattern matched.
+    /// of the range, or the lines the pattern selects — which, with `invert`,
+    /// are the lines the pattern leaves alone.
     pub selected: usize,
     /// Whether the request asked for the count instead of the lines.
     pub count_only: bool,
@@ -226,7 +245,7 @@ impl Default for ReadLimits {
 /// (FR-POL-1), not the executor's business.
 #[rustychain_core::tool(
     name = "read",
-    description = "Read a text file. On its own it reads from the first line; set lines to a range, tail to the last lines, or pattern to the lines a regular expression selects with context around them. The result reports how many lines the file has, whether it was cut short and the line to continue at, so a big file is paged instead of lost. A binary file fails the call instead of being shown."
+    description = "Read a text file. On its own it reads from the first line; set lines to a range, tail to the last lines, or pattern to the lines a regular expression selects with context around them. The result reports how many lines the file has, whether it was cut short and the line to continue at, so a file within the host's size limit is paged rather than lost. A binary file fails the call instead of being shown."
 )]
 pub struct ReadTool {
     limits: ReadLimits,
@@ -275,12 +294,12 @@ impl ReadTool {
     ) -> ReadOutput {
         let text_kind = classify(bytes);
         let text = String::from_utf8_lossy(bytes);
-        let source: Vec<&str> = text.lines().collect();
+        let total_lines = count_lines(&text);
         let mut output = ReadOutput {
             path: request.path.clone(),
             text_kind,
             bytes: bytes.len(),
-            total_lines: source.len(),
+            total_lines,
             selected: 0,
             count_only: request.count_only,
             lines: Vec::new(),
@@ -294,13 +313,19 @@ impl ReadTool {
             return output;
         }
 
-        let selection = select(&source, request, pattern, &self.limits);
+        let selection = select(&text, request, pattern, &self.limits, total_lines);
         output.selected = selection.selected;
         if request.count_only {
             return output;
         }
 
-        let emitted = emit(&source, &selection.rows, pattern, &self.limits);
+        let emitted = emit(
+            &text,
+            &selection.rows,
+            pattern,
+            request.invert,
+            &self.limits,
+        );
         output.truncated = selection.capped || emitted.truncated;
         output.next_start = emitted
             .lines
@@ -347,7 +372,8 @@ struct Selection {
     rows: Vec<Row>,
     /// How many lines the request selects across the whole window, cap or not.
     selected: usize,
-    /// Whether lines were left out of `rows` for exceeding `max_matches`.
+    /// Whether rows the request selected are missing from `rows`: the match cap
+    /// or the row budget left them out.
     capped: bool,
 }
 
@@ -395,6 +421,13 @@ fn validate(request: &ReadRequest) -> Result<()> {
         Some(pattern) if pattern.is_empty() => Err(Error::InvalidInput(
             "read: the pattern is empty, so it would match every line".to_owned(),
         )),
+        Some(pattern) if pattern.len() > MAX_PATTERN_BYTES => Err(Error::InvalidInput(format!(
+            "read: the pattern is longer than {MAX_PATTERN_BYTES} bytes"
+        ))),
+        Some(pattern) if pattern.contains('\n') => Err(Error::InvalidInput(
+            "read: the pattern cannot contain a line break; lines are matched one by one"
+                .to_owned(),
+        )),
         Some(_) => Ok(()),
         None => match request.needs_pattern() {
             Some(name) => Err(Error::InvalidInput(format!(
@@ -426,12 +459,13 @@ fn window(total: usize, request: &ReadRequest) -> Option<(usize, usize)> {
 
 /// Which lines the request selects (FR-TOOL-READ-5).
 fn select(
-    source: &[&str],
+    text: &str,
     request: &ReadRequest,
     pattern: Option<&Regex>,
     limits: &ReadLimits,
+    total_lines: usize,
 ) -> Selection {
-    let Some((first, last)) = window(source.len(), request) else {
+    let Some((first, last)) = window(total_lines, request) else {
         return Selection::default();
     };
     let Some(pattern) = pattern else {
@@ -441,20 +475,26 @@ fn select(
     let cap = request.max_matches.unwrap_or(limits.max_matches).max(1);
     let mut hits = Vec::new();
     let mut selected = 0usize;
-    for (offset, line) in source[first..=last].iter().enumerate() {
+    for (index, line) in lines_between(text, first, last) {
         // An inverted request selects what the pattern leaves alone.
         if pattern.is_match(line) != request.invert {
             selected += 1;
-            let index = first + offset;
             if hits.len() < cap {
                 hits.push(index);
             }
         }
     }
+    let (rows, bounded) = expand(
+        &hits,
+        request.context.unwrap_or(0),
+        first,
+        last,
+        limits.max_lines.max(1),
+    );
     Selection {
-        rows: expand(&hits, request.context.unwrap_or(0), first, last),
+        rows,
         selected,
-        capped: selected > hits.len(),
+        capped: selected > hits.len() || bounded,
     }
 }
 
@@ -476,19 +516,36 @@ fn plain_selection(first: usize, last: usize, max_lines: usize) -> Selection {
 }
 
 /// The rows the selected lines need: each one, plus `context` lines on either
-/// side, kept inside the window. The lines are visited in order, so the rows
-/// are in order too and each one appears once.
-fn expand(hits: &[usize], context: usize, first: usize, last: usize) -> Vec<Row> {
+/// side, kept inside the window and inside `budget` rows. The lines are visited
+/// in order, so the rows are in order too and each one appears once; the second
+/// return says the budget left rows out (FR-TOOL-READ-4).
+fn expand(
+    hits: &[usize],
+    context: usize,
+    first: usize,
+    last: usize,
+    budget: usize,
+) -> (Vec<Row>, bool) {
     let mut rows: Vec<Row> = Vec::new();
     let mut cursor = first;
+    let mut bounded = false;
     for &hit in hits {
+        if bounded {
+            break;
+        }
         let end = hit.saturating_add(context).min(last);
         if cursor <= end {
             let start = cursor.max(hit.saturating_sub(context));
-            rows.extend((start..=end).map(|index| Row {
-                index,
-                matched: false,
-            }));
+            for index in start..=end {
+                if rows.len() == budget {
+                    bounded = true;
+                    break;
+                }
+                rows.push(Row {
+                    index,
+                    matched: false,
+                });
+            }
             cursor = end + 1;
         }
     }
@@ -497,38 +554,82 @@ fn expand(hits: &[usize], context: usize, first: usize, last: usize) -> Vec<Row>
             rows[position].matched = true;
         }
     }
-    rows
+    (rows, bounded)
+}
+
+/// The lines of a text with their 0-based index, from `first` to `last`. A
+/// file's line index costs sixteen bytes a line — a newline-only file is
+/// seventeen times its size — so the lines are walked, never all held at once
+/// (FR-TOOL-READ-4).
+fn lines_between(text: &str, first: usize, last: usize) -> impl Iterator<Item = (usize, &str)> {
+    text.lines()
+        .enumerate()
+        .skip(first)
+        .take(last.saturating_sub(first) + 1)
+}
+
+/// How many lines a text holds, terminators not counted.
+fn count_lines(text: &str) -> usize {
+    text.lines().count()
 }
 
 /// Renders the rows under the output caps, so one result stays readable whatever
 /// the file holds. The first line is always rendered, which is what makes
-/// [`ReadOutput::next_start`] a step forward rather than a loop.
-fn emit(source: &[&str], rows: &[Row], pattern: Option<&Regex>, limits: &ReadLimits) -> Emitted {
+/// [`ReadOutput::next_start`] a step forward rather than a loop
+/// (FR-TOOL-READ-4).
+fn emit(
+    text: &str,
+    rows: &[Row],
+    pattern: Option<&Regex>,
+    invert: bool,
+    limits: &ReadLimits,
+) -> Emitted {
     let max_lines = limits.max_lines.max(1);
     let max_line_width = limits.max_line_width.max(1);
     let mut lines = Vec::new();
     let mut bytes = 0usize;
     let mut truncated = false;
-    for row in rows {
+    let (Some(first), Some(last)) = (rows.first(), rows.last()) else {
+        return Emitted { lines, truncated };
+    };
+    let mut at = 0usize;
+    for (index, source) in lines_between(text, first.index, last.index) {
+        let Some(row) = rows.get(at) else {
+            break;
+        };
+        if row.index != index {
+            continue;
+        }
+        at += 1;
         if lines.len() >= max_lines {
             truncated = true;
             break;
         }
-        let (text, clipped) = clip(source[row.index], max_line_width);
-        let cost = text.len() + LINE_OVERHEAD;
+        // A line the pattern selects is marked as selected even when it sits in
+        // the context of an earlier one and fell past the match cap: the marker
+        // has to answer "did the request select this line", not "did the cap
+        // keep it".
+        let selected =
+            row.matched || pattern.is_some_and(|pattern| pattern.is_match(source) != invert);
+        let (display, clipped) = match (selected, pattern) {
+            (true, Some(pattern)) => clip_around(source, pattern, max_line_width),
+            _ => clip(source, max_line_width),
+        };
+        let display = escape(&display);
+        let (groups, column) = match (selected, pattern) {
+            (true, Some(pattern)) => capture(pattern, source, max_line_width),
+            _ => (Vec::new(), None),
+        };
+        let cost = line_cost(row.index + 1, &display, &groups);
         if !lines.is_empty() && bytes + cost > limits.max_output_bytes {
             truncated = true;
             break;
         }
         bytes += cost;
-        let (groups, column) = match pattern {
-            Some(pattern) if row.matched => capture(pattern, source[row.index]),
-            _ => (Vec::new(), None),
-        };
         lines.push(ReadLine {
             number: row.index + 1,
-            text,
-            matched: row.matched,
+            text: display,
+            matched: selected,
             groups,
             column,
             truncated: clipped,
@@ -537,29 +638,74 @@ fn emit(source: &[&str], rows: &[Row], pattern: Option<&Regex>, limits: &ReadLim
     Emitted { lines, truncated }
 }
 
-/// What kind of content the bytes are. Only the bytes are trusted: UTF-8 is
-/// text, and anything else that holds a NUL is binary even if it happens to be
-/// mostly text (FR-TOOL-READ-2).
+/// What kind of content the bytes are. Only the bytes are trusted: a NUL byte
+/// or a byte-order mark for another encoding makes the content binary whatever
+/// else it looks like — a zero-filled file and a UTF-16 text are both valid
+/// UTF-8 and neither is text to show — and only then does UTF-8 decide between
+/// text and text with replacement characters (FR-TOOL-READ-2).
 fn classify(bytes: &[u8]) -> TextKind {
+    if bytes.contains(&0) || opens_with_a_foreign_bom(bytes) {
+        return TextKind::Binary;
+    }
     if std::str::from_utf8(bytes).is_ok() {
         return TextKind::Utf8;
-    }
-    if bytes.contains(&0) {
-        return TextKind::Binary;
     }
     TextKind::Lossy
 }
 
+/// Whether the content opens with a UTF-16 byte-order mark. UTF-16 of anything
+/// outside ASCII holds no NUL byte, so the mark is what gives it away.
+fn opens_with_a_foreign_bom(bytes: &[u8]) -> bool {
+    matches!(bytes, [0xff, 0xfe, ..] | [0xfe, 0xff, ..])
+}
+
 fn compile(pattern: &str, ignore_case: bool) -> Result<Regex> {
-    RegexBuilder::new(pattern)
+    let regex = RegexBuilder::new(pattern)
         .case_insensitive(ignore_case)
+        .size_limit(REGEX_SIZE_LIMIT)
+        .dfa_size_limit(REGEX_DFA_LIMIT)
         .build()
-        .map_err(|error| Error::InvalidInput(format!("read: invalid pattern `{pattern}`: {error}")))
+        .map_err(|error| {
+            Error::InvalidInput(format!("read: invalid pattern `{pattern}`: {error}"))
+        })?;
+    let groups = regex.captures_len().saturating_sub(1);
+    if groups > MAX_GROUPS {
+        return Err(Error::InvalidInput(format!(
+            "read: the pattern declares {groups} capture groups, and at most {MAX_GROUPS} are shown"
+        )));
+    }
+    Ok(regex)
+}
+
+/// The number of bytes a rendered line costs, its text aside: the number column,
+/// the marker and the space after it, and every capture group with the index
+/// that names it. All of it lands in the result, so all of it is paid for
+/// (FR-TOOL-READ-4).
+fn line_cost(number: usize, text: &str, groups: &[Option<String>]) -> usize {
+    let column = (decimals(number) + MARKER_OVERHEAD).max(LINE_OVERHEAD);
+    let captured: usize = groups
+        .iter()
+        .flatten()
+        .map(|group| group.len() + GROUP_OVERHEAD)
+        .sum();
+    column + text.len() + captured
+}
+
+/// How many characters a number takes. The byte budget was written for a
+/// five-digit column; a longer file costs more and has to pay for it.
+fn decimals(mut number: usize) -> usize {
+    let mut digits = 1;
+    while number >= 10 {
+        number /= 10;
+        digits += 1;
+    }
+    digits
 }
 
 /// The capture groups of the first match on a line, from group 1 on, and the
-/// column it starts at.
-fn capture(pattern: &Regex, line: &str) -> (Vec<Option<String>>, Option<usize>) {
+/// column it starts at. A group is clipped like the line it came from, so no
+/// pattern can put more text into a result than the line could (FR-TOOL-READ-4).
+fn capture(pattern: &Regex, line: &str, width: usize) -> (Vec<Option<String>>, Option<usize>) {
     let Some(captures) = pattern.captures(line) else {
         return (Vec::new(), None);
     };
@@ -569,17 +715,106 @@ fn capture(pattern: &Regex, line: &str) -> (Vec<Option<String>>, Option<usize>) 
     let groups = captures
         .iter()
         .skip(1)
-        .map(|group| group.map(|found| found.as_str().to_owned()))
+        .map(|group| group.map(|found| clip(found.as_str(), width).0))
         .collect();
     (groups, Some(column))
 }
 
 /// Clips a line to `width` characters, saying whether it had to.
 fn clip(line: &str, width: usize) -> (String, bool) {
-    match line.char_indices().nth(width) {
-        Some((end, _)) => (format!("{}…", &line[..end]), true),
-        None => (line.to_owned(), false),
+    let (text, trailing) = char_window(line, 0, width);
+    if trailing {
+        (format!("{text}…"), true)
+    } else {
+        (text, false)
     }
+}
+
+/// Clips a line around its match rather than at its start: the match is why the
+/// line was selected, so the text shown has to contain it, while the column the
+/// result reports stays the character position in the whole line
+/// (FR-TOOL-READ-5).
+fn clip_around(line: &str, pattern: &Regex, width: usize) -> (String, bool) {
+    if line.chars().count() <= width {
+        return (line.to_owned(), false);
+    }
+    let Some(found) = pattern.find(line) else {
+        return clip(line, width);
+    };
+    // Two characters are held back for the elision markers, so the result stays
+    // inside `width` whatever it has to show.
+    let body = width.saturating_sub(2).max(1);
+    let start = line[..found.start()].chars().count();
+    let end = line[..found.end()].chars().count();
+    let matched = (end - start).min(body);
+    let begin = start.saturating_sub(body.saturating_sub(matched) / 2);
+    let (window, trailing) = char_window(line, begin, body);
+    let mut shown = String::with_capacity(window.len() + 8);
+    if begin > 0 {
+        shown.push('…');
+    }
+    shown.push_str(&window);
+    if trailing {
+        shown.push('…');
+    }
+    (shown, true)
+}
+
+/// `width` characters of `line` from character `begin`, and whether the line
+/// had more after them.
+fn char_window(line: &str, begin: usize, width: usize) -> (String, bool) {
+    let mut window = String::new();
+    let mut taken = 0usize;
+    let mut trailing = false;
+    for (position, ch) in line.chars().enumerate() {
+        if position < begin {
+            continue;
+        }
+        if taken == width {
+            trailing = true;
+            break;
+        }
+        window.push(ch);
+        taken += 1;
+    }
+    (window, trailing)
+}
+
+/// The characters a terminal would act on, escaped: a lone carriage return, an
+/// escape sequence, a bidi override or a line separator inside a line could
+/// otherwise hide or reorder the rest of the result. A tab is left alone — it is
+/// indentation, which is text — and so is every printable character, so only a
+/// line that holds a control character pays for the escape.
+fn escape(text: &str) -> String {
+    use std::fmt::Write as _;
+
+    if !text
+        .chars()
+        .any(|ch| (ch.is_control() && ch != '\t') || is_bidi(ch))
+    {
+        return text.to_owned();
+    }
+    let mut escaped = String::with_capacity(text.len() + 8);
+    for ch in text.chars() {
+        match ch {
+            '\t' => escaped.push('\t'),
+            '\r' => escaped.push_str("\\r"),
+            '\u{1b}' => escaped.push_str("\\e"),
+            ch if ch.is_control() || is_bidi(ch) => {
+                let _ = write!(escaped, "\\u{{{:x}}}", u32::from(ch));
+            }
+            ch => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
+/// Whether a character reorders or hides text where a terminal renders it.
+fn is_bidi(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{200e}' | '\u{200f}' | '\u{2028}' | '\u{2029}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+    )
 }
 
 fn render(output: &ReadOutput) -> Result<ToolOutput> {
@@ -621,7 +856,15 @@ fn describe(output: &ReadOutput) -> String {
         return text;
     }
     if output.lines.is_empty() {
-        let _ = writeln!(text, "no line selected");
+        if output.total_lines == 0 {
+            let _ = writeln!(text, "the file is empty");
+        } else {
+            let _ = writeln!(
+                text,
+                "no line was selected: the file has {} line(s); check lines.start and the pattern",
+                output.total_lines
+            );
+        }
         return text;
     }
 
@@ -646,8 +889,8 @@ fn describe(output: &ReadOutput) -> String {
     if let Some(next) = output.next_start {
         let _ = writeln!(
             text,
-            "... cut short after {} line(s); continue with lines.start = {next}",
-            output.shown
+            "... cut short after {} line(s) of {} selected; continue with lines.start = {next}",
+            output.shown, output.selected
         );
     }
     text
@@ -1171,7 +1414,7 @@ mod tests {
         assert!(
             rendered(ReadTool::new(), plain(&path))
                 .await
-                .contains("no line selected")
+                .contains("the file is empty")
         );
     }
 
@@ -1356,6 +1599,228 @@ mod tests {
             .await
             .expect_err("unknown field (FR-TOOL-2)");
         assert!(matches!(error, Error::InvalidToolArguments { .. }));
+    }
+
+    #[tokio::test]
+    async fn a_pattern_that_cannot_match_a_line_is_rejected() {
+        let directory = scratch("pattern-newline");
+        let path = seed(&directory, "log.txt", "alpha\nbeta\n");
+
+        let error = failure(ReadTool::new(), matching(&path, "alpha\nbeta")).await;
+
+        assert!(
+            matches!(error, Error::InvalidInput(ref message) if message.contains("line break")),
+            "{error:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pattern_over_the_length_limit_is_rejected() {
+        let directory = scratch("pattern-long");
+        let path = seed(&directory, "log.txt", "alpha\n");
+        let pattern = "a".repeat(MAX_PATTERN_BYTES + 1);
+
+        let error = failure(ReadTool::new(), matching(&path, &pattern)).await;
+
+        assert!(
+            matches!(error, Error::InvalidInput(ref message) if message.contains("longer than")),
+            "{error:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pattern_with_too_many_groups_is_rejected() {
+        let directory = scratch("pattern-groups");
+        let path = seed(&directory, "log.txt", "alpha\n");
+        let pattern = "()".repeat(MAX_GROUPS + 1);
+
+        let error = failure(ReadTool::new(), matching(&path, &pattern)).await;
+
+        assert!(
+            matches!(error, Error::InvalidInput(ref message) if message.contains("capture groups")),
+            "{error:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_capture_group_is_clipped_like_the_line() {
+        let directory = scratch("group-clipped");
+        let path = seed(&directory, "log.txt", &format!("{}\n", "x".repeat(4096)));
+
+        let output = read(ReadTool::new(), matching(&path, "(x+)")).await;
+
+        let group = output.lines[0].groups[0].as_deref().expect("a group");
+        assert!(
+            group.chars().count() <= ReadLimits::default().max_line_width + 1,
+            "the group is clipped: {} characters",
+            group.chars().count()
+        );
+        assert!(group.ends_with('…'), "and says so: {group:?}");
+    }
+
+    #[tokio::test]
+    async fn a_wide_matched_line_shows_the_match() {
+        let directory = scratch("wide-match");
+        let path = seed(
+            &directory,
+            "wide.txt",
+            &format!("{}needle{}\n", "a".repeat(1000), "b".repeat(1000)),
+        );
+
+        let output = read(ReadTool::new(), matching(&path, "needle")).await;
+
+        let line = &output.lines[0];
+        assert!(line.truncated, "the line is wider than the result");
+        assert!(
+            line.text.contains("needle"),
+            "the match is why the line was selected: {:?}",
+            line.text
+        );
+        assert_eq!(
+            line.column,
+            Some(1001),
+            "the column still points at the match in the whole line"
+        );
+        assert!(
+            line.text.chars().count() <= ReadLimits::default().max_line_width,
+            "the answer stays inside the width"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_matching_line_past_the_match_cap_is_still_marked() {
+        let directory = scratch("beyond-cap");
+        let path = seed(
+            &directory,
+            "log.txt",
+            "match one\nplain\nmatch two\nplain\n",
+        );
+
+        let mut request = matching(&path, "match");
+        request.context = Some(2);
+        request.max_matches = Some(1);
+        let output = read(ReadTool::new(), request).await;
+
+        assert_eq!(output.selected, 2, "every match is counted, cap or not");
+        assert!(output.truncated, "the cap left matches out");
+        assert_eq!(numbers(&output), vec![1, 2, 3]);
+        assert!(output.lines[0].matched);
+        assert!(
+            !output.lines[1].matched,
+            "an unmatched neighbour is context"
+        );
+        assert!(
+            output.lines[2].matched,
+            "line 3 matches the pattern even though the cap kept it out of the selection"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_context_wider_than_the_result_terminates() {
+        let directory = scratch("huge-context");
+        let mut content = String::from("1\n");
+        content.push_str(&"x\n".repeat(2999));
+        let path = seed(&directory, "long.txt", &content);
+        let limits = ReadLimits::default();
+
+        let mut request = matching(&path, "1");
+        request.context = Some(usize::MAX);
+        let output = read(ReadTool::new(), request).await;
+
+        assert_eq!(output.shown, limits.max_lines);
+        assert!(output.truncated);
+        assert_eq!(output.next_start, Some(limits.max_lines + 1));
+    }
+
+    #[tokio::test]
+    async fn a_pattern_with_no_match_says_nothing_was_selected() {
+        let directory = scratch("no-match");
+        let path = seed(&directory, "log.txt", "alpha\nbeta\n");
+
+        let text = rendered(ReadTool::new(), matching(&path, "gamma")).await;
+
+        assert!(text.contains("no line was selected"), "{text}");
+        assert!(
+            text.contains("2 line(s)"),
+            "the file's size is named: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn crlf_lines_are_split_on_the_newline() {
+        let directory = scratch("crlf");
+        let path = seed(&directory, "windows.txt", "alpha\r\nbeta\r\n");
+
+        let output = read(ReadTool::new(), plain(&path)).await;
+
+        assert_eq!(numbers(&output), vec![1, 2]);
+        assert_eq!(output.lines[0].text, "alpha", "no carriage return is kept");
+        assert_eq!(output.lines[1].text, "beta");
+    }
+
+    #[tokio::test]
+    async fn a_file_without_a_trailing_newline_reads_its_last_line() {
+        let directory = scratch("no-newline");
+        let path = seed(&directory, "short.txt", "alpha\nbeta");
+
+        let output = read(ReadTool::new(), plain(&path)).await;
+
+        assert_eq!(output.total_lines, 2);
+        assert_eq!(numbers(&output), vec![1, 2]);
+        assert_eq!(output.lines[1].text, "beta");
+    }
+
+    #[tokio::test]
+    async fn invert_with_count_only_counts_the_other_lines() {
+        let directory = scratch("invert-count");
+        let path = seed(&directory, "log.txt", "alpha\nbeta\nalpha\ngamma\n");
+
+        let mut request = matching(&path, "alpha");
+        request.invert = true;
+        request.count_only = true;
+        let output = read(ReadTool::new(), request).await;
+
+        assert_eq!(output.selected, 2);
+        assert!(output.lines.is_empty());
+        assert!(output.count_only);
+    }
+
+    #[tokio::test]
+    async fn ignore_case_matches_across_scripts() {
+        let directory = scratch("case-unicode");
+        let path = seed(&directory, "log.txt", "café\nCAFÉ\n");
+
+        let mut request = matching(&path, "café");
+        request.ignore_case = true;
+        let output = read(ReadTool::new(), request).await;
+
+        assert_eq!(
+            numbers(&output),
+            vec![1, 2],
+            "case folding is not ASCII-only"
+        );
+    }
+
+    #[tokio::test]
+    async fn control_characters_are_escaped_in_the_result() {
+        let directory = scratch("controls");
+        let path = seed(&directory, "log.txt", "x\u{1b}y\rz\u{202e}w\ta\n");
+
+        let output = read(ReadTool::new(), plain(&path)).await;
+
+        assert_eq!(
+            output.lines[0].text, "x\\ey\\rz\\u{202e}w\ta",
+            "a control character cannot act on the terminal, and a tab is text"
+        );
+    }
+
+    #[test]
+    fn a_line_number_column_grows_with_the_number() {
+        assert_eq!(decimals(1), 1);
+        assert_eq!(decimals(9), 1);
+        assert_eq!(decimals(10), 2);
+        assert_eq!(decimals(2000), 4);
+        assert_eq!(decimals(100_000), 6);
     }
 
     #[test]

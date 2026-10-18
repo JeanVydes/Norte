@@ -394,6 +394,88 @@ async fn a_denied_call_comes_back_to_the_model_as_a_failure() {
 }
 
 #[tokio::test]
+async fn a_tool_scoped_grant_covers_later_calls() {
+    let first = CallId::new();
+    let second = CallId::new();
+    let scripted = Arc::new(
+        ScriptedModel::new(model("test/echo"))
+            .turn_tool_call(first, "echo", &json!({ "text": "one" }))
+            .turn_tool_call(second, "echo", &json!({ "text": "two" }))
+            .turn_text("finished"),
+    );
+    let mut tools = ToolRegistry::new();
+    tools.register_declarator(&Echo).expect("register echo");
+    let policies = PolicySet::new(vec![Arc::new(ToolApprovalPolicy::new(
+        "guard",
+        vec![ToolName::new("echo").expect("tool")],
+        "echo touches the world",
+    ))]);
+    let harness = harness(scripted, tools, policies);
+
+    let session = harness.engine.create().await.expect("create");
+    let outcome = harness
+        .engine
+        .send(session.id, Message::user("go"))
+        .finish()
+        .await
+        .expect("turn");
+    assert_eq!(outcome.session.phase, Phase::AwaitingApproval);
+
+    let pending = harness
+        .engine
+        .pending_approvals(session.id)
+        .await
+        .expect("pending");
+    assert_eq!(pending.len(), 1);
+    harness
+        .engine
+        .approve(
+            pending[0].id,
+            rustychain_core::GrantScope::Tool(ToolName::new("echo").expect("tool")),
+            "tester",
+        )
+        .await
+        .expect("approve");
+
+    let outcome = harness
+        .engine
+        .resume(session.id)
+        .finish()
+        .await
+        .expect("resume");
+    assert_eq!(outcome.session.phase, Phase::Idle);
+    assert_eq!(
+        outcome.message.as_ref().map(Message::text).as_deref(),
+        Some("finished"),
+        "the second call runs under the standing grant without parking"
+    );
+    assert_eq!(harness.model.request_count(), 3);
+
+    let records = harness
+        .store
+        .approvals(session.id)
+        .await
+        .expect("approvals");
+    assert_eq!(
+        records.len(),
+        1,
+        "the second call needed no approval record of its own"
+    );
+
+    let history = harness
+        .store
+        .history(outcome.session.head)
+        .await
+        .expect("history");
+    let results = history
+        .iter()
+        .flat_map(Message::tool_results)
+        .filter(|result| !result.is_error)
+        .count();
+    assert_eq!(results, 2, "both calls ran");
+}
+
+#[tokio::test]
 async fn cancelling_a_turn_leaves_the_session_resumable() {
     let events = vec![
         rustychain_core::StreamEvent::TextStart { index: 0 },

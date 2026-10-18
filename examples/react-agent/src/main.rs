@@ -46,9 +46,10 @@ they help, never invent tool output, and report only what you observed.";
 
 const MISSION: &str = "\
 Use your tools in order. First, run a shell script that prints the working \
-directory and lists the files in it — the `command` tool spells it as \
-{\"kind\": \"shell\", \"script\": \"...\"}. Then fetch the models.dev catalogue. \
-Finish with a three-sentence report of what you found. Do not call a tool twice.";
+directory and lists the files in it — the `command` tool spells a shell \
+invocation as {\"kind\": \"shell\", \"shell\": \"/bin/sh\", \"script\": \"...\"}. \
+Then fetch the models.dev catalogue. Finish with a three-sentence report of what \
+you found. Do not call a tool twice.";
 
 const PROVIDERS_SYSTEM: &str = "\
 You are a provider analyst. Given a JSON list of AI providers from models.dev, \

@@ -309,20 +309,18 @@ where
 
 /// Expands a schemars document into a self-contained one.
 ///
-/// Every local `$ref` is replaced by the definition it points at and `$defs` is
-/// dropped, so a model that does not resolve references still sees the whole
-/// shape. Keywords sitting next to a `$ref` (a `default`, say) are kept. A
-/// reference that cannot be inlined — an unknown name, or a type that is
-/// recursive and therefore infinite — is left alone, and then `$defs` stays so
-/// the document remains valid.
+/// Every local `$ref` is replaced by the definition it points at and the
+/// definition block is dropped, so a model that does not resolve references
+/// still sees the whole shape — the failure mode is a model sending a string
+/// where the object belongs. Keywords sitting next to a `$ref` (a `default`,
+/// say) are kept.
+///
+/// A reference that cannot be inlined — an unknown name, or a type that is
+/// recursive and therefore infinite — is left alone, and then the definition
+/// block stays so the document remains valid.
 fn inline_schema(schema: &Schema) -> Result<Value> {
     let value = serde_json::to_value(schema)?;
-    let defs = value
-        .get("$defs")
-        .and_then(Value::as_object)
-        .cloned()
-        .unwrap_or_default();
-    let mut expanded = expand_refs(&value, &defs, &mut Vec::new());
+    let mut expanded = expand_refs(&value, &value, &mut Vec::new());
     if !has_ref(&expanded) {
         if let Some(object) = expanded.as_object_mut() {
             object.remove("$defs");
@@ -332,51 +330,62 @@ fn inline_schema(schema: &Schema) -> Result<Value> {
     Ok(expanded)
 }
 
-/// Recursively replaces `{"$ref": "#/$defs/…"}` with the definition, keeping any
-/// sibling keywords. `open` holds the names currently being expanded, which is
-/// how a recursive type terminates instead of looping forever.
-fn expand_refs(
-    value: &Value,
-    defs: &serde_json::Map<String, Value>,
-    open: &mut Vec<String>,
-) -> Value {
+/// Recursively replaces a local reference with the definition it points at,
+/// keeping any sibling keywords. `open` holds the references currently being
+/// expanded, which is how a recursive type terminates instead of looping
+/// forever.
+fn expand_refs(value: &Value, root: &Value, open: &mut Vec<String>) -> Value {
     match value {
         Value::Object(object) => {
-            if let Some(name) = object
-                .get("$ref")
-                .and_then(Value::as_str)
-                .and_then(|reference| reference.strip_prefix("#/$defs/"))
-                .filter(|name| !open.iter().any(|entry| entry == name))
-            {
-                if let Some(target) = defs.get(name) {
-                    open.push(name.to_owned());
-                    let mut resolved = expand_refs(target, defs, open);
-                    open.pop();
-                    if let Some(fields) = resolved.as_object_mut() {
-                        for (key, sibling) in object {
-                            if key != "$ref" {
-                                fields.insert(key.clone(), expand_refs(sibling, defs, open));
+            if let Some(reference) = object.get("$ref").and_then(Value::as_str) {
+                if !open.iter().any(|entry| entry == reference) {
+                    if let Some(target) = lookup(root, reference) {
+                        open.push(reference.to_owned());
+                        let mut resolved = expand_refs(target, root, open);
+                        open.pop();
+                        if let Some(fields) = resolved.as_object_mut() {
+                            for (key, sibling) in object {
+                                if key != "$ref" {
+                                    fields.insert(key.clone(), expand_refs(sibling, root, open));
+                                }
                             }
                         }
+                        return resolved;
                     }
-                    return resolved;
                 }
             }
             Value::Object(
                 object
                     .iter()
-                    .map(|(key, item)| (key.clone(), expand_refs(item, defs, open)))
+                    .map(|(key, item)| (key.clone(), expand_refs(item, root, open)))
                     .collect(),
             )
         }
         Value::Array(items) => Value::Array(
             items
                 .iter()
-                .map(|item| expand_refs(item, defs, open))
+                .map(|item| expand_refs(item, root, open))
                 .collect(),
         ),
         other => other.clone(),
     }
+}
+
+/// Resolves a local reference such as `#/$defs/CommandLine` against the
+/// document. Both spellings of the definition block are honoured: `$defs`, what
+/// schemars emits, and `definitions`, what a draft-07 document such as an MCP
+/// server's input schema may publish. Anything else (a remote reference, `#`
+/// itself) resolves to nothing and is left alone.
+fn lookup<'a>(root: &'a Value, reference: &str) -> Option<&'a Value> {
+    let (block, name) = reference
+        .strip_prefix("#/$defs/")
+        .map(|name| ("$defs", name))
+        .or_else(|| {
+            reference
+                .strip_prefix("#/definitions/")
+                .map(|name| ("definitions", name))
+        })?;
+    root.get(block)?.get(name)
 }
 
 /// Whether any `$ref` survived expansion.
@@ -711,6 +720,7 @@ mod tests {
 
     use super::*;
     use crate::tool::registry::FnTool;
+    use serde_json::json;
 
     #[derive(Debug, JsonSchema, serde::Serialize, serde::Deserialize)]
     #[serde(deny_unknown_fields)]
@@ -783,6 +793,59 @@ mod tests {
         assert!(
             rendered.contains("\"retries\""),
             "the inlined definition must carry its content"
+        );
+    }
+
+    #[test]
+    fn a_draft_seven_definition_block_is_inlined_too() {
+        let schema: Schema = serde_json::from_value(json!({
+            "type": "object",
+            "properties": {
+                "line": { "$ref": "#/definitions/Line", "description": "the line" }
+            },
+            "required": ["line"],
+            "definitions": {
+                "Line": {
+                    "type": "object",
+                    "properties": { "program": { "type": "string" } },
+                    "required": ["program"]
+                }
+            }
+        }))
+        .expect("schema");
+        let rendered = inline_schema(&schema).expect("inline");
+        let text = serde_json::to_string(&rendered).expect("bytes");
+        assert!(!text.contains("$ref"), "references must be inlined: {text}");
+        assert!(!text.contains("definitions"), "the block must be dropped");
+        assert_eq!(
+            rendered["properties"]["line"]["properties"]["program"]["type"],
+            json!("string")
+        );
+        assert_eq!(
+            rendered["properties"]["line"]["description"],
+            json!("the line"),
+            "a keyword next to the reference must survive"
+        );
+    }
+
+    #[test]
+    fn a_recursive_schema_stays_valid() {
+        let schema: Schema = serde_json::from_value(json!({
+            "type": "object",
+            "properties": { "next": { "$ref": "#/$defs/Node" } },
+            "$defs": {
+                "Node": {
+                    "type": "object",
+                    "properties": { "next": { "$ref": "#/$defs/Node" } }
+                }
+            }
+        }))
+        .expect("schema");
+        let rendered = inline_schema(&schema).expect("inline");
+        assert!(has_ref(&rendered), "a cycle cannot be inlined");
+        assert!(
+            rendered.get("$defs").is_some(),
+            "the block must stay when a reference survives"
         );
     }
 

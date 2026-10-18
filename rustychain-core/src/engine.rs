@@ -1339,20 +1339,34 @@ impl Engine {
         sender: &mpsc::Sender<EngineEvent>,
     ) -> Result<Authorization> {
         let records = self.store.approvals(session.id).await?;
-        if let Some(record) = records.iter().find(|record| record.call_id == call.call_id) {
-            if record.is_expired_at(Utc::now()) {
+        let decided = records.iter().find(|record| record.call_id == call.call_id);
+        if let Some(record) = decided {
+            if record.is_expired_at(Utc::now()) || record.status == ApprovalStatus::Expired {
                 return Err(Error::ApprovalExpired(record.id));
             }
             if record.status == ApprovalStatus::Denied {
                 return Ok(Authorization::Denied(denial_reason(record)));
             }
-            let granted = session
-                .grants
-                .iter()
-                .any(|grant| grant.is_active() && grant.applies_to(session.id, call.call_id, tool));
-            if granted && record.verify_arguments(&call.arguments).is_ok() {
-                return Ok(Authorization::Granted);
+            if record.status == ApprovalStatus::Granted {
+                return match record.verify_arguments(&call.arguments) {
+                    Ok(()) => Ok(Authorization::Granted),
+                    Err(error) => Ok(Authorization::Denied(error.to_string())),
+                };
             }
+        }
+
+        // A standing grant, scoped to the tool, the session or everything,
+        // authorizes later calls without asking again (FR-APPR-3). A grant
+        // scoped to one call is already covered by the record above.
+        let standing = session
+            .grants
+            .iter()
+            .any(|grant| grant.applies_to(session.id, call.call_id, tool));
+        if standing {
+            return Ok(Authorization::Granted);
+        }
+
+        if decided.is_some() {
             return Ok(Authorization::Pending);
         }
 

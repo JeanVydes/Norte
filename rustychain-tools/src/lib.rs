@@ -9,8 +9,8 @@ pub mod read;
 pub mod write;
 
 pub use command::{
-    CommandCapabilities, CommandCode, CommandLine, CommandOutput, CommandRequest, CommandTool,
-    command_tool,
+    CommandCode, CommandLimits, CommandLine, CommandOutput, CommandRenderer, CommandRequest,
+    CommandTool, PlainCommandRenderer, command_tool,
 };
 pub use edit::{
     EditCode, EditFailure, EditFailureReason, EditLimits, EditMatch, EditOutcome, EditRequest,

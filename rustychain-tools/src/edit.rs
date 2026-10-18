@@ -48,9 +48,21 @@ pub struct EditSpec {
     pub replace: String,
 }
 
+impl EditSpec {
+    /// A pair that finds `search` and puts `replace` in its place.
+    #[must_use]
+    pub fn new(search: impl Into<String>, replace: impl Into<String>) -> Self {
+        Self {
+            search: search.into(),
+            replace: replace.into(),
+        }
+    }
+}
+
 /// The edits to apply to one file, in order.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct EditRequest {
     /// The file to edit.
     #[schemars(example = &"src/main.rs")]
@@ -60,6 +72,28 @@ pub struct EditRequest {
         example = serde_json::json!([{"search": "let x = 1;", "replace": "let x = 2;"}])
     )]
     pub edits: Vec<EditSpec>,
+}
+
+impl EditRequest {
+    /// A request that applies one pair to `path`.
+    #[must_use]
+    pub fn new(
+        path: impl Into<PathBuf>,
+        search: impl Into<String>,
+        replace: impl Into<String>,
+    ) -> Self {
+        Self {
+            path: path.into(),
+            edits: vec![EditSpec::new(search, replace)],
+        }
+    }
+
+    /// Adds a pair, applied after the ones already there.
+    #[must_use]
+    pub fn with_edit(mut self, search: impl Into<String>, replace: impl Into<String>) -> Self {
+        self.edits.push(EditSpec::new(search, replace));
+        self
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -226,7 +260,7 @@ impl Default for EditLimits {
 /// (FR-POL-1), not the executor's business.
 #[rustychain_core::tool(
     name = "edit",
-    description = "Change a text file with search and replace. Each edit's search block has to match exactly once; a block that differs only in indentation or whitespace still applies. Nothing is written unless every edit applies, and a failure reports the lines that are actually there so the next attempt can be exact."
+    description = "Change a text file with search and replace. Each edit's search block has to match exactly once; a block that differs only in indentation or whitespace still applies. Nothing is written unless every edit applies, and an edit that changes nothing is reported as unchanged without rewriting the file. A failure reports the lines around the closest region, so the next attempt can be exact."
 )]
 pub struct EditTool {
     limits: EditLimits,

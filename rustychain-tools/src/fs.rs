@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use rustychain_core::{Error, Result};
 
 /// How many symbolic links a write follows before it gives the name up as a
-/// loop and writes where it is.
+/// loop and refuses the call.
 const MAX_LINK_HOPS: usize = 8;
 /// How many temporary names to try before giving a collision up for good.
 const TEMPORARY_ATTEMPTS: usize = 8;

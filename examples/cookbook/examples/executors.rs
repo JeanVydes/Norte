@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use rustychain_core::{FnExecutor, Part, ToolOutput};
 use rustychain_tools::{
-    CommandRequest, CommandTool, EditRequest, EditSpec, EditTool, LineRange, ReadRequest, ReadTool,
+    CommandRequest, CommandTool, EditRequest, EditTool, LineRange, ReadRequest, ReadTool,
     WriteRequest, WriteTool,
 };
 
@@ -40,10 +40,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// A directory of its own; `notes.txt` is rewritten on every run.
+/// A directory of its own, with the note file absent: the first write below is
+/// then really a creation, and the second really a refusal.
 fn scratch() -> Result<PathBuf, Box<dyn Error>> {
     let dir = std::env::temp_dir().join("rustychain-cookbook-executors");
     std::fs::create_dir_all(&dir)?;
+    match std::fs::remove_file(dir.join("notes.txt")) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
     Ok(dir)
 }
 
@@ -65,90 +71,81 @@ fn show(label: &str, output: &ToolOutput) -> Result<(), Box<dyn Error>> {
 /// `write`: a whole file in one call, and then the file the host can read.
 async fn write(path: &Path) -> Result<(), Box<dyn Error>> {
     let output = WriteTool::new()
-        .call(WriteRequest {
-            path: path.to_path_buf(),
-            content: "the first line\nthe second line\nthe third line\n".to_owned(),
-            overwrite: false,
-        })
+        .call(WriteRequest::create(
+            path,
+            "the first line\nthe second line\nthe third line\n",
+        ))
         .await?;
     show("write", &output)?;
     println!("on disk:\n{}\n", std::fs::read_to_string(path)?);
+
+    let refused = WriteTool::new()
+        .call(WriteRequest::create(path, "this would replace it\n"))
+        .await?;
+    show("write (the file is already there)", &refused)?;
+    println!("still on disk:\n{}\n", std::fs::read_to_string(path)?);
     Ok(())
 }
 
 /// `read`: the whole file, a range, a pattern with context, and the tail.
 async fn read(path: &Path) -> Result<(), Box<dyn Error>> {
-    let whole = ReadTool::new().call(request(path)).await?;
+    let whole = ReadTool::new().call(ReadRequest::new(path)).await?;
     show("read (whole file)", &whole)?;
 
     let range = ReadTool::new()
-        .call(ReadRequest {
-            lines: Some(LineRange {
-                start: 2,
-                end: Some(3),
-            }),
-            ..request(path)
-        })
+        .call(ReadRequest::new(path).with_lines(LineRange {
+            start: 2,
+            end: Some(3),
+        }))
         .await?;
     show("read (lines 2-3)", &range)?;
 
     let found = ReadTool::new()
-        .call(ReadRequest {
-            pattern: Some("second".to_owned()),
-            context: Some(1),
-            ..request(path)
-        })
+        .call(
+            ReadRequest::new(path)
+                .with_pattern("second")
+                .with_context(1),
+        )
         .await?;
     show("read (pattern, one line of context)", &found)?;
 
     let tail = ReadTool::new()
-        .call(ReadRequest {
-            tail: Some(2),
-            ..request(path)
-        })
+        .call(ReadRequest::new(path).with_tail(2))
         .await?;
     show("read (last two lines)", &tail)?;
     Ok(())
 }
 
-/// The read every variant above starts from: the whole file.
-fn request(path: &Path) -> ReadRequest {
-    ReadRequest {
-        path: path.to_path_buf(),
-        lines: None,
-        tail: None,
-        pattern: None,
-        context: None,
-        invert: false,
-        ignore_case: false,
-        count_only: false,
-        max_matches: None,
-    }
-}
-
-/// `edit`: a pair that applies, then a pair that cannot.
+/// `edit`: a pair that applies, one that changes nothing, and one that cannot.
 async fn edit(path: &Path) -> Result<(), Box<dyn Error>> {
     let output = EditTool::new()
-        .call(edit_request(path, "the second line", "the corrected line"))
+        .call(EditRequest::new(
+            path,
+            "the second line",
+            "the corrected line",
+        ))
         .await?;
     show("edit", &output)?;
     println!("on disk:\n{}\n", std::fs::read_to_string(path)?);
 
+    let unchanged = EditTool::new()
+        .call(EditRequest::new(
+            path,
+            "the corrected line",
+            "the corrected line",
+        ))
+        .await?;
+    show("edit (a pair that changes nothing)", &unchanged)?;
+
     let refused = EditTool::new()
-        .call(edit_request(path, "a line that is not there", "anything"))
+        .call(EditRequest::new(
+            path,
+            "a line that is not there",
+            "anything",
+        ))
         .await?;
     show("edit (text the file does not contain)", &refused)?;
     Ok(())
-}
-
-fn edit_request(path: &Path, search: &str, replace: &str) -> EditRequest {
-    EditRequest {
-        path: path.to_path_buf(),
-        edits: vec![EditSpec {
-            search: search.to_owned(),
-            replace: replace.to_owned(),
-        }],
-    }
 }
 
 /// `command`: one call per way a process can end, plus the bounds on it.

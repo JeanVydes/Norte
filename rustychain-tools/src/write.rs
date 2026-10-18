@@ -14,6 +14,7 @@ use crate::fs::{write_atomic, write_new};
 /// A whole file, written in one call.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct WriteRequest {
     /// The file to write. Parent directories are created.
     #[schemars(example = &"src/greeting.rs")]
@@ -27,6 +28,36 @@ pub struct WriteRequest {
         example = false
     )]
     pub overwrite: bool,
+}
+
+impl WriteRequest {
+    /// A request that writes `content` onto `path`, refusing to replace a file
+    /// that is already there.
+    #[must_use]
+    pub fn create(path: impl Into<PathBuf>, content: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            content: content.into(),
+            overwrite: false,
+        }
+    }
+
+    /// A request that writes `content` onto `path`, replacing whatever is
+    /// there.
+    #[must_use]
+    pub fn replace(path: impl Into<PathBuf>, content: impl Into<String>) -> Self {
+        Self {
+            overwrite: true,
+            ..Self::create(path, content)
+        }
+    }
+
+    /// Replaces an existing file instead of failing on it.
+    #[must_use]
+    pub fn overwriting(mut self) -> Self {
+        self.overwrite = true;
+        self
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

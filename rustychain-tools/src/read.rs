@@ -60,6 +60,7 @@ pub struct LineRange {
 /// What to read out of one file.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct ReadRequest {
     /// The file to read.
     #[schemars(example = &"src/lib.rs")]
@@ -139,6 +140,78 @@ impl ReadRequest {
             return Some("max_matches");
         }
         None
+    }
+
+    /// A request that reads `path`, as much of it as one result may show.
+    #[must_use]
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self {
+            path: path.into(),
+            lines: None,
+            tail: None,
+            pattern: None,
+            context: None,
+            invert: false,
+            ignore_case: false,
+            count_only: false,
+            max_matches: None,
+        }
+    }
+
+    /// Reads a range of lines instead of the whole file.
+    #[must_use]
+    pub fn with_lines(mut self, range: LineRange) -> Self {
+        self.lines = Some(range);
+        self
+    }
+
+    /// Reads the last `tail` lines of the file.
+    #[must_use]
+    pub fn with_tail(mut self, tail: usize) -> Self {
+        self.tail = Some(tail);
+        self
+    }
+
+    /// Selects lines with a regular expression.
+    #[must_use]
+    pub fn with_pattern(mut self, pattern: impl Into<String>) -> Self {
+        self.pattern = Some(pattern.into());
+        self
+    }
+
+    /// Shows `context` lines around each selected line.
+    #[must_use]
+    pub fn with_context(mut self, context: usize) -> Self {
+        self.context = Some(context);
+        self
+    }
+
+    /// Selects the lines the pattern does *not* match instead.
+    #[must_use]
+    pub fn inverting_matches(mut self) -> Self {
+        self.invert = true;
+        self
+    }
+
+    /// Matches without regard to case.
+    #[must_use]
+    pub fn ignoring_case(mut self) -> Self {
+        self.ignore_case = true;
+        self
+    }
+
+    /// Counts the selected lines instead of showing them.
+    #[must_use]
+    pub fn counting_only(mut self) -> Self {
+        self.count_only = true;
+        self
+    }
+
+    /// Takes at most `max_matches` selected lines.
+    #[must_use]
+    pub fn with_max_matches(mut self, max_matches: usize) -> Self {
+        self.max_matches = Some(max_matches);
+        self
     }
 }
 

@@ -9,6 +9,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use rustychain_core::{Error, Result};
 
+/// How many symbolic links a write follows before it gives the name up as a
+/// loop and writes where it is.
+const MAX_LINK_HOPS: usize = 8;
 /// How many temporary names to try before giving a collision up for good.
 const TEMPORARY_ATTEMPTS: usize = 8;
 
@@ -48,6 +51,7 @@ pub(crate) fn read_text(path: &Path, max_bytes: usize) -> Result<String> {
 /// created and the temporary is removed when anything fails. An overwritten
 /// file keeps its permissions (FR-TOOL-FILE-1).
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    let path = &followed(path)?;
     let temporary = stage(path, bytes)?;
     if let Err(error) = std::fs::rename(&temporary, path) {
         let _ = std::fs::remove_file(&temporary);
@@ -64,6 +68,7 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 /// impossible cannot give that guarantee at all, and says so rather than
 /// quietly doing the racy thing.
 pub(crate) fn write_new(path: &Path, bytes: &[u8]) -> Result<bool> {
+    let path = &followed(path)?;
     let temporary = stage(path, bytes)?;
     let created = match std::fs::hard_link(&temporary, path) {
         Ok(()) => true,
@@ -95,6 +100,39 @@ pub(crate) fn io_error(path: &Path, error: &std::io::Error) -> Error {
     Error::Io(std::io::Error::new(
         error.kind(),
         format!("{}: {error}", path.display()),
+    ))
+}
+
+/// The name a write lands on: when the last component of `path` is a symbolic
+/// link, the link is followed and what it points at is what gets written, so
+/// editing a linked file never replaces the link with a copy of the file — what
+/// a dotfile manager, a linked configuration or a checkout of symlinked sources
+/// would lose. Only that last component is resolved: which names may be reached
+/// through a directory is still the host's business, not this crate's
+/// (FR-POL-1).
+fn followed(path: &Path) -> Result<PathBuf> {
+    let mut target = path.to_path_buf();
+    for _ in 0..MAX_LINK_HOPS {
+        let Ok(metadata) = std::fs::symlink_metadata(&target) else {
+            return Ok(target);
+        };
+        if !metadata.file_type().is_symlink() {
+            return Ok(target);
+        }
+        let Ok(link) = std::fs::read_link(&target) else {
+            return Ok(target);
+        };
+        target = if link.is_absolute() {
+            link
+        } else {
+            target
+                .parent()
+                .map_or(link.clone(), |parent| parent.join(&link))
+        };
+    }
+    Err(io_error(
+        path,
+        &std::io::Error::other("too many symbolic links to follow"),
     ))
 }
 
@@ -234,6 +272,101 @@ mod tests {
             .map(|name| name.to_string_lossy().into_owned())
             .collect();
         assert_eq!(entries, vec!["kept.txt".to_owned()]);
+    }
+
+    #[test]
+    fn a_plain_path_is_its_own_target() {
+        let directory = scratch("plain");
+        let path = directory.join("main.rs");
+        std::fs::write(&path, "one\n").expect("seed");
+        assert_eq!(followed(&path).expect("followed"), path);
+        assert_eq!(
+            followed(&directory.join("absent.rs")).expect("followed"),
+            directory.join("absent.rs")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_write_follows_a_symbolic_link_instead_of_replacing_it() {
+        let directory = scratch("symlink");
+        let target = directory.join("real.rs");
+        std::fs::write(&target, "old\n").expect("seed");
+        let link = directory.join("link.rs");
+        std::os::unix::fs::symlink(&target, &link).expect("symlink");
+        write_atomic(&link, b"new\n").expect("write");
+        assert_eq!(std::fs::read_to_string(&target).expect("read"), "new\n");
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .expect("metadata")
+                .file_type()
+                .is_symlink(),
+            "the link is still a link"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_creation_through_a_link_makes_its_target() {
+        let directory = scratch("symlink-create");
+        let target = directory.join("made.rs");
+        let link = directory.join("link.rs");
+        std::os::unix::fs::symlink(&target, &link).expect("symlink");
+        assert!(write_new(&link, b"made\n").expect("create"));
+        assert_eq!(std::fs::read_to_string(&target).expect("read"), "made\n");
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .expect("metadata")
+                .file_type()
+                .is_symlink(),
+            "the link is still a link"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_chain_of_links_is_followed_to_its_end() {
+        let directory = scratch("chain");
+        let target = directory.join("real.rs");
+        std::fs::write(&target, "old\n").expect("seed");
+        let middle = directory.join("middle.rs");
+        std::os::unix::fs::symlink("real.rs", &middle).expect("symlink");
+        let first = directory.join("first.rs");
+        std::os::unix::fs::symlink("middle.rs", &first).expect("symlink");
+        write_atomic(&first, b"new\n").expect("write");
+        assert_eq!(std::fs::read_to_string(&target).expect("read"), "new\n");
+        for link in [&middle, &first] {
+            assert!(
+                std::fs::symlink_metadata(link)
+                    .expect("metadata")
+                    .file_type()
+                    .is_symlink(),
+                "{} is still a link",
+                link.display()
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_chain_that_never_ends_is_refused() {
+        let directory = scratch("loop");
+        let mut previous = directory.join("end.rs");
+        std::fs::write(&previous, "old\n").expect("seed");
+        for step in 0..MAX_LINK_HOPS {
+            let link = directory.join(format!("link-{step}.rs"));
+            std::os::unix::fs::symlink(&previous, &link).expect("symlink");
+            previous = link;
+        }
+        let error = write_atomic(&previous, b"new\n").expect_err("a loop");
+        assert!(
+            error.to_string().contains("too many symbolic links"),
+            "{error}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(directory.join("end.rs")).expect("read"),
+            "old\n"
+        );
     }
 
     #[test]

@@ -21,6 +21,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::fs::read_bytes;
+use crate::text::{char_window, clip, escape};
 
 /// Columns a line number takes in the rendered result.
 const NUMBER_WIDTH: usize = 5;
@@ -720,16 +721,6 @@ fn capture(pattern: &Regex, line: &str, width: usize) -> (Vec<Option<String>>, O
     (groups, Some(column))
 }
 
-/// Clips a line to `width` characters, saying whether it had to.
-fn clip(line: &str, width: usize) -> (String, bool) {
-    let (text, trailing) = char_window(line, 0, width);
-    if trailing {
-        (format!("{text}…"), true)
-    } else {
-        (text, false)
-    }
-}
-
 /// Clips a line around its match rather than at its start: the match is why the
 /// line was selected, so the text shown has to contain it, while the column the
 /// result reports stays the character position in the whole line
@@ -758,63 +749,6 @@ fn clip_around(line: &str, pattern: &Regex, width: usize) -> (String, bool) {
         shown.push('…');
     }
     (shown, true)
-}
-
-/// `width` characters of `line` from character `begin`, and whether the line
-/// had more after them.
-fn char_window(line: &str, begin: usize, width: usize) -> (String, bool) {
-    let mut window = String::new();
-    let mut taken = 0usize;
-    let mut trailing = false;
-    for (position, ch) in line.chars().enumerate() {
-        if position < begin {
-            continue;
-        }
-        if taken == width {
-            trailing = true;
-            break;
-        }
-        window.push(ch);
-        taken += 1;
-    }
-    (window, trailing)
-}
-
-/// The characters a terminal would act on, escaped: a lone carriage return, an
-/// escape sequence, a bidi override or a line separator inside a line could
-/// otherwise hide or reorder the rest of the result. A tab is left alone — it is
-/// indentation, which is text — and so is every printable character, so only a
-/// line that holds a control character pays for the escape.
-fn escape(text: &str) -> String {
-    use std::fmt::Write as _;
-
-    if !text
-        .chars()
-        .any(|ch| (ch.is_control() && ch != '\t') || is_bidi(ch))
-    {
-        return text.to_owned();
-    }
-    let mut escaped = String::with_capacity(text.len() + 8);
-    for ch in text.chars() {
-        match ch {
-            '\t' => escaped.push('\t'),
-            '\r' => escaped.push_str("\\r"),
-            '\u{1b}' => escaped.push_str("\\e"),
-            ch if ch.is_control() || is_bidi(ch) => {
-                let _ = write!(escaped, "\\u{{{:x}}}", u32::from(ch));
-            }
-            ch => escaped.push(ch),
-        }
-    }
-    escaped
-}
-
-/// Whether a character reorders or hides text where a terminal renders it.
-fn is_bidi(ch: char) -> bool {
-    matches!(
-        ch,
-        '\u{200e}' | '\u{200f}' | '\u{2028}' | '\u{2029}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
-    )
 }
 
 fn render(output: &ReadOutput) -> Result<ToolOutput> {

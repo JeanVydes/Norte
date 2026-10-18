@@ -2,6 +2,7 @@
 #![doc = "Default `RustyChain` tool suite: a command executor and the three file executors."]
 
 mod fs;
+mod text;
 
 pub mod command;
 pub mod edit;

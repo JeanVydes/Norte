@@ -1037,6 +1037,65 @@ async fn a_failing_model_surfaces_a_typed_error() {
         .expect_err("model error");
     assert!(matches!(error, Error::Other(ref message) if message == "boom"));
 }
+
+/// A turn that failed mid-flight stays resumable: the user message is already
+/// committed, the session sits in `Streaming`, and `resume` picks the turn up
+/// without asking the same question twice. This is what a host does after a
+/// transient provider error (`rustychain_http::is_transient`).
+#[tokio::test]
+async fn a_failed_turn_is_resumed_where_it_stopped() {
+    let store = Arc::new(InMemoryStore::new());
+    let blobs = Arc::new(InMemoryBlobStore::new());
+    let failing = EngineBuilder::new()
+        .store(store.clone())
+        .blobs(blobs.clone())
+        .model(Arc::new(rustychain_testing::FailingModel::new(
+            model("test/echo"),
+            "boom",
+        )))
+        .build()
+        .expect("build");
+    let session = failing.create().await.expect("create");
+    failing
+        .send(session.id, Message::user("go"))
+        .finish()
+        .await
+        .expect_err("the provider failed");
+
+    let parked = failing.session(session.id).await.expect("session");
+    assert_eq!(parked.phase, Phase::Streaming);
+    assert_eq!(
+        failing.history(session.id).await.expect("history").len(),
+        1,
+        "the question is committed, and nothing else"
+    );
+
+    // Another engine — another process, another model — takes the session over.
+    let resumed = EngineBuilder::new()
+        .store(store)
+        .blobs(blobs)
+        .model(Arc::new(
+            ScriptedModel::new(model("test/echo")).turn_text("recovered"),
+        ))
+        .build()
+        .expect("build");
+    let outcome = resumed.resume(session.id).finish().await.expect("resume");
+    assert_eq!(
+        outcome.message.as_ref().map(Message::text).as_deref(),
+        Some("recovered")
+    );
+
+    let history = resumed.history(session.id).await.expect("history");
+    assert_eq!(
+        history
+            .iter()
+            .map(|message| message.role)
+            .collect::<Vec<_>>(),
+        vec![Role::User, Role::Assistant],
+        "the question is not duplicated"
+    );
+}
+
 #[tokio::test]
 async fn tool_context_reaches_the_executor() {
     #[rustychain_core::tool(name = "probe", description = "Probe the tool context")]

@@ -9,19 +9,23 @@ use serde_json::Value;
 
 use rustychain_core::{Error, ProviderError, ProviderErrorKind, Result};
 
-use crate::retry::{RetryPolicy, parse_retry_after};
 use crate::sse::{SseDecoder, SseEvent};
+use crate::transport::{TransportPolicy, parse_retry_after};
 use crate::vendor::VendorProfile;
 
 /// A stream of decoded `SSE` events.
 pub type SseStream = Pin<Box<dyn Stream<Item = Result<SseEvent>> + Send + 'static>>;
 
-/// The shared transport. It owns retries, auth application and vendor headers,
-/// so adapters only deal with their own wire mapping.
+/// Names the stage a transport failure happened in, so a retry can tell "never
+/// reached the provider" from "may already be running".
+const STAGE: &str = "transport";
+
+/// The shared transport. It owns the [`TransportPolicy`], auth application and
+/// vendor headers, so adapters only deal with their own wire mapping.
 #[derive(Clone)]
 pub struct HttpClient {
     inner: reqwest::Client,
-    retry: RetryPolicy,
+    policy: TransportPolicy,
 }
 
 impl HttpClient {
@@ -30,20 +34,25 @@ impl HttpClient {
     /// Returns [`Error::Provider`] when the underlying `HTTP` client cannot be
     /// built.
     pub fn new() -> Result<Self> {
-        let inner = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(10))
-            .build()
-            .map_err(|error| transport(&error))?;
-        Ok(Self {
-            inner,
-            retry: RetryPolicy::default(),
-        })
+        Self::with_policy(TransportPolicy::default())
     }
 
+    /// # Errors
+    ///
+    /// Returns [`Error::Provider`] when the underlying `HTTP` client cannot be
+    /// built.
+    pub fn with_policy(policy: TransportPolicy) -> Result<Self> {
+        let inner = reqwest::Client::builder()
+            .connect_timeout(policy.connect_timeout)
+            .build()
+            .map_err(|error| transport(&error))?;
+        Ok(Self { inner, policy })
+    }
+
+    /// The policy this transport follows.
     #[must_use]
-    pub fn with_retry(mut self, retry: RetryPolicy) -> Self {
-        self.retry = retry;
-        self
+    pub fn policy(&self) -> TransportPolicy {
+        self.policy
     }
 
     #[must_use]
@@ -51,8 +60,12 @@ impl HttpClient {
         &self.inner
     }
 
-    /// Sends a `JSON` `POST`, retrying on retryable failures, and decodes the
-    /// `JSON` response body.
+    /// Sends a `JSON` `POST` and decodes the `JSON` response body.
+    ///
+    /// The call is bounded by the policy's `request_timeout`, and only a
+    /// connection that never reached the provider is retried. A provider error
+    /// — a rate limit, a quota, a `5xx` — is returned as is, `Retry-After`
+    /// included, for the host to act on.
     ///
     /// # Errors
     ///
@@ -68,8 +81,12 @@ impl HttpClient {
             .await
     }
 
-    /// Sends a `JSON` request, retrying on retryable failures, and decodes the
-    /// `JSON` response body.
+    /// Sends a `JSON` request and decodes the `JSON` response body.
+    ///
+    /// The call is bounded by the policy's `request_timeout`, and only a
+    /// connection that never reached the provider is retried. A provider error
+    /// — a rate limit, a quota, a `5xx` — is returned as is, `Retry-After`
+    /// included, for the host to act on.
     ///
     /// # Errors
     ///
@@ -85,7 +102,14 @@ impl HttpClient {
         let mut retries = 0u32;
         loop {
             let sent = self
-                .send_once(profile, method.clone(), path, body, "application/json")
+                .send_once(
+                    profile,
+                    method.clone(),
+                    path,
+                    body,
+                    "application/json",
+                    self.policy.request_timeout,
+                )
                 .await;
             match sent {
                 Ok(response) => return read_json(response).await,
@@ -101,7 +125,12 @@ impl HttpClient {
         }
     }
 
-    /// Opens an `SSE` stream, retrying the connection on retryable failures.
+    /// Opens an `SSE` stream, retrying a connection that never reached the
+    /// provider.
+    ///
+    /// Unlike a `JSON` call the stream is not bounded as a whole — a long answer
+    /// is normal — but the policy's `stream_idle_timeout` fails it when the
+    /// provider stops sending mid-answer.
     ///
     /// # Errors
     ///
@@ -116,10 +145,22 @@ impl HttpClient {
         let mut retries = 0u32;
         loop {
             let sent = self
-                .send_once(profile, Method::POST, path, Some(body), "text/event-stream")
+                .send_once(
+                    profile,
+                    Method::POST,
+                    path,
+                    Some(body),
+                    "text/event-stream",
+                    None,
+                )
                 .await;
             match sent {
-                Ok(response) => return Ok(decode_sse(response)),
+                Ok(response) => {
+                    return Ok(guard_idle(
+                        decode_sse(response),
+                        self.policy.stream_idle_timeout,
+                    ));
+                }
                 Err(error) => match self.backoff(retries, &error) {
                     Some(delay) => {
                         tracing::debug!(retries, delay = ?delay, "retrying SSE connection");
@@ -132,11 +173,13 @@ impl HttpClient {
         }
     }
 
+    /// The delay before retrying `error`, or `None` when the transport does not
+    /// retry it or the policy is exhausted.
     fn backoff(&self, retries: u32, error: &Error) -> Option<Duration> {
-        if !is_retryable(error) {
+        if !never_reached_provider(error) {
             return None;
         }
-        self.retry.delay(retries, error.retry_after())
+        self.policy.delay(retries)
     }
 
     fn request(
@@ -166,10 +209,15 @@ impl HttpClient {
         path: &str,
         body: Option<&Value>,
         accept: &str,
+        timeout: Option<Duration>,
     ) -> Result<Response> {
         let builder = self.request(profile, method, path)?.header(ACCEPT, accept);
         let builder = match body {
             Some(body) => builder.json(body),
+            None => builder,
+        };
+        let builder = match timeout {
+            Some(timeout) => builder.timeout(timeout),
             None => builder,
         };
         let response = builder.send().await.map_err(|error| transport(&error))?;
@@ -207,8 +255,50 @@ fn decode_sse(response: Response) -> SseStream {
     Box::pin(stream)
 }
 
+/// Fails the stream with a transport error when the provider stays silent for
+/// longer than `idle`, so a stalled answer cannot hang a turn forever.
+fn guard_idle(stream: SseStream, idle: Option<Duration>) -> SseStream {
+    let Some(idle) = idle else {
+        return stream;
+    };
+    Box::pin(futures_util::stream::unfold(
+        Some(stream),
+        move |state| async move {
+            let mut stream = state?;
+            match tokio::time::timeout(idle, stream.next()).await {
+                Ok(Some(item)) => Some((item, Some(stream))),
+                Ok(None) => None,
+                Err(_elapsed) => Some((Err(stalled(idle)), None)),
+            }
+        },
+    ))
+}
+
+/// The error for a provider that went silent mid-stream. It is a transport
+/// failure the transport does not retry, because the provider may still be
+/// working on the request.
+fn stalled(idle: Duration) -> Error {
+    Error::provider(
+        ProviderError::new(
+            ProviderErrorKind::Transport,
+            format!("no event from the provider for {idle:?}"),
+        )
+        .with_extension(STAGE, Value::from("timeout")),
+    )
+}
+
+/// Whether a failure may clear on its own, so a host may retry the call: a rate
+/// limit, an overloaded model, a server error, or a transport failure.
+///
+/// This is the host's helper, not the transport's rule. The transport itself
+/// retries only a connection that never reached the provider (see
+/// [`TransportPolicy`]), since a retry after the provider started working can
+/// make it work twice. A host that retries these keeps the whole turn: a failed
+/// turn leaves the session resumable, so `Engine::resume` picks it up where it
+/// stopped — including any [`retry_after`](Error::retry_after) the provider
+/// asked for.
 #[must_use]
-pub fn is_retryable(error: &Error) -> bool {
+pub fn is_transient(error: &Error) -> bool {
     matches!(
         error.provider_kind(),
         Some(
@@ -220,15 +310,30 @@ pub fn is_retryable(error: &Error) -> bool {
     )
 }
 
+/// Whether the request failed before reaching the provider, so retrying it
+/// cannot make the provider work twice.
+fn never_reached_provider(error: &Error) -> bool {
+    matches!(
+        error,
+        Error::Provider(provider)
+            if provider.kind == ProviderErrorKind::Transport
+                && provider.extensions.get(STAGE).and_then(Value::as_str) == Some("connect")
+    )
+}
+
 fn transport(error: &reqwest::Error) -> Error {
-    let kind = if error.is_timeout() || error.is_connect() {
-        ProviderErrorKind::Transport
+    let (kind, stage) = if error.is_connect() {
+        (ProviderErrorKind::Transport, "connect")
+    } else if error.is_timeout() {
+        (ProviderErrorKind::Transport, "timeout")
     } else if error.is_decode() {
-        ProviderErrorKind::Decode
+        (ProviderErrorKind::Decode, "decode")
     } else {
-        ProviderErrorKind::Transport
+        (ProviderErrorKind::Transport, "stream")
     };
-    Error::provider(ProviderError::new(kind, error.to_string()))
+    Error::provider(
+        ProviderError::new(kind, error.to_string()).with_extension(STAGE, Value::from(stage)),
+    )
 }
 
 fn status_error(status: StatusCode, body: &str, retry_after: Option<Duration>) -> Error {
@@ -287,6 +392,7 @@ mod tests {
         assert_eq!(kind_of(404), ProviderErrorKind::NotFound);
         assert_eq!(kind_of(429), ProviderErrorKind::RateLimited);
         assert_eq!(kind_of(500), ProviderErrorKind::ServerError);
+        assert_eq!(kind_of(503), ProviderErrorKind::ServerError);
         assert_eq!(kind_of(529), ProviderErrorKind::ModelOverloaded);
         assert_eq!(kind_of(400), ProviderErrorKind::InvalidRequest);
     }
@@ -309,32 +415,27 @@ mod tests {
     }
 
     #[test]
-    fn retryability_follows_the_kind() {
-        assert!(is_retryable(&status_error(
+    fn transient_kinds_are_the_ones_a_host_may_retry() {
+        assert!(is_transient(&status_error(
             StatusCode::TOO_MANY_REQUESTS,
             "",
             None
         )));
-        assert!(is_retryable(&status_error(
+        assert!(is_transient(&status_error(
             StatusCode::BAD_GATEWAY,
             "",
             None
         )));
-        assert!(!is_retryable(&status_error(
+        assert!(!is_transient(&status_error(
             StatusCode::UNAUTHORIZED,
             "",
             None
         )));
-        assert!(!is_retryable(&Error::InvalidInput("x".to_owned())));
+        assert!(!is_transient(&Error::InvalidInput("x".to_owned())));
     }
 
     #[test]
-    fn transport_error_is_classified() {
-        assert_eq!(kind_of(503), ProviderErrorKind::ServerError);
-    }
-
-    #[test]
-    fn exhausted_quota_is_not_retryable_but_a_rate_limit_is() {
+    fn exhausted_quota_is_not_transient_but_a_rate_limit_is() {
         let quota = status_error(
             StatusCode::TOO_MANY_REQUESTS,
             r#"{"error":{"type":"insufficient_quota","message":"out of quota"}}"#,
@@ -344,7 +445,7 @@ mod tests {
             quota.provider_kind(),
             Some(ProviderErrorKind::QuotaExceeded)
         );
-        assert!(!is_retryable(&quota));
+        assert!(!is_transient(&quota));
 
         let rate = status_error(
             StatusCode::TOO_MANY_REQUESTS,
@@ -352,7 +453,79 @@ mod tests {
             None,
         );
         assert_eq!(rate.provider_kind(), Some(ProviderErrorKind::RateLimited));
-        assert!(is_retryable(&rate));
+        assert!(is_transient(&rate));
+    }
+
+    #[test]
+    fn only_a_connection_that_never_reached_the_provider_is_retried() {
+        let client = HttpClient::new().expect("client");
+
+        let connect = transport_error("connect");
+        assert!(never_reached_provider(&connect));
+        assert_eq!(
+            client.backoff(0, &connect),
+            Some(Duration::from_millis(500))
+        );
+        assert_eq!(client.backoff(3, &connect), None, "the policy is exhausted");
+
+        let timeout = transport_error("timeout");
+        assert!(!never_reached_provider(&timeout));
+        assert_eq!(
+            client.backoff(0, &timeout),
+            None,
+            "the request may be running"
+        );
+
+        let rate_limit = status_error(StatusCode::TOO_MANY_REQUESTS, "", None);
+        assert_eq!(client.backoff(0, &rate_limit), None, "the host owns it");
+    }
+
+    #[test]
+    fn a_policy_without_retries_never_backs_off() {
+        let client = HttpClient::with_policy(TransportPolicy::without_retries()).expect("client");
+        assert_eq!(client.backoff(0, &transport_error("connect")), None);
+        assert_eq!(
+            client.policy().stream_idle_timeout,
+            TransportPolicy::default().stream_idle_timeout,
+            "no retries is not no timeouts"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_silent_stream_fails_instead_of_hanging() {
+        let stream: SseStream = Box::pin(futures_util::stream::pending());
+        let mut guarded = guard_idle(stream, Some(Duration::from_millis(10)));
+
+        let error = guarded
+            .next()
+            .await
+            .expect("an item")
+            .expect_err("the idle timeout fires");
+        assert_eq!(error.provider_kind(), Some(ProviderErrorKind::Transport));
+        assert!(!never_reached_provider(&error), "a stall is not retried");
+        assert!(guarded.next().await.is_none(), "and the stream ends there");
+    }
+
+    #[tokio::test]
+    async fn a_stream_that_keeps_sending_is_left_alone() {
+        let event = SseEvent {
+            event: Some("message".to_owned()),
+            data: "{}".to_owned(),
+            ..SseEvent::default()
+        };
+        let stream: SseStream = Box::pin(futures_util::stream::iter([Ok(event.clone())]));
+        let mut guarded = guard_idle(stream, Some(Duration::from_millis(10)));
+
+        let received = guarded.next().await.expect("an item").expect("no failure");
+        assert_eq!(received, event);
+        assert!(guarded.next().await.is_none());
+    }
+
+    fn transport_error(stage: &str) -> Error {
+        Error::provider(
+            ProviderError::new(ProviderErrorKind::Transport, "boom")
+                .with_extension(STAGE, Value::from(stage)),
+        )
     }
 
     fn kind_of(status: u16) -> ProviderErrorKind {

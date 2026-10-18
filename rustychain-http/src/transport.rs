@@ -1,3 +1,13 @@
+//! The transport's own policy, and the parsing of the `Retry-After` header the
+//! host reads on errors.
+//!
+//! [`TransportPolicy`] is deliberately narrow. The transport retries only a
+//! connection that never reached the provider, and it bounds how long it waits
+//! for one. Anything that came *from* the provider — a status code, a rate
+//! limit, an exhausted quota — is handed to the host with the vendor's
+//! `Retry-After` attached, because only the host knows how to react: wait,
+//! switch model, shrink its concurrency, or tell the user.
+
 use std::time::Duration;
 
 /// Parses a `Retry-After` header value: either a whole number of seconds or an
@@ -27,46 +37,70 @@ fn parse_http_date(value: &str) -> Option<chrono::DateTime<chrono::Utc>> {
         .map(|parsed| parsed.with_timezone(&chrono::Utc))
 }
 
-/// Exponential backoff with a hard cap, honoring a server-provided
-/// `Retry-After` when present.
+/// What the `HTTP` transport does by itself: how it retries a connection that
+/// never reached the provider, and the timeouts it enforces.
+///
+/// **Retries.** Only a failure to *establish* a connection is retried: nothing
+/// was sent, so the provider cannot have started working, and the retry is
+/// invisible. A timeout is not retried even though it is a transport failure,
+/// because by then the request may be running and a generation must never run
+/// twice. Neither is anything the provider answered with — a rate limit, a
+/// quota, a `5xx` — since that is application policy: the error reaches the host
+/// with [`retry_after`](crate::Error::retry_after) intact.
+///
+/// **Timeouts.** `connect_timeout` bounds establishing a connection,
+/// `request_timeout` bounds a whole `JSON` call, and `stream_idle_timeout`
+/// bounds the silence *inside* an event stream: a provider that stops sending
+/// mid-answer fails with a transport error instead of hanging the turn forever.
+/// A host whose models think for minutes before the first token raises it or
+/// turns it off.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct RetryPolicy {
-    /// Total number of retries attempted after the first failure.
+pub struct TransportPolicy {
+    /// Attempts after the first one, for a connection that never reached the
+    /// provider. `0` disables retrying and leaves the decision to the host.
     pub max_retries: u32,
+    /// Base of the exponential backoff between attempts.
     pub base: Duration,
+    /// Cap on one backoff delay.
     pub max: Duration,
+    /// Cap on establishing one connection.
+    pub connect_timeout: Duration,
+    /// Cap on one `JSON` request, response included. `None` waits forever.
+    pub request_timeout: Option<Duration>,
+    /// Cap on the silence between two events of a stream. `None` waits forever.
+    pub stream_idle_timeout: Option<Duration>,
 }
 
-impl Default for RetryPolicy {
+impl Default for TransportPolicy {
     fn default() -> Self {
         Self {
             max_retries: 3,
             base: Duration::from_millis(500),
             max: Duration::from_secs(8),
+            connect_timeout: Duration::from_secs(10),
+            request_timeout: Some(Duration::from_secs(120)),
+            stream_idle_timeout: Some(Duration::from_secs(300)),
         }
     }
 }
 
-impl RetryPolicy {
+impl TransportPolicy {
+    /// A transport that never retries anything: for a host that owns its own
+    /// retry loop and only wants the timeouts.
     #[must_use]
-    pub fn new(max_retries: u32, base: Duration, max: Duration) -> Self {
+    pub fn without_retries() -> Self {
         Self {
-            max_retries,
-            base,
-            max,
+            max_retries: 0,
+            ..Self::default()
         }
     }
 
     /// The delay before the retry that follows `retries` completed retries, or
-    /// `None` once the policy is exhausted. A `Retry-After` value always wins,
-    /// capped at [`RetryPolicy::max`].
+    /// `None` once the policy is exhausted.
     #[must_use]
-    pub fn delay(&self, retries: u32, retry_after: Option<Duration>) -> Option<Duration> {
+    pub fn delay(&self, retries: u32) -> Option<Duration> {
         if retries >= self.max_retries {
             return None;
-        }
-        if let Some(retry_after) = retry_after {
-            return Some(retry_after.min(self.max));
         }
         let factor = 1u32.checked_shl(retries.min(16)).unwrap_or(u32::MAX);
         Some((self.base * factor).min(self.max))
@@ -96,23 +130,26 @@ mod tests {
 
     #[test]
     fn backoff_grows_then_caps_and_exhausts() {
-        let policy = RetryPolicy::new(3, Duration::from_millis(100), Duration::from_millis(250));
-        assert_eq!(policy.delay(0, None), Some(Duration::from_millis(100)));
-        assert_eq!(policy.delay(1, None), Some(Duration::from_millis(200)));
-        assert_eq!(policy.delay(2, None), Some(Duration::from_millis(250)));
-        assert_eq!(policy.delay(3, None), None);
+        let policy = TransportPolicy {
+            max_retries: 3,
+            base: Duration::from_millis(100),
+            max: Duration::from_millis(250),
+            ..TransportPolicy::default()
+        };
+        assert_eq!(policy.delay(0), Some(Duration::from_millis(100)));
+        assert_eq!(policy.delay(1), Some(Duration::from_millis(200)));
+        assert_eq!(policy.delay(2), Some(Duration::from_millis(250)));
+        assert_eq!(policy.delay(3), None);
     }
 
     #[test]
-    fn retry_after_overrides_backoff_but_stays_capped() {
-        let policy = RetryPolicy::new(3, Duration::from_millis(100), Duration::from_secs(1));
-        assert_eq!(
-            policy.delay(0, Some(Duration::from_secs(5))),
-            Some(Duration::from_secs(1))
-        );
-        assert_eq!(
-            policy.delay(0, Some(Duration::from_millis(20))),
-            Some(Duration::from_millis(20))
+    fn a_policy_without_retries_never_waits() {
+        let policy = TransportPolicy::without_retries();
+        assert_eq!(policy.max_retries, 0);
+        assert_eq!(policy.delay(0), None);
+        assert!(
+            policy.connect_timeout > Duration::ZERO,
+            "no retries is not no timeouts"
         );
     }
 }

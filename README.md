@@ -102,6 +102,8 @@ Runnable, end-to-end programs live in [`examples/`](examples/):
 - [`react-agent`](examples/react-agent) — a streaming ReAct agent on OpenRouter
   with live reasoning, an approval-gated shell tool, a custom fetch tool, and a
   two-model fan-out once the data is gathered.
+- [`cookbook`](examples/cookbook) — one small, self-contained recipe per topic:
+  events, streaming, approval, policies, declaring tools, observers.
 
 ## Documentation
 

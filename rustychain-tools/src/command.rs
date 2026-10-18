@@ -813,13 +813,62 @@ mod tests {
             signal.cancel();
         });
         let output = tool
-            .call_with_context(&context, request(shell("sleep 30")))
+            .call_with_context(&context, request(shell("echo before; sleep 30")))
             .await
             .expect("execute");
         assert!(output.is_error);
         let structured = structured(&output);
         assert_eq!(structured["code"], "cancelled");
         assert_eq!(structured["cancelled"], true);
+        assert_eq!(
+            structured["stdout"], "before\n",
+            "the output produced before the cancellation is kept (FR-TOOL-BASH-5)"
+        );
+    }
+
+    #[tokio::test]
+    async fn output_is_streamed_back_as_progress() {
+        let tool = CommandTool::new();
+        let sink = Arc::new(Sink::default());
+        let context = ToolContext::new().with_progress(sink.clone());
+        let output = tool
+            .call_with_context(&context, request(shell("echo streamed")))
+            .await
+            .expect("execute");
+        assert!(!output.is_error);
+
+        let progress = sink.0.lock().expect("lock");
+        let stdout: Vec<u8> = progress
+            .iter()
+            .filter(|entry| entry.stream == ToolStream::Stdout)
+            .flat_map(|entry| entry.bytes.clone())
+            .collect();
+        assert_eq!(String::from_utf8_lossy(&stdout), "streamed\n");
+        assert!(
+            progress
+                .iter()
+                .any(|entry| entry.stream == ToolStream::Stdout && entry.last),
+            "the stream is closed with a last marker"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_audit_record_carries_the_digests_and_timestamps() {
+        let tool = CommandTool::new();
+        let output = tool
+            .call(request(shell("echo audited")))
+            .await
+            .expect("execute");
+        let structured = structured(&output);
+        assert!(structured["request_digest"].is_string());
+        assert!(structured["output_hash"].is_string());
+        assert!(structured["started_at"].is_string());
+        assert!(structured["ended_at"].is_string());
+        assert_eq!(
+            structured["output_hash"],
+            Digest::of(b"audited\n").to_string(),
+            "the output hash is taken over the captured streams (FR-TOOL-BASH-8)"
+        );
     }
 
     #[test]
@@ -886,6 +935,15 @@ mod tests {
 
     fn structured(output: &ToolOutput) -> Value {
         output.structured.clone().expect("structured")
+    }
+
+    #[derive(Default)]
+    struct Sink(Mutex<Vec<ToolProgress>>);
+
+    impl rustychain_core::ProgressSink for Sink {
+        fn send(&self, progress: ToolProgress) {
+            self.0.lock().expect("lock").push(progress);
+        }
     }
 
     #[derive(Default)]

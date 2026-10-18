@@ -2090,6 +2090,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_process_does_not_inherit_the_ambient_environment() {
+        // The test process has an environment; the child must see none of it
+        // unless the host or the request put it there (FR-TOOL-BASH-6).
+        let Some(home) = std::env::var_os("HOME") else {
+            return;
+        };
+        let tool = CommandTool::new();
+        let output = tool
+            .call(request(shell("printf '[%s]' \"${HOME:-}\"")))
+            .await
+            .expect("execute");
+        assert_eq!(
+            structured(&output)["stdout"],
+            "[]",
+            "the child saw the ambient HOME={}",
+            home.to_string_lossy()
+        );
+    }
+
+    #[tokio::test]
     async fn a_request_may_add_a_variable_the_host_did_not_set() {
         let tool = CommandTool::new();
         let request = request(shell("echo $FROM_REQUEST")).with_env("FROM_REQUEST", "added");

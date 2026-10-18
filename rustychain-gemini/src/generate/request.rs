@@ -259,11 +259,14 @@ fn tool_response(names: &CallNames, result: &ToolResultPart) -> Value {
         .get(&result.call_id)
         .cloned()
         .unwrap_or_else(|| result.call_id.to_string());
-    let response = if let Some(structured) = &result.structured {
-        json!({ "result": structured })
-    } else {
-        let text: String = result.parts.iter().filter_map(Part::as_text).collect();
-        json!({ "result": text })
+    let text: String = result.parts.iter().filter_map(Part::as_text).collect();
+    let carries_text = result.parts.iter().any(|part| part.as_text().is_some());
+    // Text is authoritative (FR-TOOL-BASH-3): the host renders the text the
+    // model reads, so structured data only answers for a result that carries no
+    // text at all.
+    let response = match (carries_text, &result.structured) {
+        (false, Some(structured)) => json!({ "result": structured }),
+        _ => json!({ "result": text }),
     };
     json!({ "functionResponse": { "name": name, "response": response } })
 }
@@ -537,6 +540,38 @@ mod tests {
         assert_eq!(
             body["contents"][1]["parts"][0]["functionResponse"]["response"]["result"],
             "42"
+        );
+    }
+
+    #[test]
+    fn a_tool_result_sends_text_and_falls_back_to_structured() {
+        let call_id = CallId::new();
+        let rendered = ToolResultPart {
+            call_id,
+            parts: vec![Part::text("rendered text")],
+            structured: Some(serde_json::json!({ "answer": 42 })),
+            is_error: false,
+        };
+        let tool = Message::new(Role::Tool, vec![Part::ToolResult(rendered)]);
+        let request = ModelRequest::new(model(), vec![tool]);
+        let body = build(&model(), &continuity(), &request).expect("build");
+        assert_eq!(
+            body["contents"][0]["parts"][0]["functionResponse"]["response"]["result"],
+            "rendered text"
+        );
+
+        let structured_only = ToolResultPart {
+            call_id,
+            parts: Vec::new(),
+            structured: Some(serde_json::json!({ "answer": 42 })),
+            is_error: false,
+        };
+        let tool = Message::new(Role::Tool, vec![Part::ToolResult(structured_only)]);
+        let request = ModelRequest::new(model(), vec![tool]);
+        let body = build(&model(), &continuity(), &request).expect("build");
+        assert_eq!(
+            body["contents"][0]["parts"][0]["functionResponse"]["response"]["result"],
+            serde_json::json!({ "answer": 42 })
         );
     }
 

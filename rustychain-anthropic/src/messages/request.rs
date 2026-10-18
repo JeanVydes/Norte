@@ -326,8 +326,14 @@ fn tool_result_block(calls: &CallIndex, result: &ToolResultPart) -> Result<Value
 }
 
 fn tool_result_content(result: &ToolResultPart) -> Result<Value> {
-    if let Some(structured) = &result.structured {
-        return Ok(Value::String(structured.to_string()));
+    let carries_text = result.parts.iter().any(|part| part.as_text().is_some());
+    // Text is authoritative (FR-TOOL-BASH-3): the host renders the text the
+    // model reads, so structured data only answers for a result that carries no
+    // text at all.
+    if !carries_text {
+        if let Some(structured) = &result.structured {
+            return Ok(Value::String(structured.to_string()));
+        }
     }
     if result.parts.iter().any(|part| part.as_media().is_some()) {
         let mut blocks = Vec::new();
@@ -492,6 +498,45 @@ mod tests {
         assert_eq!(body["messages"][1]["content"][0]["type"], "tool_result");
         assert_eq!(body["messages"][1]["content"][0]["tool_use_id"], "toolu_1");
         assert_eq!(body["messages"][1]["content"][0]["content"], "42");
+    }
+
+    #[test]
+    fn a_tool_result_sends_text_and_falls_back_to_structured() {
+        let call_id = CallId::new();
+        let rendered = ToolResultPart {
+            call_id,
+            parts: vec![Part::text("rendered text")],
+            structured: Some(serde_json::json!({ "answer": 42 })),
+            is_error: false,
+        };
+        let request = ModelRequest::new(
+            model(),
+            vec![Message::new(Role::Tool, vec![Part::ToolResult(rendered)])],
+        );
+        let body = build(&model(), &continuity(), &request).expect("build");
+        assert_eq!(
+            body["messages"][0]["content"][0]["content"],
+            "rendered text"
+        );
+
+        let structured_only = ToolResultPart {
+            call_id,
+            parts: Vec::new(),
+            structured: Some(serde_json::json!({ "answer": 42 })),
+            is_error: false,
+        };
+        let request = ModelRequest::new(
+            model(),
+            vec![Message::new(
+                Role::Tool,
+                vec![Part::ToolResult(structured_only)],
+            )],
+        );
+        let body = build(&model(), &continuity(), &request).expect("build");
+        assert_eq!(
+            body["messages"][0]["content"][0]["content"],
+            "{\"answer\":42}"
+        );
     }
 
     #[test]

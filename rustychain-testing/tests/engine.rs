@@ -1,11 +1,13 @@
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use rustychain_core::{
-    CallId, ContinuityFragment, ContinuityScope, ContinuitySemantics, Engine, EngineBuilder,
-    EngineConfig, EngineEvent, Error, FinishReason, FnExecutor, Message, MessageStatus, Part,
-    Phase, PolicySet, Result, Role, Store, StreamEvent, ToolApprovalPolicy, ToolContext, ToolName,
-    ToolRegistry, WireFamily,
+    CallId, ContinuityFragment, ContinuityScope, ContinuitySemantics, Decision, Engine,
+    EngineBuilder, EngineConfig, EngineEvent, Error, FinishReason, FnExecutor, Message,
+    MessageStatus, Part, Phase, Policy, PolicySet, PolicyView, Result, Role, Store, StreamEvent,
+    ToolApprovalPolicy, ToolContext, ToolName, ToolRegistry, WireFamily,
 };
 use rustychain_testing::{
     InMemoryBlobStore, InMemoryStore, ScriptedModel, StrictContinuity, model, text_capabilities,
@@ -31,6 +33,34 @@ struct Echo;
 #[async_trait::async_trait]
 impl FnExecutor<EchoArgs, EchoResult> for Echo {
     async fn call(&self, args: EchoArgs) -> Result<EchoResult> {
+        Ok(EchoResult { echoed: args.text })
+    }
+}
+
+#[derive(Debug)]
+#[rustychain_core::tool(name = "plain", description = "A tool nobody has to approve")]
+struct Plain {
+    hits: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl FnExecutor<EchoArgs, EchoResult> for Plain {
+    async fn call(&self, args: EchoArgs) -> Result<EchoResult> {
+        self.hits.fetch_add(1, Ordering::SeqCst);
+        Ok(EchoResult { echoed: args.text })
+    }
+}
+
+#[derive(Debug)]
+#[rustychain_core::tool(name = "guarded", description = "A tool the operator must approve")]
+struct Guarded {
+    hits: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl FnExecutor<EchoArgs, EchoResult> for Guarded {
+    async fn call(&self, args: EchoArgs) -> Result<EchoResult> {
+        self.hits.fetch_add(1, Ordering::SeqCst);
         Ok(EchoResult { echoed: args.text })
     }
 }
@@ -148,33 +178,65 @@ async fn tool_calls_run_and_feed_the_next_turn() {
     assert_eq!(tool_message.tool_results()[0].call_id, call_id);
 }
 
+/// One assistant message carrying two tool calls, in order, each with the
+/// arguments `{"text": <text>}`.
+fn two_call_turn(first: (CallId, &str, &str), second: (CallId, &str, &str)) -> Vec<StreamEvent> {
+    let mut events = Vec::new();
+    for (index, (call_id, tool, text)) in [(0_u32, first), (1, second)] {
+        events.push(StreamEvent::ToolCallStart {
+            index,
+            call_id,
+            name: tool.to_owned(),
+        });
+        events.push(StreamEvent::ToolCallDelta {
+            index,
+            call_id,
+            name: None,
+            arguments: json!({ "text": text }).to_string(),
+        });
+        events.push(StreamEvent::ToolCallDone { index });
+    }
+    events.push(StreamEvent::Finish(FinishReason::ToolCalls));
+    events
+}
+
+/// Two counting tools and a policy that gates `guarded`, so a message can run
+/// one call and then park on the next.
+fn counting_tools() -> (ToolRegistry, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+    let plain = Arc::new(AtomicUsize::new(0));
+    let guarded = Arc::new(AtomicUsize::new(0));
+    let mut tools = ToolRegistry::new();
+    tools
+        .register_declarator(&Plain {
+            hits: Arc::clone(&plain),
+        })
+        .expect("register plain");
+    tools
+        .register_declarator(&Guarded {
+            hits: Arc::clone(&guarded),
+        })
+        .expect("register guarded");
+    (tools, plain, guarded)
+}
+
+fn guarded_policy() -> PolicySet {
+    PolicySet::new(vec![Arc::new(ToolApprovalPolicy::new(
+        "guard",
+        vec![ToolName::new("guarded").expect("tool")],
+        "guarded needs a human",
+    ))])
+}
+
 #[tokio::test]
 async fn two_calls_in_one_message_each_get_a_result() {
-    fn call(index: u32, call_id: CallId, text: &str) -> Vec<StreamEvent> {
-        vec![
-            StreamEvent::ToolCallStart {
-                index,
-                call_id,
-                name: "echo".to_owned(),
-            },
-            StreamEvent::ToolCallDelta {
-                index,
-                call_id,
-                name: None,
-                arguments: json!({ "text": text }).to_string(),
-            },
-            StreamEvent::ToolCallDone { index },
-        ]
-    }
-
     let first = CallId::new();
     let second = CallId::new();
-    let mut events = call(0, first, "one");
-    events.extend(call(1, second, "two"));
-    events.push(StreamEvent::Finish(FinishReason::ToolCalls));
     let scripted = Arc::new(
         ScriptedModel::new(model("test/echo"))
-            .turn(events)
+            .turn(two_call_turn(
+                (first, "echo", "one"),
+                (second, "echo", "two"),
+            ))
             .turn_text("both done"),
     );
     let mut tools = ToolRegistry::new();
@@ -211,6 +273,157 @@ async fn two_calls_in_one_message_each_get_a_result() {
     assert_eq!(results[1].call_id, second);
     assert_eq!(results[0].structured, Some(json!({ "echoed": "one" })));
     assert_eq!(results[1].structured, Some(json!({ "echoed": "two" })));
+}
+
+#[tokio::test]
+async fn a_park_after_a_call_does_not_run_that_call_again() {
+    let first = CallId::new();
+    let second = CallId::new();
+    let scripted = Arc::new(
+        ScriptedModel::new(model("test/plain"))
+            .turn(two_call_turn(
+                (first, "plain", "one"),
+                (second, "guarded", "two"),
+            ))
+            .turn_text("done"),
+    );
+    let (tools, plain_hits, guarded_hits) = counting_tools();
+    let harness = harness(scripted, tools, guarded_policy());
+
+    let session = harness.engine.create().await.expect("create");
+    let outcome = harness
+        .engine
+        .send(session.id, Message::user("go"))
+        .finish()
+        .await
+        .expect("turn");
+    assert_eq!(outcome.session.phase, Phase::AwaitingApproval);
+    assert_eq!(
+        plain_hits.load(Ordering::SeqCst),
+        1,
+        "the call before the park ran once"
+    );
+    assert_eq!(
+        guarded_hits.load(Ordering::SeqCst),
+        0,
+        "the gated call has not run"
+    );
+
+    let pending = harness
+        .engine
+        .pending_approvals(session.id)
+        .await
+        .expect("pending");
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].call_id, second);
+    harness
+        .engine
+        .approve(
+            pending[0].id,
+            rustychain_core::GrantScope::Call(second),
+            "tester",
+        )
+        .await
+        .expect("approve");
+
+    let outcome = harness
+        .engine
+        .resume(session.id)
+        .finish()
+        .await
+        .expect("resume");
+    assert_eq!(outcome.session.phase, Phase::Idle);
+    assert_eq!(guarded_hits.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        plain_hits.load(Ordering::SeqCst),
+        1,
+        "resuming must not re-run the call that ran before the park"
+    );
+}
+
+#[tokio::test]
+async fn early_tool_execution_does_not_run_a_call_twice_across_a_park() {
+    let first = CallId::new();
+    let second = CallId::new();
+    let scripted = Arc::new(
+        ScriptedModel::new(model("test/plain"))
+            .turn(two_call_turn(
+                (first, "plain", "one"),
+                (second, "guarded", "two"),
+            ))
+            .turn_text("done"),
+    );
+    let (tools, plain_hits, guarded_hits) = counting_tools();
+    let config = EngineConfig {
+        early_tool_execution: true,
+        ..EngineConfig::default()
+    };
+    let harness = harness_with_config(scripted, tools, guarded_policy(), config);
+
+    let session = harness.engine.create().await.expect("create");
+    let outcome = harness
+        .engine
+        .send(session.id, Message::user("go"))
+        .finish()
+        .await
+        .expect("turn");
+    assert_eq!(outcome.session.phase, Phase::AwaitingApproval);
+    assert_eq!(
+        plain_hits.load(Ordering::SeqCst),
+        1,
+        "the early call ran during the stream"
+    );
+
+    let pending = harness
+        .engine
+        .pending_approvals(session.id)
+        .await
+        .expect("pending");
+    assert_eq!(pending.len(), 1);
+    harness
+        .engine
+        .approve(
+            pending[0].id,
+            rustychain_core::GrantScope::Call(second),
+            "tester",
+        )
+        .await
+        .expect("approve");
+
+    let outcome = harness
+        .engine
+        .resume(session.id)
+        .finish()
+        .await
+        .expect("resume");
+    assert_eq!(outcome.session.phase, Phase::Idle);
+    assert_eq!(guarded_hits.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        plain_hits.load(Ordering::SeqCst),
+        1,
+        "an early call must not run again after the park"
+    );
+
+    let history = harness
+        .store
+        .history(outcome.session.head)
+        .await
+        .expect("history");
+    let tool_message = history
+        .iter()
+        .find(|message| message.role == Role::Tool)
+        .expect("tool message");
+    let results = tool_message.tool_results();
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].call_id, first, "results keep call order");
+    assert_eq!(results[1].call_id, second);
+    assert!(
+        !outcome
+            .session
+            .metadata
+            .contains_key("rustychain.partial_tools"),
+        "the parked-results key is cleared once the tool message commits"
+    );
 }
 
 /// Runs one echo turn and reports how many commits had succeeded when the tool
@@ -824,7 +1037,6 @@ async fn a_failing_model_surfaces_a_typed_error() {
         .expect_err("model error");
     assert!(matches!(error, Error::Other(ref message) if message == "boom"));
 }
-
 #[tokio::test]
 async fn tool_context_reaches_the_executor() {
     #[rustychain_core::tool(name = "probe", description = "Probe the tool context")]
@@ -953,4 +1165,157 @@ async fn switching_models_mid_tool_loop_blocks_instead_of_dropping_tokens() {
         .await
         .expect_err("continuity blocked");
     assert!(matches!(error, Error::ContinuityBlocked(_)));
+}
+
+/// Denies a call once an earlier call in the same message has already run, so a
+/// test can observe what `PolicyView::results` carries.
+struct ResultGate;
+
+impl Policy for ResultGate {
+    fn name(&self) -> &'static str {
+        "result-gate"
+    }
+
+    fn decide(&self, view: &PolicyView<'_>) -> Decision {
+        if view.results.is_empty() {
+            return Decision::Allow;
+        }
+        Decision::Deny("this request already ran a tool".to_owned())
+    }
+}
+
+#[tokio::test]
+async fn a_policy_sees_the_results_of_earlier_calls_in_the_same_message() {
+    let first = CallId::new();
+    let second = CallId::new();
+    let scripted = Arc::new(
+        ScriptedModel::new(model("test/echo"))
+            .turn(two_call_turn(
+                (first, "echo", "one"),
+                (second, "echo", "two"),
+            ))
+            .turn_text("done"),
+    );
+    let mut tools = ToolRegistry::new();
+    tools.register_declarator(&Echo).expect("register echo");
+    let policies = PolicySet::new(vec![Arc::new(ResultGate)]);
+    let harness = harness(scripted, tools, policies);
+
+    let session = harness.engine.create().await.expect("create");
+    let outcome = harness
+        .engine
+        .send(session.id, Message::user("go"))
+        .finish()
+        .await
+        .expect("turn");
+    assert_eq!(outcome.session.phase, Phase::Idle);
+
+    let history = harness
+        .store
+        .history(outcome.session.head)
+        .await
+        .expect("history");
+    let tool_message = history
+        .iter()
+        .find(|message| message.role == Role::Tool)
+        .expect("tool message");
+    let results = tool_message.tool_results();
+    assert!(!results[0].is_error, "the first call ran");
+    assert_eq!(results[0].structured, Some(json!({ "echoed": "one" })));
+    assert!(results[1].is_error, "the second call was denied");
+    let reason = results[1]
+        .parts
+        .iter()
+        .find_map(Part::as_text)
+        .expect("denial reason");
+    assert_eq!(reason, "this request already ran a tool");
+}
+
+/// What one policy evaluation saw, recorded so a test can compare paths.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Seen {
+    results: usize,
+    history: usize,
+}
+
+/// Records the view every evaluation received, and allows.
+#[derive(Clone, Default)]
+struct Probe {
+    seen: Arc<Mutex<Vec<Seen>>>,
+}
+
+impl Policy for Probe {
+    fn name(&self) -> &'static str {
+        "probe"
+    }
+
+    fn decide(&self, view: &PolicyView<'_>) -> Decision {
+        self.seen.lock().expect("probe").push(Seen {
+            results: view.results.len(),
+            history: view.history.len(),
+        });
+        Decision::Allow
+    }
+}
+
+async fn probe_seen(config: EngineConfig) -> Vec<Seen> {
+    let first = CallId::new();
+    let second = CallId::new();
+    let scripted = Arc::new(
+        ScriptedModel::new(model("test/echo"))
+            .turn(two_call_turn(
+                (first, "echo", "one"),
+                (second, "echo", "two"),
+            ))
+            .turn_text("done"),
+    );
+    let mut tools = ToolRegistry::new();
+    tools.register_declarator(&Echo).expect("register echo");
+    let probe = Probe::default();
+    let seen = Arc::clone(&probe.seen);
+    let policies = PolicySet::new(vec![Arc::new(probe)]);
+    let harness = harness_with_config(scripted, tools, policies, config);
+
+    let session = harness.engine.create().await.expect("create");
+    harness
+        .engine
+        .send(session.id, Message::user("go"))
+        .finish()
+        .await
+        .expect("turn");
+    seen.lock().expect("probe").clone()
+}
+
+#[tokio::test]
+async fn the_results_a_policy_sees_depend_on_the_execution_path() {
+    let sequential = probe_seen(EngineConfig::default()).await;
+    assert_eq!(sequential.len(), 2);
+    assert_eq!(
+        sequential[0].results, 0,
+        "nothing ran before the first call"
+    );
+    assert_eq!(
+        sequential[1].results, 1,
+        "the second call sees the first one"
+    );
+    assert_eq!(
+        sequential[0].history, 2,
+        "the request history is the input plus the assistant message"
+    );
+    assert_eq!(sequential[1].history, 2);
+
+    let parallel = probe_seen(EngineConfig {
+        early_tool_execution: true,
+        ..EngineConfig::default()
+    })
+    .await;
+    assert_eq!(parallel.len(), 2);
+    assert!(
+        parallel.iter().all(|seen| seen.results == 0),
+        "early dispatch starts before anything has run"
+    );
+    assert!(
+        parallel.iter().all(|seen| seen.history == 1),
+        "early dispatch sees the input only; the message is still in flight"
+    );
 }

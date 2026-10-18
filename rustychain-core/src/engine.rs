@@ -31,8 +31,8 @@ use crate::id::{
 use crate::layer::{LayerContext, LayerStack, ModelContinuation};
 use crate::media_adapter::MediaAdapter;
 use crate::model::{
-    GenerationParams, Model, ModelRequest, ModelStream, SESSION_EXTENSION, StreamLimits,
-    TURN_OPTIONS_KEY, TurnOptions,
+    GenerationParams, Model, ModelRequest, ModelStream, PARTIAL_TOOLS_KEY, SESSION_EXTENSION,
+    StreamLimits, TURN_OPTIONS_KEY, TurnOptions,
 };
 use crate::observer::{Observer, ObserverSet, StreamTransform};
 use crate::policy::{PolicyOutcome, PolicySet, PolicyView, combine};
@@ -124,13 +124,59 @@ fn session_turn_options(session: &Session) -> TurnOptions {
 }
 
 /// Session metadata with the effective request options of the current turn
-/// (FR-EXP-7), preserving every host key.
+/// (FR-EXP-7), preserving every host key. The parked-results key is dropped:
+/// a fresh generate means the previous message's calls are settled.
 fn turn_metadata(session: &Session, effective: &TurnOptions) -> BTreeMap<String, Value> {
     let mut metadata = session.metadata.clone();
+    metadata.remove(PARTIAL_TOOLS_KEY);
     if let Ok(value) = serde_json::to_value(effective) {
         metadata.insert(TURN_OPTIONS_KEY.to_owned(), value);
     }
     metadata
+}
+
+/// The tool results a parked assistant message already produced, in call order.
+/// Resuming seeds them so a call that ran before the park is never run twice
+/// (FR-APPR-6); an unreadable value is treated as "nothing done yet".
+fn partial_results(session: &Session) -> Vec<ToolResultPart> {
+    session
+        .metadata
+        .get(PARTIAL_TOOLS_KEY)
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
+        .unwrap_or_default()
+}
+
+/// The messages of the request in flight: from the last user message to the end
+/// of the history, inclusive. This is what a tool policy sees as `history`, so
+/// it can read what this request has already done without a store round trip
+/// per call (FR-POL-4).
+fn request_messages(history: &[Message]) -> &[Message] {
+    let start = history
+        .iter()
+        .rposition(|message| message.role == Role::User)
+        .unwrap_or(0);
+    &history[start..]
+}
+
+/// The results the calls of one message already have, in the order the message
+/// lists them, taking the first source that holds a result for a call.
+///
+/// Neither a park nor an early dispatch produces results in call order — the
+/// first is truncated, the second is shuffled by completion — and a policy reads
+/// them the way the message reads (FR-POL-4).
+fn results_in_call_order(
+    calls: &[ToolCallPart],
+    sources: &[&[ToolResultPart]],
+) -> Vec<ToolResultPart> {
+    calls
+        .iter()
+        .filter_map(|call| {
+            sources
+                .iter()
+                .find_map(|source| source.iter().find(|result| result.call_id == call.call_id))
+                .cloned()
+        })
+        .collect()
 }
 
 /// Deterministic cache boundary positions, as exclusive end indices into the
@@ -916,9 +962,31 @@ impl Engine {
         };
         let mut stream = self.layers.run(&context, request, &continuation).await?;
         let (accumulated, interrupted, early_results) = self
-            .drain_stream(session, sender, cancellation, &mut stream)
+            .drain_stream(
+                session,
+                sender,
+                cancellation,
+                &mut stream,
+                request_messages(&history),
+            )
             .await?;
 
+        let message = self
+            .finalize_message(accumulated, interrupted, model_ref, request_digest)
+            .await?;
+        Ok((message, interrupted, early_results))
+    }
+
+    /// Assembles the committed assistant message from what the stream
+    /// accumulated: its final parts, its finish reason and the provenance a
+    /// replay reads back (FR-ENG-9).
+    async fn finalize_message(
+        &self,
+        accumulated: Accumulated,
+        interrupted: bool,
+        model: ModelRef,
+        request_digest: Digest,
+    ) -> Result<Message> {
         let parts = self.finalize_output(accumulated.parts).await?;
         let finish_reason = accumulated.finish_reason.unwrap_or(if interrupted {
             FinishReason::Cancelled
@@ -932,15 +1000,16 @@ impl Engine {
         } else {
             MessageStatus::Complete
         };
-        let message = Message::new(Role::Assistant, parts).with_origin(MessageOrigin {
-            model: model_ref,
-            generation: GenerationId::new(),
-            finish_reason,
-            usage: accumulated.usage,
-            status,
-            request_digest: Some(request_digest),
-        });
-        Ok((message, interrupted, early_results))
+        Ok(
+            Message::new(Role::Assistant, parts).with_origin(MessageOrigin {
+                model,
+                generation: GenerationId::new(),
+                finish_reason,
+                usage: accumulated.usage,
+                status,
+                request_digest: Some(request_digest),
+            }),
+        )
     }
 
     async fn drain_stream(
@@ -949,6 +1018,7 @@ impl Engine {
         sender: &mpsc::Sender<EngineEvent>,
         cancellation: &CancellationToken,
         stream: &mut ModelStream,
+        history: &[Message],
     ) -> Result<(Accumulated, bool, Vec<ToolResultPart>)> {
         let mut accumulator = StreamAccumulator::new(self.config.limits);
         let mut continuity: BTreeMap<u32, ContinuityToken> = BTreeMap::new();
@@ -1015,7 +1085,9 @@ impl Engine {
                 };
                 completed.push(part);
                 if let Some(call) = ready {
-                    if let Some(handle) = self.dispatch_early(session, sender, &call, &completed) {
+                    if let Some(handle) =
+                        self.dispatch_early(session, sender, &call, &completed, history)
+                    {
                         early.push((call.call_id, handle));
                     }
                 }
@@ -1045,15 +1117,17 @@ impl Engine {
     /// the assistant message finishes, when the host enabled early tool execution
     /// and the tool policy allows it (FR-STREAM-4).
     ///
-    /// The policy is evaluated against the assistant message as known so far.
-    /// Calls that need approval, are denied or are rate limited return `None` and
-    /// take the normal path.
+    /// The policy is evaluated against the assistant message as known so far,
+    /// with no results of its own — nothing has run yet — and the history
+    /// committed up to the previous tool turn. Calls that need approval, are
+    /// denied or are rate limited return `None` and take the normal path.
     fn dispatch_early(
         &self,
         session: &Session,
         sender: &mpsc::Sender<EngineEvent>,
         call: &ToolCallPart,
         completed: &[Part],
+        history: &[Message],
     ) -> Option<JoinHandle<ToolResultPart>> {
         if !(self.config.early_tool_execution && self.config.auto_execute_tools) {
             return None;
@@ -1063,15 +1137,20 @@ impl Engine {
         };
         self.tools.spec(&tool_name)?;
         let message = Message::new(Role::Assistant, completed.to_vec());
-        let view = PolicyView {
-            session,
-            model: self.model.reference(),
-            capabilities: self.model.capabilities(),
-            call,
-            message: &message,
-            prior: &[],
+        let decisions = {
+            let view = PolicyView {
+                session,
+                model: self.model.reference(),
+                capabilities: self.model.capabilities(),
+                call,
+                message: &message,
+                prior: &[],
+                results: &[],
+                history,
+            };
+            self.policies.evaluate(&view)
         };
-        let arguments = match combine(&self.policies.evaluate(&view)) {
+        let arguments = match combine(&decisions) {
             PolicyOutcome::Allow => call.arguments.clone(),
             PolicyOutcome::Transform { arguments, .. } => arguments,
             PolicyOutcome::Deny { .. }
@@ -1241,30 +1320,37 @@ impl Engine {
         }
 
         let capabilities = self.model.capabilities();
-        let mut results: Vec<ToolResultPart> = Vec::with_capacity(calls.len());
+        let history = {
+            let full = self.store.history(Some(head)).await?;
+            request_messages(&full).to_vec()
+        };
+        // Everything that already produced a result — during this stream and
+        // before a park — seeded in call order, so a policy reads it the way the
+        // message lists the calls (FR-POL-4).
+        let persisted = partial_results(session);
+        let mut results = results_in_call_order(&calls, &[early, persisted.as_slice()]);
+        let turn = ToolTurn {
+            session,
+            sender,
+            message: &head_node.message,
+            capabilities,
+            history: &history,
+        };
 
         for call in &calls {
-            if let Some(result) = early.iter().find(|result| result.call_id == call.call_id) {
-                results.push(result.clone());
+            if results.iter().any(|result| result.call_id == call.call_id) {
                 continue;
             }
-            if let Some(parked) = self
-                .run_one_tool(
-                    session,
-                    sender,
-                    &head_node.message,
-                    call,
-                    capabilities,
-                    &mut results,
-                )
-                .await?
-            {
+            if let Some(parked) = self.run_one_tool(&turn, call, &mut results).await? {
                 return Ok(parked);
             }
         }
 
-        let node = Node::message(Message::tool(results), Some(head));
+        let settled = results_in_call_order(&calls, &[results.as_slice()]);
+        let node = Node::message(Message::tool(settled), Some(head));
         let node_id = node.id;
+        let mut metadata = session.metadata.clone();
+        metadata.remove(PARTIAL_TOOLS_KEY);
         self.commit(
             Commit {
                 session_id: session.id,
@@ -1275,7 +1361,7 @@ impl Engine {
                 turn: session.turn,
                 queue: session.queue.clone(),
                 grants: session.grants.clone(),
-                metadata: None,
+                metadata: Some(metadata),
             },
             sender,
         )
@@ -1284,13 +1370,17 @@ impl Engine {
 
     async fn run_one_tool(
         &self,
-        session: &Session,
-        sender: &mpsc::Sender<EngineEvent>,
-        message: &Message,
+        turn: &ToolTurn<'_>,
         call: &ToolCallPart,
-        capabilities: &Capabilities,
         results: &mut Vec<ToolResultPart>,
     ) -> Result<Option<Session>> {
+        let ToolTurn {
+            session,
+            sender,
+            message,
+            capabilities,
+            history,
+        } = *turn;
         let Ok(tool_name) = ToolName::new(call.name.clone()) else {
             results.push(ToolResultPart::error(
                 call.call_id,
@@ -1299,15 +1389,20 @@ impl Engine {
             return Ok(None);
         };
 
-        let view = PolicyView {
-            session,
-            model: self.model.reference(),
-            capabilities,
-            call,
-            message,
-            prior: &[],
+        let decisions = {
+            let view = PolicyView {
+                session,
+                model: self.model.reference(),
+                capabilities,
+                call,
+                message,
+                prior: &[],
+                results: results.as_slice(),
+                history,
+            };
+            self.policies.evaluate(&view)
         };
-        let arguments = match combine(&self.policies.evaluate(&view)) {
+        let arguments = match combine(&decisions) {
             PolicyOutcome::Deny { reason, .. } => {
                 results.push(ToolResultPart::error(call.call_id, reason.clone()));
                 self.finish_call(session, sender, call, &tool_name, true, 0)
@@ -1328,7 +1423,10 @@ impl Engine {
                 match self.authorize(session, call, &tool_name, sender).await? {
                     Authorization::Granted => call.arguments.clone(),
                     Authorization::Pending => {
-                        return Ok(Some(self.await_approval(session, sender).await?));
+                        return Ok(Some(
+                            self.await_approval(session, sender, results.as_slice())
+                                .await?,
+                        ));
                     }
                     Authorization::Denied(reason) => {
                         // The operator said no: the model gets that back as a
@@ -1459,7 +1557,15 @@ impl Engine {
         &self,
         session: &Session,
         sender: &mpsc::Sender<EngineEvent>,
+        partial: &[ToolResultPart],
     ) -> Result<Session> {
+        let mut metadata = session.metadata.clone();
+        metadata.remove(PARTIAL_TOOLS_KEY);
+        if !partial.is_empty() {
+            if let Ok(value) = serde_json::to_value(partial) {
+                metadata.insert(PARTIAL_TOOLS_KEY.to_owned(), value);
+            }
+        }
         self.commit(
             Commit {
                 session_id: session.id,
@@ -1470,7 +1576,7 @@ impl Engine {
                 turn: session.turn,
                 queue: session.queue.clone(),
                 grants: session.grants.clone(),
-                metadata: None,
+                metadata: Some(metadata),
             },
             sender,
         )
@@ -1552,6 +1658,19 @@ fn into_result(call: &ToolCallPart, output: ToolOutput) -> ToolResultPart {
         structured: output.structured,
         is_error: output.is_error,
     }
+}
+
+/// The invariant context of one tool turn: the session, the event channel, the
+/// assistant message carrying the calls, the model's capabilities and the
+/// request history a policy reads (FR-POL-4). Grouped so the per-call
+/// arguments of the tool loop stay few.
+#[derive(Clone, Copy)]
+struct ToolTurn<'a> {
+    session: &'a Session,
+    sender: &'a mpsc::Sender<EngineEvent>,
+    message: &'a Message,
+    capabilities: &'a Capabilities,
+    history: &'a [Message],
 }
 
 /// The session and turn a tool call belongs to. Grouped so it can be moved into

@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use crate::capability::Capabilities;
 use crate::domain::message::Message;
-use crate::domain::part::ToolCallPart;
+use crate::domain::part::{ToolCallPart, ToolResultPart};
 use crate::domain::session::Session;
 use crate::id::{ModelRef, ToolName};
 
@@ -19,6 +19,21 @@ pub struct PolicyView<'a> {
     pub message: &'a Message,
     /// Decisions produced by earlier policies, in declared order.
     pub prior: &'a [PolicyDecision],
+    /// Results the same assistant message already produced, in call order, so a
+    /// policy can decide on what this request just did rather than only on what
+    /// it asks. This is a sequential-path concept (FR-POL-4): a policy
+    /// evaluated for a call dispatched early (FR-STREAM-4) always sees it empty,
+    /// because none of the message's calls has run yet when they are started in
+    /// parallel; a call the policy defers is evaluated later, on the normal
+    /// path, and then sees whatever already ran. A policy that depends on it
+    /// must leave `EngineConfig::early_tool_execution` off.
+    pub results: &'a [ToolResultPart],
+    /// The messages of the request in flight: from the last user message to the
+    /// assistant message carrying this call, inclusive, including the tool
+    /// results committed so far. A parked request that resumes still shows the
+    /// same slice; early dispatch sees what is committed up to the previous
+    /// tool turn, because the message in flight is not committed yet.
+    pub history: &'a [Message],
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -73,6 +88,8 @@ impl PolicySet {
                 call: view.call,
                 message: view.message,
                 prior: &decisions,
+                results: view.results,
+                history: view.history,
             };
             let decision = policy.decide(&scoped);
             decisions.push(PolicyDecision {
@@ -245,6 +262,8 @@ mod tests {
                 call: &self.call,
                 message: &self.message,
                 prior: &[],
+                results: &[],
+                history: &[],
             }
         }
     }

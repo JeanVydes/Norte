@@ -23,6 +23,12 @@ pub const SESSION_EXTENSION: &str = "session";
 /// (FR-EXP-7). It is engine-managed; hosts must not write it.
 pub const TURN_OPTIONS_KEY: &str = "rustychain.turn_options";
 
+/// Session-metadata key carrying the tool results already produced for an
+/// assistant message whose remaining calls parked for approval, so resuming
+/// does not run those calls a second time (FR-APPR-8). It is engine-managed;
+/// hosts must not write it, and it is removed once the tool message commits.
+pub const PARTIAL_TOOLS_KEY: &str = "rustychain.partial_tools";
+
 /// Sampling and output controls shared by every adapter.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct GenerationParams {

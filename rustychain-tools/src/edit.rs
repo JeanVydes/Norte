@@ -585,15 +585,22 @@ fn fuzzy_apply(
     })
 }
 
-/// The similarity a block needs to apply, read from the limits: a threshold
-/// outside `0.0 ..= 1.0` is the maximum — asking for more than a perfect match
-/// cannot widen how wrong a block may be — and one that is not a number at all
-/// leaves only exact matches.
+/// The similarity a block needs to apply, read from the limits: a value that is
+/// not a number leaves only exact matches, and one outside `0.0 ..= 1.0` is read
+/// as `1.0`, the strict end. An unusable threshold can therefore make an edit
+/// stricter or exact, never looser — a sloppy match is the failure that is
+/// silent, and a refusal is the one the model can act on.
 fn threshold(limits: &EditLimits) -> Option<f64> {
     limits
         .fuzzy_threshold
         .filter(|threshold| threshold.is_finite())
-        .map(|threshold| threshold.clamp(0.0, 1.0))
+        .map(|threshold| {
+            if (0.0..=1.0).contains(&threshold) {
+                threshold
+            } else {
+                1.0
+            }
+        })
 }
 
 /// Whether a window is as good as the best one in the executor's eyes: exactly
@@ -1357,6 +1364,85 @@ mod tests {
                 "    pub port: u16,\n    pub host: String,\n}"
             )
         );
+    }
+
+    #[tokio::test]
+    async fn a_threshold_outside_the_unit_interval_is_read_as_the_strict_end() {
+        // 2.5 is a host asking for "stricter than strict"; -0.5 is not a
+        // threshold at all. Neither may make an edit looser than the default.
+        let strict = EditLimits {
+            fuzzy_threshold: Some(2.5),
+            ..EditLimits::default()
+        };
+        let (path, request) = seeded(
+            "above",
+            SOURCE,
+            vec![("pub struct Config {\n    pub port: u16;\n}", "replaced")],
+        );
+        let output = EditTool::new()
+            .with_limits(strict)
+            .call(request)
+            .await
+            .expect("edit");
+        assert!(output.is_error, "a content difference stays refused");
+        assert_eq!(read(&path), SOURCE);
+
+        let (_, request) = seeded(
+            "above-whitespace",
+            SOURCE,
+            vec![("pub struct Config {\npub port: u16,\n}", "replaced")],
+        );
+        let output = EditTool::new()
+            .with_limits(strict)
+            .call(request)
+            .await
+            .expect("edit");
+        assert!(
+            !output.is_error,
+            "and a whitespace difference still applies: {}",
+            describe_failure(&output)
+        );
+
+        let nonsense = EditLimits {
+            fuzzy_threshold: Some(-0.5),
+            ..EditLimits::default()
+        };
+        let (path, request) = seeded(
+            "below",
+            SOURCE,
+            vec![("pub struct Config {\n    pub port: u16;\n}", "replaced")],
+        );
+        let output = EditTool::new()
+            .with_limits(nonsense)
+            .call(request)
+            .await
+            .expect("edit");
+        assert!(
+            output.is_error,
+            "a nonsense threshold cannot accept a wrong block"
+        );
+        assert_eq!(read(&path), SOURCE);
+    }
+
+    #[tokio::test]
+    async fn a_threshold_of_nan_leaves_only_exact_matches() {
+        let limits = EditLimits {
+            fuzzy_threshold: Some(f64::NAN),
+            ..EditLimits::default()
+        };
+        let (path, request) = seeded(
+            "nan",
+            SOURCE,
+            vec![("pub struct Config {\npub port: u16,\n}", "replaced")],
+        );
+        let output = EditTool::new()
+            .with_limits(limits)
+            .call(request)
+            .await
+            .expect("edit");
+        assert!(output.is_error);
+        assert_eq!(structured(&output)["code"], "no_match");
+        assert_eq!(read(&path), SOURCE);
     }
 
     #[tokio::test]

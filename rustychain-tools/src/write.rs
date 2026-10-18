@@ -9,7 +9,7 @@ use rustychain_core::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::fs::write_atomic;
+use crate::fs::{write_atomic, write_new};
 
 /// A whole file, written in one call.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -55,6 +55,21 @@ pub struct WriteOutput {
     pub request_digest: Digest,
 }
 
+/// Bounds for the write executor (FR-TOOL-FILE-1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WriteLimits {
+    /// Refuse content larger than this.
+    pub max_bytes: usize,
+}
+
+impl Default for WriteLimits {
+    fn default() -> Self {
+        Self {
+            max_bytes: 16 * 1024 * 1024,
+        }
+    }
+}
+
 /// Creates or replaces a text file (FR-TOOL-WRITE-1).
 ///
 /// The path comes from the request: what may be written is the host's policy
@@ -63,12 +78,22 @@ pub struct WriteOutput {
     name = "write",
     description = "Write a whole text file. Creates the parent directories. Set overwrite to true to replace a file that already exists; with it false, an existing file makes the call fail. Use edit to change part of a file."
 )]
-pub struct WriteTool;
+pub struct WriteTool {
+    limits: WriteLimits,
+}
 
 impl WriteTool {
     #[must_use]
     pub fn new() -> Self {
-        Self
+        Self {
+            limits: WriteLimits::default(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_limits(mut self, limits: WriteLimits) -> Self {
+        self.limits = limits;
+        self
     }
 
     /// Turns the tool into a declaration the core registry accepts.
@@ -77,19 +102,34 @@ impl WriteTool {
         ToolDeclaration::new(Self::NAME, Self::DESCRIPTION, std::sync::Arc::new(self))
     }
 
-    fn run(request: &WriteRequest) -> Result<ToolOutput> {
+    fn run(&self, request: &WriteRequest) -> Result<ToolOutput> {
         if request.path.as_os_str().is_empty() {
             return Err(Error::InvalidInput("write: a path is required".to_owned()));
         }
-        let existed = request.path.exists();
+        if request.content.len() > self.limits.max_bytes {
+            return Err(Error::LimitExceeded {
+                what: request.path.display().to_string(),
+                limit: self.limits.max_bytes,
+            });
+        }
         let created_directories = parents_missing(&request.path);
         let request_digest = Digest::of_json(&serde_json::to_value(request)?);
 
-        if existed && !request.overwrite {
+        // With `overwrite`, the file is replaced; without it, the creation is
+        // itself the check, so a file that appears once this call has started is
+        // not clobbered by a rename (FR-TOOL-WRITE-1).
+        let created = if request.overwrite {
+            let existed = request.path.exists();
+            write_atomic(&request.path, request.content.as_bytes())?;
+            !existed
+        } else {
+            write_new(&request.path, request.content.as_bytes())?
+        };
+        if !created && !request.overwrite {
             let output = WriteOutput {
                 code: WriteCode::Exists,
                 path: request.path.clone(),
-                existed,
+                existed: true,
                 created_directories: false,
                 bytes: None,
                 lines: None,
@@ -99,15 +139,14 @@ impl WriteTool {
             return render(&output);
         }
 
-        write_atomic(&request.path, request.content.as_bytes())?;
         let output = WriteOutput {
-            code: if existed {
-                WriteCode::Overwritten
-            } else {
+            code: if created {
                 WriteCode::Created
+            } else {
+                WriteCode::Overwritten
             },
             path: request.path.clone(),
-            existed,
+            existed: !created,
             created_directories,
             bytes: Some(request.content.len()),
             lines: Some(request.content.lines().count()),
@@ -127,7 +166,7 @@ impl Default for WriteTool {
 #[async_trait::async_trait]
 impl FnExecutor<WriteRequest, ToolOutput> for WriteTool {
     async fn call(&self, request: WriteRequest) -> Result<ToolOutput> {
-        Self::run(&request)
+        self.run(&request)
     }
 }
 
@@ -359,6 +398,26 @@ mod tests {
             std::fs::read_to_string(&path).expect("read"),
             "through the registry\n"
         );
+    }
+
+    #[tokio::test]
+    async fn content_over_the_limit_is_refused_before_anything_is_written() {
+        let directory = scratch("over-limit");
+        let path = directory.join("big.txt");
+        let tool = WriteTool::new().with_limits(WriteLimits { max_bytes: 4 });
+
+        let error = tool
+            .call(request(&path, "0123456789", false))
+            .await
+            .expect_err("over the limit");
+
+        assert!(matches!(error, Error::LimitExceeded { limit: 4, .. }));
+        assert!(!path.exists(), "the file was never created");
+    }
+
+    #[test]
+    fn the_write_defaults_are_the_documented_ones() {
+        assert_eq!(WriteLimits::default().max_bytes, 16 * 1024 * 1024);
     }
 
     #[tokio::test]

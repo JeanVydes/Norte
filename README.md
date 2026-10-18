@@ -106,8 +106,9 @@ Runnable, end-to-end programs live in [`examples/`](examples/):
 ## Documentation
 
 Every crate carries module-level rustdoc (`cargo doc --workspace --no-deps
---open`). [`docs/SRS.md`](docs/SRS.md) is the source of truth for behaviour, and
-[`CONTRIBUTING.md`](CONTRIBUTING.md) covers the build and lint policies.
+--open`), and [`CONTRIBUTING.md`](CONTRIBUTING.md) covers the layout, the build
+and the lint policies. The behavioural spec lives beside the code as
+`docs/SRS.md` and is deliberately not committed.
 
 ## Development
 

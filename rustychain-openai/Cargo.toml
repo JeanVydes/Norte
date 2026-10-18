@@ -1,5 +1,6 @@
 [package]
 name = "rustychain-openai"
+description = "OpenAI adapter for RustyChain: the Responses and Chat Completions wires, streaming, tool calls and reasoning"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

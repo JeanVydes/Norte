@@ -1,5 +1,6 @@
 [package]
 name = "rustychain-http"
+description = "Shared HTTP transport for RustyChain: vendor profiles, auth schemes, retry policy and provider-file media"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

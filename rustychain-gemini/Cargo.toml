@@ -1,5 +1,6 @@
 [package]
 name = "rustychain-gemini"
+description = "Google Gemini adapter for RustyChain: generateContent, streaming, function calls, safety ratings and cached content"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

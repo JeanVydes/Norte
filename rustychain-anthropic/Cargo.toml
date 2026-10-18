@@ -1,5 +1,6 @@
 [package]
 name = "rustychain-anthropic"
+description = "Anthropic adapter for RustyChain: the Messages wire, streaming, tool use, citations and prompt caching"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

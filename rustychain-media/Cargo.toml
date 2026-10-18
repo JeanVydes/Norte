@@ -1,5 +1,6 @@
 [package]
 name = "rustychain-media"
+description = "Media pipeline for RustyChain: kind detection, byte decoding and provider-agnostic attachments"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

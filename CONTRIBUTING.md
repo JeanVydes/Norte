@@ -22,7 +22,8 @@ workflow for contributing.
 - `rustychain-testing/` — the scripted model, fixture replayer, request probe
   and conformance suites.
 - `rustychain-macros/` — the procedural macros used across the workspace.
-- `docs/SRS.md` — the single source of truth for behaviour.
+- `docs/SRS.md` — the single source of truth for behaviour, kept local (it is
+  deliberately not committed).
 - top-level `Cargo.toml` — the workspace manifest.
 
 ## How to Contribute
@@ -94,7 +95,7 @@ cargo test --doc --workspace
 
 Tests are hermetic: there are no live API keys and no external services. Provider
 behaviour is pinned by recorded fixtures; live smoke tests are run separately on a
-schedule (see `docs/SRS.md`, FR-TEST-2).
+schedule (FR-TEST-2).
 
 ## Adding a new crate to the workspace
 

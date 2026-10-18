@@ -1,11 +1,16 @@
 //! File-system support shared by the write and edit executors: bounded reads,
 //! atomic writes and the error shape both report (FR-TOOL-FILE-1, FR-TOOL-FILE-3).
 
+use std::fs::OpenOptions;
+use std::hash::{BuildHasher, Hasher};
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use rustychain_core::{Error, Result};
+
+/// How many temporary names to try before giving a collision up for good.
+const TEMPORARY_ATTEMPTS: usize = 8;
 
 /// Reads `path`, refusing anything larger than `max_bytes`.
 ///
@@ -48,26 +53,31 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
         let _ = std::fs::remove_file(&temporary);
         return Err(io_error(path, &error));
     }
+    sync_parent(path);
     Ok(())
 }
 
 /// Writes `bytes` onto `path` only if nothing is there, and says whether it
 /// wrote. The link *is* the check: a writer that looks first and then renames
 /// lets the loser of a race silently replace the winner, because `rename`
-/// always clobbers (FR-TOOL-WRITE-1). A filesystem without hard links is the
-/// one case that still needs the look.
+/// always clobbers (FR-TOOL-WRITE-1). A filesystem where a hard link is
+/// impossible cannot give that guarantee at all, and says so rather than
+/// quietly doing the racy thing.
 pub(crate) fn write_new(path: &Path, bytes: &[u8]) -> Result<bool> {
     let temporary = stage(path, bytes)?;
     let created = match std::fs::hard_link(&temporary, path) {
         Ok(()) => true,
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
         Err(error) if error.kind() == std::io::ErrorKind::Unsupported => {
-            if path.exists() {
-                false
-            } else {
-                std::fs::rename(&temporary, path).map_err(|error| io_error(path, &error))?;
-                true
-            }
+            let _ = std::fs::remove_file(&temporary);
+            return Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                format!(
+                    "{}: this filesystem cannot create a file without a hard link; \
+                     pass overwrite=true to create or replace it",
+                    path.display()
+                ),
+            )));
         }
         Err(error) => {
             let _ = std::fs::remove_file(&temporary);
@@ -75,6 +85,7 @@ pub(crate) fn write_new(path: &Path, bytes: &[u8]) -> Result<bool> {
         }
     };
     let _ = std::fs::remove_file(&temporary);
+    sync_parent(path);
     Ok(created)
 }
 
@@ -88,8 +99,11 @@ pub(crate) fn io_error(path: &Path, error: &std::io::Error) -> Error {
 }
 
 /// Places `bytes` in a sibling temporary of `path` and answers with its name,
-/// parents created. The name carries the process id and a ticket, so a
-/// temporary a dead process left behind is recognizable (FR-TOOL-FILE-1).
+/// parents created. The temporary is opened with `create_new`, so it is never
+/// written through a name that is already there: a symbolic link planted at a
+/// guessed name would otherwise have this write truncate whatever it points at.
+/// The name carries a random part, so guessing it in advance takes more than
+/// reading the process id (FR-TOOL-FILE-1).
 fn stage(path: &Path, bytes: &[u8]) -> Result<PathBuf> {
     let parent = path
         .parent()
@@ -97,16 +111,30 @@ fn stage(path: &Path, bytes: &[u8]) -> Result<PathBuf> {
     if let Some(parent) = parent {
         std::fs::create_dir_all(parent).map_err(|error| io_error(parent, &error))?;
     }
-    let temporary = temporary_path(path);
-    if let Err(error) = place(&temporary, path, bytes) {
-        let _ = std::fs::remove_file(&temporary);
-        return Err(io_error(path, &error));
+    let mut attempt = 0usize;
+    loop {
+        attempt += 1;
+        let temporary = temporary_path(path);
+        match place(&temporary, path, bytes) {
+            Ok(()) => return Ok(temporary),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                if attempt == TEMPORARY_ATTEMPTS {
+                    return Err(io_error(path, &error));
+                }
+            }
+            Err(error) => {
+                let _ = std::fs::remove_file(&temporary);
+                return Err(io_error(path, &error));
+            }
+        }
     }
-    Ok(temporary)
 }
 
 fn place(temporary: &Path, target: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let mut file = std::fs::File::create(temporary)?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(temporary)?;
     file.write_all(bytes)?;
     file.sync_all()?;
     if let Ok(metadata) = std::fs::metadata(target) {
@@ -116,17 +144,40 @@ fn place(temporary: &Path, target: &Path, bytes: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Makes the new name durable where the platform allows a directory to be
+/// synced: the content is flushed before the name appears, and this flushes the
+/// directory entry afterwards, so a power cut cannot lose a file that was
+/// already reported written. A platform that will not open a directory simply
+/// has nothing more to give.
+fn sync_parent(path: &Path) {
+    let parent = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    if let Ok(directory) = std::fs::File::open(parent) {
+        let _ = directory.sync_all();
+    }
+}
+
 fn temporary_path(path: &Path) -> PathBuf {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let ticket = COUNTER.fetch_add(1, Ordering::Relaxed);
     let name = path.file_name().map_or_else(
         || "file".to_owned(),
         |name| name.to_string_lossy().into_owned(),
     );
     path.with_file_name(format!(
-        ".{name}.{}.{ticket}.rustychain-tmp",
-        std::process::id()
+        ".{name}.{}.{}.rustychain-tmp",
+        std::process::id(),
+        ticket()
     ))
+}
+
+/// A number that cannot be guessed before the call and differs on every one:
+/// the counter is hashed with the hasher's per-process random seed.
+fn ticket() -> u64 {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+    hasher.write_u64(COUNTER.fetch_add(1, Ordering::Relaxed));
+    hasher.finish()
 }
 
 #[cfg(test)]
@@ -221,6 +272,46 @@ mod tests {
             std::fs::read_to_string(&path).expect("read"),
             "the winner\n",
             "a creation never replaces, even when it decides after the fact"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_staged_temporary_is_never_written_through_an_existing_name() {
+        let directory = scratch("symlink");
+        let temporary = directory.join("planted.rustychain-tmp");
+        let victim = directory.join("victim.txt");
+        std::fs::write(&victim, "untouched\n").expect("victim");
+        std::os::unix::fs::symlink(&victim, &temporary).expect("planted link");
+
+        let error = place(&temporary, &victim, b"payload").expect_err("refused");
+
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::AlreadyExists,
+            "the name is claimed with create_new, not opened through"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&victim).expect("read"),
+            "untouched\n",
+            "whatever a planted link pointed at is still there"
+        );
+    }
+
+    #[test]
+    fn the_temporary_name_is_not_the_target_and_is_not_a_counter() {
+        let directory = scratch("names");
+        let path = directory.join("file.txt");
+        let first = temporary_path(&path);
+        let second = temporary_path(&path);
+
+        assert_eq!(first.parent(), path.parent());
+        assert_ne!(first, path);
+        assert_ne!(first, second, "two names in a row differ");
+        assert!(
+            first.to_string_lossy().contains(".rustychain-tmp"),
+            "a leftover is recognizable: {}",
+            first.display()
         );
     }
 }

@@ -415,6 +415,37 @@ mod tests {
         assert!(!path.exists(), "the file was never created");
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn one_of_two_concurrent_creations_wins() {
+        let directory = scratch("two-writers");
+        let path = directory.join("contested.txt");
+        let tool = WriteTool::new();
+
+        let first = tokio::spawn({
+            let tool = tool.clone();
+            let path = path.clone();
+            async move { tool.call(request(&path, "one\n", false)).await }
+        });
+        let second = tokio::spawn({
+            let tool = tool.clone();
+            let path = path.clone();
+            async move { tool.call(request(&path, "two\n", false)).await }
+        });
+        let first = first.await.expect("join").expect("call");
+        let second = second.await.expect("join").expect("call");
+
+        let winners = [&first, &second]
+            .iter()
+            .filter(|output| !output.is_error)
+            .count();
+        assert_eq!(winners, 1, "one file, one creator, whoever got there first");
+        let content = std::fs::read_to_string(&path).expect("read");
+        assert!(
+            content == "one\n" || content == "two\n",
+            "the loser wrote nothing over the winner: {content:?}"
+        );
+    }
+
     #[test]
     fn the_write_defaults_are_the_documented_ones() {
         assert_eq!(WriteLimits::default().max_bytes, 16 * 1024 * 1024);

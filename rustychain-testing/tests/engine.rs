@@ -148,6 +148,71 @@ async fn tool_calls_run_and_feed_the_next_turn() {
     assert_eq!(tool_message.tool_results()[0].call_id, call_id);
 }
 
+#[tokio::test]
+async fn two_calls_in_one_message_each_get_a_result() {
+    fn call(index: u32, call_id: CallId, text: &str) -> Vec<StreamEvent> {
+        vec![
+            StreamEvent::ToolCallStart {
+                index,
+                call_id,
+                name: "echo".to_owned(),
+            },
+            StreamEvent::ToolCallDelta {
+                index,
+                call_id,
+                name: None,
+                arguments: json!({ "text": text }).to_string(),
+            },
+            StreamEvent::ToolCallDone { index },
+        ]
+    }
+
+    let first = CallId::new();
+    let second = CallId::new();
+    let mut events = call(0, first, "one");
+    events.extend(call(1, second, "two"));
+    events.push(StreamEvent::Finish(FinishReason::ToolCalls));
+    let scripted = Arc::new(
+        ScriptedModel::new(model("test/echo"))
+            .turn(events)
+            .turn_text("both done"),
+    );
+    let mut tools = ToolRegistry::new();
+    tools.register_declarator(&Echo).expect("register echo");
+
+    let harness = harness(scripted, tools, PolicySet::default());
+    let session = harness.engine.create().await.expect("create");
+    let outcome = harness
+        .engine
+        .send(session.id, Message::user("echo twice"))
+        .finish()
+        .await
+        .expect("turn");
+
+    assert_eq!(outcome.session.phase, Phase::Idle);
+    assert_eq!(
+        outcome.message.as_ref().map(Message::text).as_deref(),
+        Some("both done")
+    );
+    assert_eq!(harness.model.request_count(), 2);
+
+    let history = harness
+        .store
+        .history(outcome.session.head)
+        .await
+        .expect("history");
+    let tool_message = history
+        .iter()
+        .find(|message| message.role == Role::Tool)
+        .expect("tool message");
+    let results = tool_message.tool_results();
+    assert_eq!(results.len(), 2, "one result per call id");
+    assert_eq!(results[0].call_id, first);
+    assert_eq!(results[1].call_id, second);
+    assert_eq!(results[0].structured, Some(json!({ "echoed": "one" })));
+    assert_eq!(results[1].structured, Some(json!({ "echoed": "two" })));
+}
+
 /// Runs one echo turn and reports how many commits had succeeded when the tool
 /// finished, so early and sequential execution can be compared.
 async fn tool_finish_commit_offset(config: EngineConfig) -> usize {

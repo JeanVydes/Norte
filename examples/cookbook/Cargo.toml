@@ -11,6 +11,7 @@ description = "Small, runnable recipes for specific RustyChain engine tasks."
 rustychain-core = { workspace = true }
 rustychain-http = { workspace = true }
 rustychain-openai = { workspace = true }
+rustychain-tools = { workspace = true }
 async-trait = { workspace = true }
 futures-util = { workspace = true }
 schemars = { workspace = true }

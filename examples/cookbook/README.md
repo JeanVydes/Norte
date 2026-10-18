@@ -11,8 +11,9 @@ OPENROUTER_API_KEY=sk-or-... cargo run -p rustychain-cookbook --example approval
 ```
 
 The key comes from the environment; a local `.env` works with
-`set -a; . ./.env; set +a`. `tools` needs no key: it declares tools and prints
-what would go to the provider.
+`set -a; . ./.env; set +a`. `tools` and `executors` need no key and no model:
+the first declares tools and prints the schema that would go to the provider,
+the second calls the shipped executors directly.
 
 ## Recipes
 
@@ -24,17 +25,19 @@ what would go to the provider.
 | `policy` | Denying and rewriting tool calls before they run |
 | `policy_context` | A policy that decides on what the request already did |
 | `tools` | Declaring tools: macro, explicit, and rich `ToolOutput` |
+| `executors` | Calling `read`, `write`, `edit` and `command` directly |
 | `observers` | Observers and stream transforms |
 
 ## Configuration
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `OPENROUTER_API_KEY` | — | Required by every recipe except `tools`. |
+| `OPENROUTER_API_KEY` | — | Required by every recipe that calls a model (`tools` and `executors` need none). |
 | `COOKBOOK_MODEL` | `nvidia/nemotron-3.5-super-vl:free` | The model the recipes call. |
 
-Every recipe talks to a real model, so the model decides what it does with a
-prompt: the tool recipes say, in a system message, which tool to call.
+Every recipe that calls a model talks to a real one, so the model decides what
+it does with a prompt: the tool recipes say, in a system message, which tool to
+call.
 
 The wiring is ~10 lines of [OpenRouter](https://openrouter.ai) — a
 `VendorProfile` with a bearer key, plus the generic `OpenAiChat::new` — because

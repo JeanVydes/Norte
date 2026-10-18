@@ -19,7 +19,8 @@ use rustychain_core::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::fs::{read_text, write_atomic};
+use crate::fs::{io_error, read_bytes, read_text, write_atomic};
+use crate::text::{clip, escape};
 
 /// Matches scanned before a search counts as common rather than unique.
 const MAX_OCCURRENCES: usize = 32;
@@ -31,6 +32,10 @@ const REPORTED_SNIPPETS: usize = 5;
 const MAX_SNIPPET_LINES: usize = 40;
 /// Width of one reported line.
 const MAX_LINE_WIDTH: usize = 200;
+/// Character comparisons one call may spend comparing a block with the file, so
+/// a block that belongs nowhere cannot hold the executor — and the runtime it
+/// runs on — for as long as it likes (FR-TOOL-EDIT-3).
+const SCORING_BUDGET: usize = 32 * 1024 * 1024;
 
 /// One search-and-replace pair.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -63,6 +68,9 @@ pub struct EditRequest {
 pub enum EditCode {
     /// Every edit applied and the file was written.
     Applied,
+    /// Every edit applied and the file already said exactly that, so nothing
+    /// was written.
+    Unchanged,
     /// No block was close enough, or none matched at all. Nothing was written.
     NoMatch,
     /// A block matched in more than one place, or in several equally close
@@ -90,21 +98,27 @@ pub struct EditMatch {
     /// Index of the edit in the request.
     pub edit: usize,
     pub kind: MatchKind,
-    /// 1-based first line of the replaced block.
+    /// 1-based first line of the replaced block, in the file as the edits
+    /// before this one would have left it.
     pub start_line: usize,
-    /// 1-based last line of the replaced block.
+    /// 1-based last line of the replaced block, in the same state.
     pub end_line: usize,
     /// Similarity of the searched block to the block that was there: `1.0` for
     /// an exact match.
     pub confidence: f64,
 }
 
-/// The lines that are actually in the file, for a model that has to retry.
+/// The lines around a candidate, for a model that has to retry.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Snippet {
-    /// 1-based number of the first line.
+    /// 1-based number of the first line. The numbers are those of the text the
+    /// edit was applied to: the file itself when the call failed on its first
+    /// edit, and the file as the earlier edits of the same call would have left
+    /// it otherwise.
     pub start_line: usize,
-    /// The lines, without terminators and clipped to a readable width.
+    /// The lines, without terminators, with the characters a terminal would act
+    /// on escaped and clipped to a readable width — a trailing `…` marks a line
+    /// the width cut.
     pub lines: Vec<String>,
     /// Lines of the region that were left out for being too long.
     pub skipped: usize,
@@ -129,14 +143,16 @@ pub struct EditFailure {
     pub reason: EditFailureReason,
     /// How many lines the searched block has, blank lines excluded.
     pub search_lines: usize,
-    /// How many places matched, or how many candidates were as good as the
-    /// best one.
+    /// How many places matched the block, or tied with the closest one: zero
+    /// when nothing matched, and a count past the executor's anchor cap means
+    /// "that many or more".
     pub occurrences: usize,
     /// Similarity of the best candidate to the searched block, when one was
     /// found at all.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub confidence: Option<f64>,
-    /// The current text around the places that mattered.
+    /// The text around the places that mattered, taken from the copy the edit
+    /// was applied to (see [`Snippet::start_line`]).
     pub candidates: Vec<Snippet>,
 }
 
@@ -149,16 +165,24 @@ pub struct EditOutcome {
     pub matches: Vec<EditMatch>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure: Option<EditFailure>,
-    /// Whether the file was written. A failure always leaves it untouched.
+    /// Whether the file on disk was rewritten: false on a failure, and false
+    /// when the edits left the content byte-identical, which is reported as
+    /// [`EditCode::Unchanged`] so a no-op is never told to the model as a
+    /// change.
     pub written: bool,
     /// Lines and bytes of the file after the call, written or not.
     pub total_lines: usize,
     pub bytes: usize,
+    /// Digest of the content the call worked from, whatever the outcome, so a
+    /// host correlating its own records can tell which version an edit replaced.
+    pub before_digest: Digest,
+    /// Digest of the file the call left, written or not.
     pub content_digest: Digest,
     pub request_digest: Digest,
 }
 
-/// Bounds for the edit executor (FR-TOOL-EDIT-3, FR-TOOL-FILE-1).
+/// Bounds for the edit executor (FR-TOOL-EDIT-2, FR-TOOL-EDIT-3,
+/// FR-TOOL-FILE-1).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EditLimits {
     /// Refuse to edit a file larger than this.
@@ -167,8 +191,21 @@ pub struct EditLimits {
     pub context_lines: usize,
     /// Similarity a block that is not an exact match needs to apply, between
     /// `0.0` and `1.0`. `None` disables the fallback and leaves only exact,
-    /// unique matches.
+    /// unique matches. `Some(1.0)`, the default, is what the tool tells the
+    /// model: a block that differs only in indentation or whitespace applies,
+    /// and one that differs in content does not — a lower value also accepts a
+    /// block that far off, which is a host's decision to make, not a default.
+    ///
+    /// A value outside `0.0 ..= 1.0` is read as `1.0`, and a value that is not
+    /// a number as `None`: a threshold is a bound on how wrong a block may be,
+    /// and it cannot be widened by asking for more than the maximum.
     pub fuzzy_threshold: Option<f64>,
+    /// Refuse a `search` or a `replace` longer than this, so one edit cannot
+    /// carry a block nobody could match and no comparison has to be paid for
+    /// that could not have succeeded.
+    pub max_block_bytes: usize,
+    /// Refuse a request with more edits than this.
+    pub max_edits: usize,
 }
 
 impl Default for EditLimits {
@@ -176,7 +213,9 @@ impl Default for EditLimits {
         Self {
             max_file_bytes: 4 * 1024 * 1024,
             context_lines: 3,
-            fuzzy_threshold: Some(0.95),
+            fuzzy_threshold: Some(1.0),
+            max_block_bytes: 16 * 1024,
+            max_edits: 64,
         }
     }
 }
@@ -214,20 +253,30 @@ impl EditTool {
     }
 
     fn run(&self, request: &EditRequest) -> Result<ToolOutput> {
-        validate(request)?;
+        validate(request, &self.limits)?;
         let before = read_text(&request.path, self.limits.max_file_bytes)?;
+        let before_digest = Digest::of(before.as_bytes());
         let request_digest = Digest::of_json(&serde_json::to_value(request)?);
         let outcome = match self.apply(&before, request) {
             Ok((content, matches)) => {
-                write_atomic(&request.path, content.as_bytes())?;
+                let changed = content != before;
+                if changed {
+                    ensure_unchanged(&request.path, &before_digest, self.limits.max_file_bytes)?;
+                    write_atomic(&request.path, content.as_bytes())?;
+                }
                 EditOutcome {
-                    code: EditCode::Applied,
+                    code: if changed {
+                        EditCode::Applied
+                    } else {
+                        EditCode::Unchanged
+                    },
                     path: request.path.clone(),
                     matches,
                     failure: None,
-                    written: true,
+                    written: changed,
                     total_lines: content.lines().count(),
                     bytes: content.len(),
+                    before_digest,
                     content_digest: Digest::of(content.as_bytes()),
                     request_digest,
                 }
@@ -240,7 +289,8 @@ impl EditTool {
                 written: false,
                 total_lines: before.lines().count(),
                 bytes: before.len(),
-                content_digest: Digest::of(before.as_bytes()),
+                content_digest: before_digest,
+                before_digest,
                 request_digest,
             },
         };
@@ -254,10 +304,11 @@ impl EditTool {
         before: &str,
         request: &EditRequest,
     ) -> std::result::Result<(String, Vec<EditMatch>), Rejection> {
+        let budget = Budget::new();
         let mut content = before.to_owned();
         let mut matches = Vec::with_capacity(request.edits.len());
         for (index, spec) in request.edits.iter().enumerate() {
-            match apply_one(&mut content, index, spec, &self.limits) {
+            match apply_one(&mut content, index, spec, &self.limits, &budget) {
                 Ok(entry) => matches.push(entry),
                 Err(failure) => {
                     return Err(Rejection {
@@ -303,13 +354,17 @@ type MatchResult = std::result::Result<EditMatch, EditFailure>;
 #[derive(Clone, Copy, Debug)]
 struct Candidate {
     score: f64,
-    /// 0-based line numbers, inclusive, in the file.
+    /// 0-based line number of the first line, in the file.
     first: usize,
+    /// 0-based line number of the last line, in the file.
     last: usize,
+    /// Where the window starts in the normalised source, which is what lines
+    /// the block's own lines were compared with.
+    start: usize,
 }
 
 /// Argument-level checks, run before the file is read (FR-TOOL-EDIT-2).
-fn validate(request: &EditRequest) -> Result<()> {
+fn validate(request: &EditRequest, limits: &EditLimits) -> Result<()> {
     if request.path.as_os_str().is_empty() {
         return Err(Error::InvalidInput("edit: a path is required".to_owned()));
     }
@@ -318,14 +373,75 @@ fn validate(request: &EditRequest) -> Result<()> {
             "edit: at least one edit is required".to_owned(),
         ));
     }
+    if request.edits.len() > limits.max_edits {
+        return Err(Error::InvalidInput(format!(
+            "edit: {} edits in one call is over the limit of {}",
+            request.edits.len(),
+            limits.max_edits
+        )));
+    }
     for (index, spec) in request.edits.iter().enumerate() {
-        if spec.search.trim().is_empty() {
+        if spec.search.is_empty() {
             return Err(Error::InvalidInput(format!(
                 "edit: edit {index} has an empty search block"
             )));
         }
+        if spec.search.len() > limits.max_block_bytes || spec.replace.len() > limits.max_block_bytes
+        {
+            return Err(Error::InvalidInput(format!(
+                "edit: edit {index} has a block over the limit of {} bytes",
+                limits.max_block_bytes
+            )));
+        }
     }
     Ok(())
+}
+
+/// What one call may spend comparing a block with the file, so the work a
+/// request can ask for is bounded before it starts (FR-TOOL-EDIT-3).
+struct Budget {
+    left: std::cell::Cell<usize>,
+}
+
+impl Budget {
+    fn new() -> Self {
+        Self {
+            left: std::cell::Cell::new(SCORING_BUDGET),
+        }
+    }
+
+    /// Charges `cost` character comparisons, and answers whether they were
+    /// affordable: a comparison nobody can pay for is not made at all.
+    fn charge(&self, cost: usize) -> bool {
+        let left = self.left.get();
+        if cost > left {
+            return false;
+        }
+        self.left.set(left - cost);
+        true
+    }
+}
+
+/// Refuses to write when the file changed between the read that the edit was
+/// prepared from and the write.
+///
+/// The window is narrowed, not closed: two writers can pass this check at the
+/// same time, and only a lock or an atomic compare-and-swap would close it.
+/// What it buys is detection — a version that is no longer there is not
+/// silently overwritten — and what the model is told is to read the file again,
+/// never that the edit landed.
+fn ensure_unchanged(path: &std::path::Path, before: &Digest, max_bytes: usize) -> Result<()> {
+    let now = Digest::of(&read_bytes(path, max_bytes)?);
+    if now == *before {
+        return Ok(());
+    }
+    Err(io_error(
+        path,
+        &std::io::Error::other(
+            "the file changed while the edit was being prepared, so nothing was written; \
+             read it again and retry",
+        ),
+    ))
 }
 
 fn code_of(reason: EditFailureReason) -> EditCode {
@@ -341,15 +457,16 @@ fn apply_one(
     index: usize,
     spec: &EditSpec,
     limits: &EditLimits,
+    budget: &Budget,
 ) -> MatchResult {
     let offsets = occurrences(content, &spec.search);
     let starts = line_starts(content);
     match offsets.as_slice() {
-        [] => fuzzy_apply(content, index, spec, limits),
+        [] => fuzzy_apply(content, index, spec, limits, budget),
         [offset] => {
             let first = line_of(&starts, *offset);
             let last = line_of(&starts, offset + spec.search.len() - 1);
-            let replacement = normalize_newlines(&spec.replace, eol_of(content));
+            let replacement = normalize_newlines(&spec.replace, eol_at(content, *offset));
             content.replace_range(*offset..*offset + spec.search.len(), &replacement);
             Ok(EditMatch {
                 edit: index,
@@ -363,6 +480,11 @@ fn apply_one(
     }
 }
 
+/// How far another window has to be from the best one before the executor is
+/// willing to call the best one the block's home, when the match is by content
+/// rather than by whitespace.
+const FUZZY_MARGIN: f64 = 0.02;
+
 /// The fallback: compare whole lines with whitespace runs collapsed, so a block
 /// off by indentation alone still lands (FR-TOOL-EDIT-3).
 fn fuzzy_apply(
@@ -370,48 +492,51 @@ fn fuzzy_apply(
     index: usize,
     spec: &EditSpec,
     limits: &EditLimits,
+    budget: &Budget,
 ) -> MatchResult {
     let block = normalized_block(&spec.search);
+    let floor = threshold(limits);
     if block.is_empty() {
         return Err(no_match(index, &spec.search, None, Vec::new()));
     }
     let source = normalized_source(content);
-    let (found, windows) = candidates(&source, &block);
+    let (found, windows) = candidates(&source, &block, floor, budget);
     let Some(best) = windows.first().copied() else {
         return Err(no_match(index, &spec.search, None, Vec::new()));
     };
-    let tied: Vec<Candidate> = windows
+    let near: Vec<Candidate> = windows
         .iter()
         .copied()
-        .filter(|window| window.score.total_cmp(&best.score).is_eq())
+        .filter(|window| is_near(best.score, window.score))
         .collect();
-    let applies = limits
-        .fuzzy_threshold
-        .is_some_and(|threshold| best.score >= threshold)
-        && found <= MAX_ANCHORS;
-    if !applies || tied.len() > 1 {
-        let reason = if applies {
+    let reached = floor.is_some_and(|threshold| best.score >= threshold);
+    if !reached || near.len() > 1 || found > MAX_ANCHORS {
+        let reason = if reached {
             EditFailureReason::Ambiguous
         } else {
             EditFailureReason::NoMatch
         };
-        let spans: Vec<(usize, usize)> = (if applies { &tied } else { &windows })
-            .iter()
-            .map(|window| (window.first, window.last))
-            .collect();
+        let spans: Vec<(usize, usize)> = (if reached && found <= MAX_ANCHORS {
+            &near
+        } else {
+            &windows
+        })
+        .iter()
+        .map(|window| (window.first, window.last))
+        .collect();
         let lines = line_texts(content);
         let candidates = shown_snippets(&spans, &lines, limits.context_lines);
         return Err(EditFailure {
             edit: index,
             reason,
             search_lines: block.len(),
-            occurrences: if applies { found } else { tied.len() },
+            occurrences: if reached { found.max(near.len()) } else { 0 },
             confidence: Some(best.score),
             candidates,
         });
     }
 
-    let replacement = normalize_newlines(&spec.replace, eol_of(content));
+    let replacement = reindent(content, &source, &best, &spec.search, &spec.replace);
     splice_lines(content, best.first, best.last, &replacement);
     Ok(EditMatch {
         edit: index,
@@ -426,15 +551,50 @@ fn fuzzy_apply(
     })
 }
 
+/// The similarity a block needs to apply, read from the limits: a threshold
+/// outside `0.0 ..= 1.0` is the maximum — asking for more than a perfect match
+/// cannot widen how wrong a block may be — and one that is not a number at all
+/// leaves only exact matches.
+fn threshold(limits: &EditLimits) -> Option<f64> {
+    limits
+        .fuzzy_threshold
+        .filter(|threshold| threshold.is_finite())
+        .map(|threshold| threshold.clamp(0.0, 1.0))
+}
+
+/// Whether a window is as good as the best one in the executor's eyes: exactly
+/// as good when the block's lines match up to whitespace, and within
+/// [`FUZZY_MARGIN`] when the match is by content, where a hair's difference is
+/// not grounds to prefer one place over another.
+fn is_near(best: f64, other: f64) -> bool {
+    if best >= 1.0 {
+        other >= 1.0
+    } else {
+        best - other <= FUZZY_MARGIN
+    }
+}
+
 /// Every place `search` matches, up to a cap: a match has to be unique to
 /// apply, so counting further than the cap only wastes work.
+///
+/// The scan steps one character past each hit rather than one match past it, so
+/// two hits that overlap are two places: `aa` in `aaa` is not a unique match,
+/// and treating it as one would apply an edit the file cannot say is the one
+/// meant (FR-TOOL-EDIT-4).
 fn occurrences(content: &str, search: &str) -> Vec<usize> {
     let mut offsets = Vec::new();
-    for (offset, _) in content.match_indices(search) {
+    let mut from = 0usize;
+    while let Some(relative) = content.get(from..).and_then(|rest| rest.find(search)) {
+        let offset = from + relative;
         offsets.push(offset);
         if offsets.len() > MAX_OCCURRENCES {
             break;
         }
+        let step = content
+            .get(offset..)
+            .and_then(|rest| rest.chars().next())
+            .map_or(1, char::len_utf8);
+        from = offset + step;
     }
     offsets
 }
@@ -498,7 +658,7 @@ fn no_match(
         edit: index,
         reason: EditFailureReason::NoMatch,
         search_lines: normalized_block(search).len(),
-        occurrences: candidates.len(),
+        occurrences: 0,
         confidence,
         candidates,
     }
@@ -511,8 +671,17 @@ fn no_match(
 /// comparisons alone find the block boundaries when only whitespace differs, so
 /// the common case never pays for an edit-distance pass per line. The count is
 /// what the caller uses to refuse a block whose boundaries are everywhere
-/// (FR-TOOL-EDIT-4).
-fn candidates(source: &[(usize, String)], block: &[String]) -> (usize, Vec<Candidate>) {
+/// (FR-TOOL-EDIT-4). When nothing is anchored, the lines closest to the block's
+/// first line are tried, each with a length band that a line unable to reach
+/// `floor` cannot pass, and every comparison is charged to the call's budget, so
+/// a block that belongs nowhere is refused rather than compared with the file
+/// until the runtime gives up.
+fn candidates(
+    source: &[(usize, String)],
+    block: &[String],
+    floor: Option<f64>,
+    budget: &Budget,
+) -> (usize, Vec<Candidate>) {
     let first = &block[0];
     let last = &block[block.len() - 1];
     let size = block.len();
@@ -527,7 +696,7 @@ fn candidates(source: &[(usize, String)], block: &[String]) -> (usize, Vec<Candi
         .map(|(index, _)| index)
         .collect();
     if starts.is_empty() {
-        starts = nearest_lines(source, first);
+        starts = nearest_lines(source, first, floor, budget);
     }
     starts.retain(|start| start.saturating_add(size) <= source.len());
 
@@ -538,14 +707,15 @@ fn candidates(source: &[(usize, String)], block: &[String]) -> (usize, Vec<Candi
         .filter_map(|start| {
             let window = source.get(*start..start + size)?;
             Some(Candidate {
-                score: similarity(&join_lines(window), &wanted),
+                score: scored_similarity(budget, &join_lines(window), &wanted)?,
                 first: window.first()?.0,
                 last: window.last()?.0,
+                start: *start,
             })
         })
         .collect();
     let mut scored = if scored.is_empty() {
-        whole_file(source, &wanted).into_iter().collect()
+        whole_file(source, &wanted, budget).into_iter().collect()
     } else {
         scored
     };
@@ -560,15 +730,25 @@ fn candidates(source: &[(usize, String)], block: &[String]) -> (usize, Vec<Candi
 }
 
 /// The lines whose text is closest to the block's first line, used when nothing
-/// matches it. Byte length is used as a cheap band first: a line that cannot be
-/// close in length cannot be close in content.
-fn nearest_lines(source: &[(usize, String)], anchor: &str) -> Vec<usize> {
-    let band = anchor.len().saturating_mul(2).max(8);
+/// matches it.
+///
+/// A line can only reach `floor` against the anchor if its length is close
+/// enough — the distance between two texts is at least the difference in their
+/// lengths, and the similarity is measured against the longer of the two — so
+/// the length decides which lines are worth a comparison at all, and the
+/// comparison itself is charged to the call's budget.
+fn nearest_lines(
+    source: &[(usize, String)],
+    anchor: &str,
+    floor: Option<f64>,
+    budget: &Budget,
+) -> Vec<usize> {
+    let anchor_chars = anchor.chars().count();
     let mut scored: Vec<(f64, usize)> = source
         .iter()
         .enumerate()
-        .filter(|(_, (_, line))| line.len() <= band)
-        .map(|(index, (_, line))| (similarity(line, anchor), index))
+        .filter(|(_, (_, line))| within_reach(line, anchor_chars, floor))
+        .filter_map(|(index, (_, line))| Some((scored_similarity(budget, line, anchor)?, index)))
         .collect();
     scored.sort_by(|left, right| {
         right
@@ -584,15 +764,28 @@ fn nearest_lines(source: &[(usize, String)], anchor: &str) -> Vec<usize> {
         .collect()
 }
 
+/// Whether a line is close enough in length to reach the similarity floor at
+/// all, checked in both directions: a much shorter line is as far from the
+/// anchor as a much longer one.
+fn within_reach(line: &str, anchor: usize, floor: Option<f64>) -> bool {
+    let chars = line.chars().count();
+    let Some(floor) = floor else {
+        return chars <= anchor.saturating_mul(2).max(8);
+    };
+    let allowed = (1.0 - floor) * as_f64(chars.max(anchor));
+    as_f64(chars.abs_diff(anchor)) <= allowed + 1.0
+}
+
 /// A file with fewer lines than the block: showing the whole of it is more
 /// useful than showing nothing.
-fn whole_file(source: &[(usize, String)], wanted: &str) -> Option<Candidate> {
+fn whole_file(source: &[(usize, String)], wanted: &str, budget: &Budget) -> Option<Candidate> {
     let first = source.first()?.0;
     let last = source.last()?.0;
     Some(Candidate {
-        score: similarity(&join_lines(source), wanted),
+        score: scored_similarity(budget, &join_lines(source), wanted)?,
         first,
         last,
+        start: 0,
     })
 }
 
@@ -616,28 +809,149 @@ fn splice_lines(content: &mut String, first: usize, last: usize, replacement: &s
         .is_some_and(|removed| removed.ends_with('\n'));
     let mut text = replacement.to_owned();
     if terminated && !text.is_empty() && !text.ends_with('\n') {
-        text.push_str(eol_of(content));
+        text.push_str(eol_at(content, start));
     }
     content.replace_range(start..end, &text);
 }
 
-/// The terminator the file already uses: CRLF when it has any, LF otherwise.
-fn eol_of(content: &str) -> &'static str {
-    if content.contains("\r\n") {
+/// The terminator the line that contains `offset` ends with, and the file's own
+/// rule when that line has none at all (an unterminated last line).
+///
+/// A file with mixed endings is not rewritten to one of them: only the text an
+/// edit puts in takes a terminator, and it takes the one the line it lands on
+/// already uses, so one stray CRLF elsewhere in the file cannot spread through
+/// every inserted line (FR-TOOL-FILE-2).
+fn eol_at(content: &str, offset: usize) -> &'static str {
+    let Some(position) = content.get(offset..).and_then(|rest| rest.find('\n')) else {
+        return eol_of(content);
+    };
+    let newline = offset + position;
+    if content.as_bytes().get(newline.saturating_sub(1)) == Some(&b'\r') {
         "\r\n"
     } else {
         "\n"
     }
 }
 
-/// Rewrites a replacement's terminators to match the file, so an edit never
-/// mixes endings into a file that uses CRLF.
+/// The terminator most of the file's lines use, for the one line an edit lands
+/// on that has no terminator of its own to copy.
+fn eol_of(content: &str) -> &'static str {
+    let crlf = content.matches("\r\n").count();
+    let lf = content.matches('\n').count().saturating_sub(crlf);
+    if crlf > lf { "\r\n" } else { "\n" }
+}
+
+/// Rewrites a replacement's terminators to match the line it lands on, so an
+/// edit never mixes endings into a file that uses CRLF.
 fn normalize_newlines(text: &str, eol: &str) -> String {
     if eol == "\n" {
         text.to_owned()
     } else {
         text.replace("\r\n", "\n").replace('\n', eol)
     }
+}
+
+/// The text that replaces the matched window: the model's own, with its
+/// terminators moved onto the file's and its indentation moved onto the file's
+/// (FR-TOOL-EDIT-3).
+///
+/// The move is one prefix for the whole block: whatever the replacement indents
+/// a line with that the block also indented its first line with becomes what the
+/// file indents that line with, so nested levels keep their depth while the
+/// style becomes the file's — a block written in four-space steps lands in a
+/// tab-indented file as tabs. A line whose indentation does not begin with the
+/// block's is left exactly as the model wrote it: the executor translates the
+/// indentation the block lets it translate, and invents nothing.
+fn reindent(
+    content: &str,
+    source: &[(usize, String)],
+    window: &Candidate,
+    search: &str,
+    replacement: &str,
+) -> String {
+    let eol = eol_at(content, line_offset(content, window.first));
+    let replacement = normalize_newlines(replacement, eol);
+    match indentation_pair(content, source, window, search) {
+        Some((from, to)) if from != to => reindent_text(&replacement, from, to),
+        _ => replacement,
+    }
+}
+
+/// The indentation the block starts at and the one the file gave the same line:
+/// what the replacement's indentation is moved between. `None` when the window
+/// cannot be lined up with the block at all, which is a file with fewer lines
+/// than the block and nothing to move anything onto.
+fn indentation_pair<'a>(
+    content: &'a str,
+    source: &[(usize, String)],
+    window: &Candidate,
+    search: &'a str,
+) -> Option<(&'a str, &'a str)> {
+    let lines = line_texts(content);
+    let first = *lines.get(source.get(window.start)?.0)?;
+    let block = search
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or_default();
+    Some((indentation(block), indentation(first)))
+}
+
+/// Moves every line of `text` from one indentation onto another.
+fn reindent_text(text: &str, from: &str, to: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 8);
+    for piece in text.split_inclusive('\n') {
+        let (body, terminator) = split_terminator(piece);
+        if body.trim_start().is_empty() {
+            out.push_str(body);
+        } else {
+            out.push_str(&map_indent(indentation(body), from, to));
+            out.push_str(body.trim_start());
+        }
+        out.push_str(terminator);
+    }
+    out
+}
+
+/// Moves one indentation onto another: every `from` the indentation starts with
+/// becomes a `to`, so a line nested three levels deep moves by three. An empty
+/// `from` — a block written flush left — moves as a whole.
+fn map_indent(indent: &str, from: &str, to: &str) -> String {
+    let mut mapped = String::with_capacity(indent.len() + to.len());
+    let mut rest = indent;
+    if from.is_empty() {
+        mapped.push_str(to);
+    } else {
+        while let Some(after) = rest.strip_prefix(from) {
+            mapped.push_str(to);
+            rest = after;
+        }
+    }
+    mapped.push_str(rest);
+    mapped
+}
+
+/// The leading whitespace of a line, which is what indentation is.
+fn indentation(line: &str) -> &str {
+    &line[..line.len() - line.trim_start().len()]
+}
+
+/// A piece of text and the terminator that ends it.
+fn split_terminator(piece: &str) -> (&str, &str) {
+    match piece.strip_suffix('\n') {
+        Some(body) => match body.strip_suffix('\r') {
+            Some(body) => (body, "\r\n"),
+            None => (body, "\n"),
+        },
+        None => (piece, ""),
+    }
+}
+
+/// The byte offset a line starts at.
+fn line_offset(content: &str, line: usize) -> usize {
+    line_starts(content)
+        .get(line)
+        .copied()
+        .unwrap_or(content.len())
 }
 
 /// Byte offset of the start of every line, plus one past the end of the text.
@@ -686,7 +1000,7 @@ fn normalize_line(line: &str) -> String {
     line.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Levenshtein similarity of two strings, `1.0` when they are identical.
+/// The similarity of two texts, `1.0` when they are identical.
 ///
 /// The distance is at least the difference in length, which is what lets the
 /// caller skip hopeless candidates cheaply.
@@ -694,6 +1008,16 @@ fn similarity(left: &str, right: &str) -> f64 {
     let distance = levenshtein(left, right);
     let longest = left.chars().count().max(right.chars().count()).max(1);
     1.0 - as_f64(distance) / as_f64(longest)
+}
+
+/// The similarity of two texts, when the call can still pay for comparing them:
+/// a comparison the budget cannot afford is not made at all, and the window it
+/// was for is left out of the report rather than scored approximately.
+fn scored_similarity(budget: &Budget, left: &str, right: &str) -> Option<f64> {
+    if !budget.charge(left.len().saturating_mul(right.len())) {
+        return None;
+    }
+    Some(similarity(left, right))
 }
 
 fn levenshtein(left: &str, right: &str) -> usize {
@@ -731,16 +1055,22 @@ fn snippet(lines: &[&str], first: usize, last: usize, context: usize) -> Snippet
     let kept = shown.len().min(MAX_SNIPPET_LINES);
     Snippet {
         start_line: start + 1,
-        lines: shown.iter().take(kept).map(|line| clip(line)).collect(),
+        lines: shown
+            .iter()
+            .take(kept)
+            .map(|line| shown_line(line))
+            .collect(),
         skipped: shown.len().saturating_sub(kept),
     }
 }
 
-fn clip(line: &str) -> String {
-    match line.char_indices().nth(MAX_LINE_WIDTH) {
-        Some((end, _)) => format!("{}…", &line[..end]),
-        None => line.to_owned(),
-    }
+/// One line as a failure shows it: clipped to a readable width, with a trailing
+/// `…` where the width cut it, and with the characters a terminal would act on
+/// escaped, so a line in the file cannot hide or reorder the rest of the report
+/// (FR-TOOL-EDIT-4).
+fn shown_line(line: &str) -> String {
+    let (text, _) = clip(line, MAX_LINE_WIDTH);
+    escape(&text)
 }
 
 fn render(outcome: &EditOutcome) -> Result<ToolOutput> {
@@ -748,7 +1078,7 @@ fn render(outcome: &EditOutcome) -> Result<ToolOutput> {
     Ok(ToolOutput {
         parts: vec![Part::text(describe(outcome))],
         structured: Some(serde_json::to_value(outcome)?),
-        is_error: outcome.code != EditCode::Applied,
+        is_error: !matches!(outcome.code, EditCode::Applied | EditCode::Unchanged),
     })
 }
 
@@ -756,12 +1086,17 @@ fn describe(outcome: &EditOutcome) -> String {
     use std::fmt::Write as _;
 
     let mut text = String::new();
-    if outcome.code == EditCode::Applied {
+    if outcome.code == EditCode::Applied || outcome.code == EditCode::Unchanged {
         let _ = writeln!(
             text,
-            "edited {}: {} edit(s) applied ({} lines, {} bytes)",
+            "edited {}: {} edit(s) applied{} ({} lines, {} bytes)",
             outcome.path.display(),
             outcome.matches.len(),
+            if outcome.written {
+                ""
+            } else {
+                ", nothing changed"
+            },
             outcome.total_lines,
             outcome.bytes
         );
@@ -786,6 +1121,15 @@ fn describe(outcome: &EditOutcome) -> String {
         "edit failed: nothing was written to {}",
         outcome.path.display()
     );
+    if let Some(last) = outcome.matches.len().checked_sub(1) {
+        let _ = writeln!(
+            text,
+            "edits 0-{last} would have applied, so the lines below are the file as they would \
+             have left it; the file on disk is untouched"
+        );
+    } else {
+        let _ = writeln!(text, "the lines below are the file as it is");
+    }
     match failure.reason {
         EditFailureReason::Ambiguous => {
             let _ = writeln!(
@@ -834,7 +1178,21 @@ fn closeness(failure: &EditFailure) -> String {
     })
 }
 
+/// Records what an edit did where a trail can find it: the versions it worked
+/// from and left, and — since a fallback is the one thing here the model did not
+/// ask for — how many edits landed without an exact match and how close the
+/// loosest of them was.
 fn audit(outcome: &EditOutcome) {
+    let approximate = outcome
+        .matches
+        .iter()
+        .filter(|entry| entry.kind != MatchKind::Exact)
+        .count();
+    let loose = outcome
+        .matches
+        .iter()
+        .map(|entry| entry.confidence)
+        .reduce(f64::min);
     tracing::info!(
         target: "rustychain.audit",
         tool = "edit",
@@ -842,6 +1200,9 @@ fn audit(outcome: &EditOutcome) {
         path = %outcome.path.display(),
         written = outcome.written,
         applied = outcome.matches.len(),
+        approximate,
+        loose_confidence = loose,
+        before_digest = %outcome.before_digest,
         content_digest = %outcome.content_digest,
         request_digest = %outcome.request_digest,
         "file edited"
@@ -965,7 +1326,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_block_close_enough_applies_as_fuzzy() {
+    async fn a_block_that_differs_in_content_is_refused_by_default() {
+        // The default tolerance is whitespace, which is what the tool tells the
+        // model: `u16;` where the file has `u16,` is a block the model got
+        // wrong, and applying it would write a file neither of them asked for.
+        let (path, request) = seeded(
+            "strict",
+            SOURCE,
+            vec![(
+                "pub struct Config {\n    pub port: u16;\n}",
+                "pub struct Config {\n    pub port: u32;\n}",
+            )],
+        );
+        let output = run(&request).await;
+        assert!(output.is_error);
+        let structured = structured(&output);
+        assert_eq!(structured["code"], "no_match");
+        let confidence = structured["failure"]["confidence"]
+            .as_f64()
+            .expect("confidence");
+        assert!(
+            (0.95..1.0).contains(&confidence),
+            "the block is close, and still refused, got {confidence}"
+        );
+        assert_eq!(read(&path), SOURCE);
+    }
+
+    #[tokio::test]
+    async fn a_host_may_allow_a_block_that_is_close_in_content() {
+        let limits = EditLimits {
+            fuzzy_threshold: Some(0.95),
+            ..EditLimits::default()
+        };
         let (path, request) = seeded(
             "fuzzy",
             SOURCE,
@@ -974,7 +1366,11 @@ mod tests {
                 "pub struct Config {\n    pub port: u32,\n}",
             )],
         );
-        let output = run(&request).await;
+        let output = EditTool::new()
+            .with_limits(limits)
+            .call(request)
+            .await
+            .expect("edit");
         assert!(!output.is_error);
         let structured = structured(&output);
         assert_eq!(structured["matches"][0]["kind"], "fuzzy");
@@ -1249,7 +1645,15 @@ mod tests {
                 "let saludo = \"adiós\";\nlet otro = 2;",
             )],
         );
-        let output = run(&request).await;
+        let limits = EditLimits {
+            fuzzy_threshold: Some(0.95),
+            ..EditLimits::default()
+        };
+        let output = EditTool::new()
+            .with_limits(limits)
+            .call(request)
+            .await
+            .expect("edit");
         assert!(
             !output.is_error,
             "multibyte text must not break the fallback"
@@ -1303,9 +1707,29 @@ mod tests {
 
     #[tokio::test]
     async fn an_empty_search_is_invalid_input() {
-        let (_, request) = seeded("blank", SOURCE, vec![("   \n", "replacement")]);
+        let (_, request) = seeded("blank", SOURCE, vec![("", "replacement")]);
         let error = EditTool::new().call(request).await.expect_err("blank");
         assert!(matches!(error, Error::InvalidInput(reason) if reason.contains("empty search")));
+    }
+
+    #[tokio::test]
+    async fn a_blank_search_collapses_a_blank_line_when_it_is_unique() {
+        // A search of nothing but whitespace is not an empty search: it is a
+        // real block, and uniqueness is what decides whether it may apply.
+        let (path, request) = seeded("collapse", "alpha\n\nbeta\n", vec![("\n\n", "\n")]);
+        let output = run(&request).await;
+        assert!(!output.is_error);
+        assert_eq!(structured(&output)["matches"][0]["kind"], "exact");
+        assert_eq!(read(&path), "alpha\nbeta\n");
+    }
+
+    #[tokio::test]
+    async fn a_blank_search_that_is_everywhere_is_ambiguous() {
+        let (path, request) = seeded("collapse-ambiguous", SOURCE, vec![("\n\n", "\n")]);
+        let output = run(&request).await;
+        assert!(output.is_error);
+        assert_eq!(structured(&output)["code"], "ambiguous");
+        assert_eq!(read(&path), SOURCE);
     }
 
     #[tokio::test]
@@ -1365,6 +1789,336 @@ mod tests {
             .await
             .expect_err("unknown field (FR-TOOL-2)");
         assert!(matches!(error, Error::InvalidToolArguments { .. }));
+    }
+
+    #[tokio::test]
+    async fn overlapping_matches_are_two_places() {
+        // `match_indices` would call this one place, and an edit that applies
+        // where the block is not is worse than one that refuses.
+        let (path, request) = seeded("overlap", "aaa\n", vec![("aa", "b")]);
+        let output = run(&request).await;
+        assert!(output.is_error);
+        let structured = structured(&output);
+        assert_eq!(structured["code"], "ambiguous");
+        assert_eq!(structured["failure"]["occurrences"], 2);
+        assert_eq!(read(&path), "aaa\n");
+    }
+
+    #[tokio::test]
+    async fn more_places_than_the_cap_is_ambiguous_not_a_miss() {
+        // Seventeen lines that all match up to whitespace: the block is not
+        // unique, and a report of "no match, 100% similar" would be a lie.
+        let mut content = String::new();
+        for _ in 0..=MAX_ANCHORS {
+            content.push_str("fn one() {\n  let a = 1;\n}\n\n");
+        }
+        let (path, request) = seeded(
+            "anchors",
+            &content,
+            vec![("fn one() {\n    let a = 1;\n}", "fn two() {}")],
+        );
+        let output = run(&request).await;
+        assert!(output.is_error);
+        let structured = structured(&output);
+        assert_eq!(structured["code"], "ambiguous");
+        let occurrences = structured["failure"]["occurrences"]
+            .as_u64()
+            .expect("occurrences");
+        assert!(
+            occurrences > MAX_ANCHORS as u64,
+            "the count is the number of places, not the number scored: {occurrences}"
+        );
+        assert_eq!(read(&path), content);
+    }
+
+    #[tokio::test]
+    async fn a_fallback_that_is_not_clearly_best_is_ambiguous() {
+        // Two blocks within the margin of each other, and the host has allowed
+        // a content match: picking one of them would be a coin toss.
+        let content =
+            "fn one() {\n    let value = 100;\n}\n\nfn one() {\n    let value = 102;\n}\n";
+        let (path, request) = seeded(
+            "margin",
+            content,
+            vec![(
+                "fn one() {\n    let value = 101;\n}",
+                "fn one() {\n    let value = 103;\n}",
+            )],
+        );
+        let limits = EditLimits {
+            fuzzy_threshold: Some(0.8),
+            ..EditLimits::default()
+        };
+        let output = EditTool::new()
+            .with_limits(limits)
+            .call(request)
+            .await
+            .expect("edit");
+        assert!(output.is_error);
+        assert_eq!(structured(&output)["code"], "ambiguous");
+        assert_eq!(read(&path), content);
+    }
+
+    #[tokio::test]
+    async fn a_block_that_matches_up_to_whitespace_lands_in_the_file_indentation() {
+        // The block is written in four-space steps and the file indents with
+        // tabs: the replacement moves onto the file's indentation level by
+        // level, and the lines around it are left alone (FR-TOOL-EDIT-3).
+        let content = "impl Config {\n\tfn port(&self) -> u16 {\n\t\tself.port\n\t}\n}\n";
+        let (path, request) = seeded(
+            "style",
+            content,
+            vec![(
+                "    fn port(&self) -> u16 {\n        self.port\n    }",
+                "    fn port(&self) -> u32 {\n        self.port as u32\n    }",
+            )],
+        );
+        let output = run(&request).await;
+        assert!(!output.is_error, "{}", describe_failure(&output));
+        assert_eq!(
+            read(&path),
+            "impl Config {\n\tfn port(&self) -> u32 {\n\t\tself.port as u32\n\t}\n}\n"
+        );
+        assert_eq!(structured(&output)["matches"][0]["kind"], "whitespace");
+    }
+
+    #[tokio::test]
+    async fn a_search_that_ends_in_a_newline_is_replaced_literally() {
+        // The exact path replaces bytes: a block that carries the terminator
+        // takes it with it, and the model asked for exactly that.
+        let (path, request) = seeded("literal", "alpha\nbeta\n", vec![("alpha\n", "one")]);
+        let output = run(&request).await;
+        assert!(!output.is_error);
+        assert_eq!(read(&path), "onebeta\n");
+    }
+
+    #[tokio::test]
+    async fn a_replaced_block_keeps_the_terminator_the_following_line_needs() {
+        // The line-based path puts back the terminator the replaced lines ended
+        // with, so the line after them stays whole (FR-TOOL-FILE-2).
+        let content = "fn a() {\n    x\n}\nfn b() {}\n";
+        let (path, request) = seeded(
+            "terminated",
+            content,
+            vec![("fn a() {\nx\n}", "fn a() {\ny\n}")],
+        );
+        let output = run(&request).await;
+        assert!(!output.is_error, "{}", describe_failure(&output));
+        assert_eq!(read(&path), "fn a() {\ny\n}\nfn b() {}\n");
+    }
+
+    #[tokio::test]
+    async fn only_the_edited_line_takes_its_own_terminator() {
+        // One stray CRLF does not spread: the replacement takes the terminator
+        // of the line it lands on (FR-TOOL-FILE-2).
+        let content = "alpha\r\nbeta\ngamma\n";
+        let (path, request) = seeded("mixed", content, vec![("beta", "delta")]);
+        let output = run(&request).await;
+        assert!(!output.is_error);
+        assert_eq!(
+            read(&path),
+            "alpha\r\nbeta\ngamma\n".replace("beta", "delta")
+        );
+    }
+
+    #[tokio::test]
+    async fn an_edit_that_changes_nothing_writes_nothing() {
+        let (path, request) = seeded("noop", SOURCE, vec![("pub port: u16,", "pub port: u16,")]);
+        let modified = std::fs::metadata(&path)
+            .and_then(|metadata| metadata.modified())
+            .expect("modified");
+        let output = run(&request).await;
+        assert!(!output.is_error, "a no-op is not a failure");
+        let structured = structured(&output);
+        assert_eq!(structured["code"], "unchanged");
+        assert_eq!(structured["written"], false);
+        let text = output.parts.first().and_then(Part::as_text).expect("text");
+        assert!(text.contains("nothing changed"), "{text}");
+        assert_eq!(read(&path), SOURCE);
+        let after = std::fs::metadata(&path)
+            .and_then(|metadata| metadata.modified())
+            .expect("modified");
+        assert_eq!(modified, after, "the file was not rewritten");
+    }
+
+    #[tokio::test]
+    async fn the_digest_of_the_version_an_edit_replaced_is_reported() {
+        let (path, request) = seeded("before", SOURCE, vec![("pub port: u16,", "pub port: u32,")]);
+        let digest = Digest::of(SOURCE.as_bytes());
+        let output = run(&request).await;
+        let structured = structured(&output);
+        let before = structured["before_digest"].as_str().expect("before_digest");
+        let after = structured["content_digest"]
+            .as_str()
+            .expect("content_digest");
+        assert_eq!(before, digest.to_string());
+        assert_ne!(before, after);
+        assert_ne!(read(&path), SOURCE);
+    }
+
+    #[tokio::test]
+    async fn a_change_between_the_read_and_the_write_is_refused() {
+        let directory = scratch("conflict");
+        let path = directory.join("main.rs");
+        std::fs::write(&path, "one\n").expect("seed");
+        let digest = Digest::of(b"one\n");
+        std::fs::write(&path, "another writer was here\n").expect("write");
+        let error = ensure_unchanged(&path, &digest, 1024).expect_err("a changed file");
+        assert!(
+            error.to_string().contains("changed while the edit"),
+            "{error}"
+        );
+        assert_eq!(read(&path), "another writer was here\n");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_edit_through_a_symlink_keeps_the_link_and_changes_its_target() {
+        let directory = scratch("symlink");
+        let target = directory.join("real.rs");
+        std::fs::write(&target, SOURCE).expect("seed");
+        let link = directory.join("link.rs");
+        std::os::unix::fs::symlink(&target, &link).expect("symlink");
+        let request = EditRequest {
+            path: link.clone(),
+            edits: vec![EditSpec {
+                search: "pub port: u16,".to_owned(),
+                replace: "pub port: u32,".to_owned(),
+            }],
+        };
+        let output = run(&request).await;
+        assert!(!output.is_error);
+        assert_eq!(read(&target), SOURCE.replace("u16", "u32"));
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .expect("metadata")
+                .file_type()
+                .is_symlink(),
+            "the link is still a link"
+        );
+    }
+
+    #[tokio::test]
+    async fn control_characters_in_the_file_are_escaped_in_the_report() {
+        let content = "let a = 1;\rlet b = 2;\u{202e}hidden\n";
+        let (_, request) = seeded("escape", content, vec![("nothing like this", "x")]);
+        let output = run(&request).await;
+        assert!(output.is_error);
+        let text = output.parts.first().and_then(Part::as_text).expect("text");
+        assert!(
+            text.contains("\\r"),
+            "a lone carriage return is shown: {text}"
+        );
+        assert!(
+            text.contains("\\u{202e}"),
+            "a bidi override is shown: {text}"
+        );
+        assert!(
+            !text.contains('\u{202e}') && !text.contains('\r'),
+            "no control character travels raw: {text:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_block_over_the_limit_is_refused_before_the_file_is_read() {
+        let search = "x".repeat(EditLimits::default().max_block_bytes + 1);
+        let (_, request) = seeded("bigblock", SOURCE, vec![(&search, "y")]);
+        let error = EditTool::new().call(request).await.expect_err("big block");
+        assert!(
+            matches!(&error, Error::InvalidInput(reason) if reason.contains("over the limit")),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn more_edits_than_the_limit_are_refused_before_the_file_is_read() {
+        let limits = EditLimits {
+            max_edits: 1,
+            ..EditLimits::default()
+        };
+        let (path, request) = seeded(
+            "manyedits",
+            SOURCE,
+            vec![
+                ("pub port: u16,", "pub port: u32,"),
+                ("use std::fmt;", "use std::io;"),
+            ],
+        );
+        let error = EditTool::new()
+            .with_limits(limits)
+            .call(request)
+            .await
+            .expect_err("too many edits");
+        assert!(
+            matches!(&error, Error::InvalidInput(reason) if reason.contains("over the limit")),
+            "{error}"
+        );
+        assert_eq!(read(&path), SOURCE);
+    }
+
+    #[tokio::test]
+    async fn a_block_that_belongs_nowhere_cannot_hold_the_executor() {
+        use std::fmt::Write as _;
+
+        // A block of a size a model could send, against a file of the largest
+        // size accepted, with nothing in common: the comparison budget has to
+        // end it long before the runtime is held for minutes (FR-TOOL-EDIT-3).
+        let mut content = String::new();
+        for number in 0..20_000 {
+            let _ = writeln!(content, "let value_{number} = {number};");
+        }
+        let mut search = String::new();
+        for number in 0..500 {
+            let _ = writeln!(search, "call_the_function(number_{number});");
+        }
+        let (_, request) = seeded("budget", &content, vec![(&search, "replacement")]);
+        let started = std::time::Instant::now();
+        let output = run(&request).await;
+        let elapsed = started.elapsed();
+        assert!(output.is_error);
+        assert!(
+            elapsed < std::time::Duration::from_secs(30),
+            "the fallback held the runtime for {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failure_after_some_edits_says_which_copy_it_shows() {
+        let (path, request) = seeded(
+            "partial",
+            SOURCE,
+            vec![
+                ("use std::fmt;", "use std::io;"),
+                ("pub port: u16,", "pub port: u32,"),
+                ("this line is not there", "replacement"),
+            ],
+        );
+        let output = run(&request).await;
+        assert!(output.is_error);
+        let structured = structured(&output);
+        assert_eq!(structured["code"], "no_match");
+        assert_eq!(structured["failure"]["edit"], 2);
+        assert_eq!(
+            structured["matches"].as_array().map(Vec::len),
+            Some(2),
+            "the edits before it are reported as applied to the copy"
+        );
+        let text = output.parts.first().and_then(Part::as_text).expect("text");
+        assert!(
+            text.contains("edits 0-1 would have applied"),
+            "the report says which copy it shows: {text}"
+        );
+        assert_eq!(read(&path), SOURCE, "the file on disk is untouched");
+    }
+
+    /// The text of a failed result, for an assertion that has to explain itself.
+    fn describe_failure(output: &ToolOutput) -> String {
+        output
+            .parts
+            .first()
+            .and_then(Part::as_text)
+            .unwrap_or_default()
+            .to_owned()
     }
 
     #[test]

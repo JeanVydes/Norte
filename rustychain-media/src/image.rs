@@ -182,6 +182,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn preprocessing_is_idempotent() {
+        let preprocessor = ImagePreprocessor::new(256, 200_000, ImageOutput::Jpeg, 80);
+        let once = preprocessor
+            .preprocess(image_payload(encoded_png(2000, 1000)))
+            .await
+            .expect("first pass");
+
+        let twice = preprocessor
+            .preprocess(once.clone())
+            .await
+            .expect("second pass");
+
+        assert_eq!(twice, once, "a second pass must not shrink again");
+    }
+
+    #[tokio::test]
     async fn non_image_payloads_are_ignored() {
         let preprocessor = ImagePreprocessor::default();
         let payload = MediaPayload::new(

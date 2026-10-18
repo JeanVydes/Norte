@@ -769,6 +769,59 @@ mod tests {
         assert_eq!(structured["exit_code"], 7);
     }
 
+    #[tokio::test]
+    async fn excess_output_is_truncated_and_marked() {
+        let tool = CommandTool::new();
+        let mut request = request(shell("for i in $(seq 1 200); do echo '0123456789'; done"));
+        request.max_output_bytes = Some(64);
+        let output = tool.call(request).await.expect("execute");
+        assert!(!output.is_error, "a truncation is not a failure");
+        let structured = structured(&output);
+        assert_eq!(structured["truncated"], true);
+        assert!(
+            structured["bytes_written"].as_u64().unwrap_or_default() > 64,
+            "the whole stream is counted even though only part of it is kept"
+        );
+        assert!(
+            structured["stdout"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("[output truncated at 64 bytes per stream]"),
+            "the marker tells the model the output was cut"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_timeout_is_reported_and_the_process_does_not_survive_it() {
+        let tool = CommandTool::new();
+        let mut request = request(shell("sleep 30"));
+        request.timeout_ms = Some(50);
+        let output = tool.call(request).await.expect("execute");
+        assert!(output.is_error);
+        let structured = structured(&output);
+        assert_eq!(structured["code"], "timeout");
+        assert_eq!(structured["timed_out"], true);
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_command_is_reported_as_cancelled() {
+        let tool = CommandTool::new();
+        let context = ToolContext::new();
+        let signal = context.cancellation();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            signal.cancel();
+        });
+        let output = tool
+            .call_with_context(&context, request(shell("sleep 30")))
+            .await
+            .expect("execute");
+        assert!(output.is_error);
+        let structured = structured(&output);
+        assert_eq!(structured["code"], "cancelled");
+        assert_eq!(structured["cancelled"], true);
+    }
+
     #[test]
     fn secrets_are_redacted() {
         assert_eq!(

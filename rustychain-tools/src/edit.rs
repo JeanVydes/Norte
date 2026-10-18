@@ -395,13 +395,12 @@ fn fuzzy_apply(
         } else {
             EditFailureReason::NoMatch
         };
-        let reported = if applies { &tied } else { &windows };
-        let lines = line_texts(content);
-        let candidates = reported
+        let spans: Vec<(usize, usize)> = (if applies { &tied } else { &windows })
             .iter()
-            .take(REPORTED_SNIPPETS)
-            .map(|window| snippet(&lines, window.first, window.last, limits.context_lines))
+            .map(|window| (window.first, window.last))
             .collect();
+        let lines = line_texts(content);
+        let candidates = shown_snippets(&spans, &lines, limits.context_lines);
         return Err(EditFailure {
             edit: index,
             reason,
@@ -440,6 +439,26 @@ fn occurrences(content: &str, search: &str) -> Vec<usize> {
     offsets
 }
 
+/// The regions a failure shows: the closest ones first, at most
+/// [`REPORTED_SNIPPETS`] of them, and a region that would render exactly like
+/// one already shown is dropped — a short file pulls several candidate windows
+/// onto the same lines, and the model needs that region once, not once per
+/// window (FR-TOOL-EDIT-4).
+fn shown_snippets(spans: &[(usize, usize)], lines: &[&str], context: usize) -> Vec<Snippet> {
+    let mut shown: Vec<Snippet> = Vec::new();
+    for (first, last) in spans {
+        let snippet = snippet(lines, *first, *last, context);
+        if shown.contains(&snippet) {
+            continue;
+        }
+        shown.push(snippet);
+        if shown.len() == REPORTED_SNIPPETS {
+            break;
+        }
+    }
+    shown
+}
+
 fn ambiguous(
     content: &str,
     starts: &[usize],
@@ -449,15 +468,16 @@ fn ambiguous(
     limits: &EditLimits,
 ) -> EditFailure {
     let lines = line_texts(content);
-    let candidates = offsets
+    let spans: Vec<(usize, usize)> = offsets
         .iter()
-        .take(REPORTED_SNIPPETS)
         .map(|offset| {
-            let first = line_of(starts, *offset);
-            let last = line_of(starts, offset + spec.search.len() - 1);
-            snippet(&lines, first, last, limits.context_lines)
+            (
+                line_of(starts, *offset),
+                line_of(starts, offset + spec.search.len() - 1),
+            )
         })
         .collect();
+    let candidates = shown_snippets(&spans, &lines, limits.context_lines);
     EditFailure {
         edit: index,
         reason: EditFailureReason::Ambiguous,
@@ -1012,6 +1032,28 @@ mod tests {
             text.contains("no exact match for its 4 line(s)"),
             "the report says how big the search was: {text}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_failure_shows_a_region_once() {
+        // Two lines: every candidate window lands on the same region, and the
+        // model is shown that region once instead of once per window.
+        let (path, request) = seeded(
+            "short",
+            "alpha\nbeta\n",
+            vec![("a line that is not there", "anything")],
+        );
+        let output = run(&request).await;
+        assert!(output.is_error);
+        let structured = structured(&output);
+        assert_eq!(structured["code"], "no_match");
+        assert_eq!(
+            structured["failure"]["candidates"].as_array().map(Vec::len),
+            Some(1)
+        );
+        let text = output.parts.first().and_then(Part::as_text).expect("text");
+        assert_eq!(text.matches("lines 1-2:").count(), 1, "{text}");
+        assert_eq!(read(&path), "alpha\nbeta\n");
     }
 
     #[tokio::test]

@@ -5,7 +5,7 @@ use crate::capability::ReasoningRequest;
 use crate::domain::moderation::SafetyRating;
 use crate::domain::part::Part;
 use crate::domain::session::Phase;
-use crate::id::{ApprovalId, CallId, Digest, SessionId, ToolName};
+use crate::id::{ApprovalId, CallId, Digest, GrantId, SessionId, ToolName};
 use crate::model::GenerationParams;
 
 /// A streamed delta as observers see it. Continuity material is reduced to its
@@ -94,6 +94,13 @@ pub enum EngineEvent {
         session: SessionId,
         approval: ApprovalId,
     },
+    /// A grant was revoked; it stops authorizing calls the moment the session
+    /// is committed (FR-APPR-3).
+    ApprovalRevoked {
+        session: SessionId,
+        approval: ApprovalId,
+        grant: GrantId,
+    },
     /// A host seeded durable history onto the session head without generating
     /// (FR-ENG-6).
     HistoryAppended {
@@ -154,6 +161,7 @@ impl EngineEvent {
             | EngineEvent::ToolCallFinished { session, .. }
             | EngineEvent::ApprovalRequested { session, .. }
             | EngineEvent::ApprovalGranted { session, .. }
+            | EngineEvent::ApprovalRevoked { session, .. }
             | EngineEvent::HistoryAppended { session, .. }
             | EngineEvent::CommitSucceeded { session, .. }
             | EngineEvent::CommitConflict { session, .. }

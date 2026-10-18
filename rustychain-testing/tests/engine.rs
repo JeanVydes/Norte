@@ -476,6 +476,173 @@ async fn a_tool_scoped_grant_covers_later_calls() {
 }
 
 #[tokio::test]
+async fn a_revoked_grant_stops_authorizing_the_call() {
+    let call_id = CallId::new();
+    let scripted = Arc::new(
+        ScriptedModel::new(model("test/echo"))
+            .turn_tool_call(call_id, "echo", &json!({ "text": "secret" }))
+            .turn_text("understood"),
+    );
+    let mut tools = ToolRegistry::new();
+    tools.register_declarator(&Echo).expect("register echo");
+    let policies = PolicySet::new(vec![Arc::new(ToolApprovalPolicy::new(
+        "guard",
+        vec![ToolName::new("echo").expect("tool")],
+        "echo touches the world",
+    ))]);
+    let harness = harness(scripted, tools, policies);
+
+    let session = harness.engine.create().await.expect("create");
+    let outcome = harness
+        .engine
+        .send(session.id, Message::user("go"))
+        .finish()
+        .await
+        .expect("turn");
+    assert_eq!(outcome.session.phase, Phase::AwaitingApproval);
+
+    let pending = harness
+        .engine
+        .pending_approvals(session.id)
+        .await
+        .expect("pending");
+    let approval = pending[0].id;
+    harness
+        .engine
+        .approve(
+            approval,
+            rustychain_core::GrantScope::Call(call_id),
+            "tester",
+        )
+        .await
+        .expect("approve");
+
+    let granted = harness.store.load(session.id).await.expect("session");
+    let grant = granted.grants[0].id;
+    let record = harness
+        .engine
+        .revoke(session.id, grant, "tester")
+        .await
+        .expect("revoke");
+    assert!(!record.grants[0].is_active());
+
+    let outcome = harness
+        .engine
+        .resume(session.id)
+        .finish()
+        .await
+        .expect("resume");
+    assert_eq!(outcome.session.phase, Phase::Idle);
+    assert_eq!(
+        outcome.message.as_ref().map(Message::text).as_deref(),
+        Some("understood")
+    );
+
+    let history = harness
+        .store
+        .history(outcome.session.head)
+        .await
+        .expect("history");
+    let result = history[2].tool_results()[0];
+    assert!(result.is_error, "a revoked grant must not run the call");
+    assert!(
+        result
+            .parts
+            .iter()
+            .filter_map(Part::as_text)
+            .any(|text| text.contains("no active grant")),
+        "the model must learn why"
+    );
+}
+
+#[tokio::test]
+async fn revoking_a_standing_grant_brings_the_question_back() {
+    let first = CallId::new();
+    let second = CallId::new();
+    let scripted = Arc::new(
+        ScriptedModel::new(model("test/echo"))
+            .turn_tool_call(first, "echo", &json!({ "text": "one" }))
+            .turn_text("finished")
+            .turn_tool_call(second, "echo", &json!({ "text": "two" }))
+            .turn_text("done"),
+    );
+    let mut tools = ToolRegistry::new();
+    tools.register_declarator(&Echo).expect("register echo");
+    let policies = PolicySet::new(vec![Arc::new(ToolApprovalPolicy::new(
+        "guard",
+        vec![ToolName::new("echo").expect("tool")],
+        "echo touches the world",
+    ))]);
+    let harness = harness(scripted, tools, policies);
+
+    let session = harness.engine.create().await.expect("create");
+    let outcome = harness
+        .engine
+        .send(session.id, Message::user("go"))
+        .finish()
+        .await
+        .expect("turn");
+    assert_eq!(outcome.session.phase, Phase::AwaitingApproval);
+
+    let pending = harness
+        .engine
+        .pending_approvals(session.id)
+        .await
+        .expect("pending");
+    harness
+        .engine
+        .approve(
+            pending[0].id,
+            rustychain_core::GrantScope::Tool(ToolName::new("echo").expect("tool")),
+            "tester",
+        )
+        .await
+        .expect("approve");
+
+    let outcome = harness
+        .engine
+        .resume(session.id)
+        .finish()
+        .await
+        .expect("resume");
+    assert_eq!(
+        outcome.message.as_ref().map(Message::text).as_deref(),
+        Some("finished"),
+        "the tool-scoped grant covers the call"
+    );
+
+    let granted = harness.store.load(session.id).await.expect("session");
+    harness
+        .engine
+        .revoke(session.id, granted.grants[0].id, "tester")
+        .await
+        .expect("revoke");
+
+    let outcome = harness
+        .engine
+        .send(session.id, Message::user("again"))
+        .finish()
+        .await
+        .expect("turn");
+    assert_eq!(
+        outcome.session.phase,
+        Phase::AwaitingApproval,
+        "with the grant revoked the next call must be asked about again"
+    );
+    let pending = harness
+        .engine
+        .pending_approvals(session.id)
+        .await
+        .expect("pending");
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].call_id, second);
+    assert!(
+        outcome.session.grants.iter().all(|held| !held.is_active()),
+        "the standing grant is gone"
+    );
+}
+
+#[tokio::test]
 async fn cancelling_a_turn_leaves_the_session_resumable() {
     let events = vec![
         rustychain_core::StreamEvent::TextStart { index: 0 },

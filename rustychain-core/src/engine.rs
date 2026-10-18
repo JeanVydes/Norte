@@ -25,7 +25,9 @@ use crate::domain::role::Role;
 use crate::domain::session::{Phase, Session};
 use crate::error::{Error, Result};
 use crate::event::{EngineEvent, EventSink, StreamDelta};
-use crate::id::{ApprovalId, CallId, Digest, GenerationId, ModelRef, NodeId, SessionId, ToolName};
+use crate::id::{
+    ApprovalId, CallId, Digest, GenerationId, GrantId, ModelRef, NodeId, SessionId, ToolName,
+};
 use crate::layer::{LayerContext, LayerStack, ModelContinuation};
 use crate::media_adapter::MediaAdapter;
 use crate::model::{
@@ -599,6 +601,63 @@ impl Engine {
             .ok_or(Error::ApprovalNotFound(approval))?;
         record.deny(actor, reason);
         self.store.save_approval(record.clone()).await?;
+        Ok(record)
+    }
+
+    /// Revokes a grant and audits it.
+    ///
+    /// The grant is dropped from the session's standing grants in the same call,
+    /// so a tool-, session- or global-scoped grant stops authorizing calls the
+    /// moment this returns (FR-APPR-3).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::GrantNotFound`] when no record of the session holds that
+    /// grant, and propagates store failures.
+    pub async fn revoke(
+        &self,
+        session: SessionId,
+        grant: GrantId,
+        actor: impl Into<String>,
+    ) -> Result<ApprovalRecord> {
+        let records = self.store.approvals(session).await?;
+        let mut record = records
+            .into_iter()
+            .find(|record| record.grants.iter().any(|held| held.id == grant))
+            .ok_or(Error::GrantNotFound(grant))?;
+        record.revoke(grant, actor);
+        self.store.save_approval(record.clone()).await?;
+
+        let revoked_at = record
+            .grants
+            .iter()
+            .find(|held| held.id == grant)
+            .and_then(|held| held.revoked_at);
+        let current = self.store.load(session).await?;
+        let mut grants = current.grants.clone();
+        for held in &mut grants {
+            if held.id == grant {
+                held.revoked_at = revoked_at;
+            }
+        }
+        self.store
+            .commit(Commit {
+                session_id: session,
+                expected_version: Some(current.version),
+                nodes: Vec::new(),
+                head: None,
+                phase: current.phase,
+                turn: current.turn,
+                queue: current.queue.clone(),
+                grants,
+                metadata: None,
+            })
+            .await?;
+        self.observers.emit(&EngineEvent::ApprovalRevoked {
+            session,
+            approval: record.id,
+            grant,
+        });
         Ok(record)
     }
 
@@ -1347,11 +1406,15 @@ impl Engine {
             if record.status == ApprovalStatus::Denied {
                 return Ok(Authorization::Denied(denial_reason(record)));
             }
-            if record.status == ApprovalStatus::Granted {
-                return match record.verify_arguments(&call.arguments) {
-                    Ok(()) => Ok(Authorization::Granted),
-                    Err(error) => Ok(Authorization::Denied(error.to_string())),
-                };
+            match record.authorize(Utc::now(), &call.arguments) {
+                Ok(()) => return Ok(Authorization::Granted),
+                Err(Error::ApprovalDenied(reason)) if record.status == ApprovalStatus::Granted => {
+                    // A grant that was revoked, or arguments that no longer
+                    // match the digest it was issued for (FR-APPR-4).
+                    return Ok(Authorization::Denied(reason));
+                }
+                Err(Error::ApprovalDenied(_)) => {}
+                Err(error) => return Err(error),
             }
         }
 

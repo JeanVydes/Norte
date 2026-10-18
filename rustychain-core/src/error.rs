@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
-use crate::id::{ApprovalId, BlobId, ModelRef, NodeId, ProviderId, SessionId, ToolName};
+use crate::id::{ApprovalId, BlobId, GrantId, ModelRef, NodeId, ProviderId, SessionId, ToolName};
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -146,6 +146,9 @@ pub enum Error {
 
     #[error("approval denied: {0}")]
     ApprovalDenied(String),
+
+    #[error("grant not found: {0}")]
+    GrantNotFound(GrantId),
 
     #[error("capability mismatch: model {model} does not support {feature}")]
     Capability { model: ModelRef, feature: String },

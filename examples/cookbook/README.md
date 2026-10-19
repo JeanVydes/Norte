@@ -28,6 +28,9 @@ the second calls the shipped executors directly.
 | `agent` | An agent turn: the model edits a file through the host tools |
 | `executors` | Calling `read`, `write`, `edit` and `command` directly |
 | `observers` | Observers and stream transforms |
+| `cache` | What the provider really read: cache hits across a turn, a tool call, a park and an export |
+| `export_import` | A byte-identical restore: the same request before and after a round trip |
+| `branching` | Rewind to an ancestor and branch: the shared prefix stays cached |
 
 ## Configuration
 
@@ -39,6 +42,11 @@ the second calls the shipped executors directly.
 Every recipe that calls a model talks to a real one, so the model decides what
 it does with a prompt: the tool recipes say, in a system message, which tool to
 call.
+
+OpenRouter serves a model from one of several upstream providers, and they do
+not all implement prompt caching or report it. The cache-read numbers in `cache`
+and `branching` therefore describe the route the run actually got, and the same
+model id can report a hit on one run and nothing on the next.
 
 The wiring is ~10 lines of [OpenRouter](https://openrouter.ai) — a
 `VendorProfile` with a bearer key, plus the generic `OpenAiChat::new` — because

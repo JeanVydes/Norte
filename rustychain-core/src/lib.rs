@@ -36,7 +36,9 @@ pub use domain::conversation::{CONVERSATION_SCHEMA_VERSION, Conversation};
 pub use domain::media::{
     MediaKind, MediaMetadata, MediaPart, MediaSource, MimeType, ProviderFileRef,
 };
-pub use domain::message::{CacheClass, FinishReason, Message, MessageOrigin, MessageStatus, Usage};
+pub use domain::message::{
+    CacheClass, FinishReason, Message, MessageOrigin, MessageStatus, Usage, VendorUsage,
+};
 pub use domain::moderation::SafetyRating;
 pub use domain::node::{Node, NodeKind};
 pub use domain::part::{

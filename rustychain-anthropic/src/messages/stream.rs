@@ -4,7 +4,7 @@ use futures_util::StreamExt;
 use rustychain_core::{
     CallId, Citation, CitationSource, Error, ExtensionPart, FinishReason, ModelStream, Part,
     ProviderError, ProviderErrorKind, ProviderTool, ReasoningVisibility, Result, StreamEvent,
-    Usage,
+    Usage, VendorUsage,
 };
 use rustychain_http::SseStream;
 use serde_json::Value;
@@ -54,7 +54,12 @@ struct Decoder {
     /// Provider-executed tool calls by their vendor id, so a following result
     /// block can be correlated with the call that produced it.
     vendor_tools: BTreeMap<String, (CallId, String)>,
-    usage: Usage,
+    /// The vendor's usage payloads, merged as they arrive: Anthropic reports the
+    /// input and the cache counters on `message_start` and the output on
+    /// `message_delta`, so the object is only complete at the end of the stream.
+    /// The neutral counters are read out of it on demand, and whatever no
+    /// counter claims stays in [`Usage::vendor`] instead of being dropped.
+    reported: Value,
 }
 
 impl Decoder {
@@ -65,7 +70,7 @@ impl Decoder {
             reasoning: BTreeMap::new(),
             opaque: BTreeMap::new(),
             vendor_tools: BTreeMap::new(),
-            usage: Usage::default(),
+            reported: Value::Object(serde_json::Map::new()),
         }
     }
 
@@ -87,7 +92,7 @@ impl Decoder {
         if let Some(usage) = message.get("usage") {
             self.merge_usage(usage);
         }
-        vec![StreamEvent::Usage(self.usage.clone())]
+        vec![StreamEvent::Usage(self.usage())]
     }
 
     fn block_start(&mut self, value: &Value) -> Result<Vec<StreamEvent>> {
@@ -301,7 +306,7 @@ impl Decoder {
         let mut events = Vec::new();
         if let Some(usage) = value.get("usage") {
             self.merge_usage(usage);
-            events.push(StreamEvent::Usage(self.usage.clone()));
+            events.push(StreamEvent::Usage(self.usage()));
         }
         if let Some(reason) = value
             .get("delta")
@@ -312,19 +317,16 @@ impl Decoder {
         events
     }
 
+    /// The neutral reading of the merged payload reported so far.
+    fn usage(&self) -> Usage {
+        usage_of(&self.reported)
+    }
+
+    /// Folds one usage payload into the merged one. The neutral counters are not
+    /// read here: the payload is only complete at the end of the stream, and
+    /// reading it once is what keeps an adapter from claiming a field twice.
     fn merge_usage(&mut self, usage: &Value) {
-        set(&mut self.usage.input_tokens, usage, "input_tokens");
-        set(&mut self.usage.output_tokens, usage, "output_tokens");
-        set(
-            &mut self.usage.cache_read_tokens,
-            usage,
-            "cache_read_input_tokens",
-        );
-        set(
-            &mut self.usage.cache_write_tokens,
-            usage,
-            "cache_creation_input_tokens",
-        );
+        crate::json::merge(&mut self.reported, usage);
     }
 }
 
@@ -392,10 +394,17 @@ fn extension_source(citation: &Value) -> CitationSource {
     }
 }
 
-fn set(target: &mut Option<u64>, usage: &Value, key: &str) {
-    if let Some(value) = usage.get(key).and_then(Value::as_u64) {
-        *target = Some(value);
-    }
+/// Reads the vendor's usage object into the neutral counters, and keeps
+/// everything the neutral vocabulary does not model in [`Usage::vendor`].
+fn usage_of(usage: &Value) -> Usage {
+    let mut vendor = VendorUsage::new(usage);
+    let mut mapped = Usage::default();
+    mapped.input_tokens = vendor.take(&["input_tokens"]);
+    mapped.output_tokens = vendor.take(&["output_tokens"]);
+    mapped.cache_read_tokens = vendor.take(&["cache_read_input_tokens"]);
+    mapped.cache_write_tokens = vendor.take(&["cache_creation_input_tokens"]);
+    mapped.vendor = vendor.remainder();
+    mapped
 }
 
 fn finish_reason(reason: &str) -> FinishReason {
@@ -584,6 +593,42 @@ mod tests {
             events.last(),
             Some(&StreamEvent::Finish(FinishReason::Stop))
         );
+    }
+
+    #[tokio::test]
+    async fn usage_fields_the_vocabulary_does_not_name_survive_the_merge() {
+        let events = drain(&[
+            r#"{"type":"message_start","message":{"usage":{"input_tokens":10,"cache_read_input_tokens":4,"cache_creation_input_tokens":1,"cache_creation":{"ephemeral_5m_input_tokens":1,"ephemeral_1h_input_tokens":0},"service_tier":"standard"}}}"#,
+            r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2,"cost":0.00042}}"#,
+        ])
+        .await;
+        let reported = events
+            .iter()
+            .rev()
+            .find_map(|event| match event {
+                StreamEvent::Usage(usage) => Some(usage),
+                _ => None,
+            })
+            .expect("usage");
+        assert_eq!(reported.input_tokens, Some(10));
+        assert_eq!(reported.output_tokens, Some(2));
+        assert_eq!(reported.cache_read_tokens, Some(4));
+        assert_eq!(reported.cache_write_tokens, Some(1));
+        // The cache breakdown and the tier are not in the neutral vocabulary, and
+        // a later payload adds a field instead of replacing the earlier ones.
+        assert!(reported.vendor.contains_key("cache_creation"));
+        assert_eq!(
+            reported.vendor.get("service_tier").and_then(Value::as_str),
+            Some("standard")
+        );
+        assert_eq!(
+            reported.vendor.get("cost").and_then(Value::as_f64),
+            Some(0.00042)
+        );
+        // A claimed counter is read out, never duplicated.
+        assert!(!reported.vendor.contains_key("input_tokens"));
+        assert!(!reported.vendor.contains_key("cache_read_input_tokens"));
+        assert!(!reported.vendor.contains_key("cache_creation_input_tokens"));
     }
 
     #[tokio::test]

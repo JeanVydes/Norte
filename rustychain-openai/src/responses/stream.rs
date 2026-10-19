@@ -5,7 +5,7 @@ use futures_util::StreamExt;
 use rustychain_core::{
     CallId, Citation, CitationSource, Error, ExtensionPart, FinishReason, MediaKind, MediaMetadata,
     MimeType, ModelStream, Part, ProviderError, ProviderErrorKind, ProviderId, ProviderTool,
-    ReasoningVisibility, RefusalPart, Result, StreamEvent, Usage,
+    ReasoningVisibility, RefusalPart, Result, StreamEvent, Usage, VendorUsage,
 };
 use rustychain_http::SseStream;
 use serde_json::Value;
@@ -482,20 +482,15 @@ fn usage_of(response: &Value) -> Usage {
     let Some(usage) = response.get("usage") else {
         return Usage::default();
     };
-    let input = usage.get("input_tokens_details");
-    let output = usage.get("output_tokens_details");
+    let mut vendor = VendorUsage::new(usage);
     let mut mapped = Usage::default();
-    mapped.input_tokens = usage.get("input_tokens").and_then(Value::as_u64);
-    mapped.output_tokens = usage.get("output_tokens").and_then(Value::as_u64);
-    mapped.reasoning_tokens = counter(output, "reasoning_tokens");
-    mapped.cache_read_tokens = counter(input, "cached_tokens");
-    mapped.cache_write_tokens = counter(input, "cache_write_tokens");
+    mapped.input_tokens = vendor.take(&["input_tokens"]);
+    mapped.output_tokens = vendor.take(&["output_tokens"]);
+    mapped.reasoning_tokens = vendor.take(&["output_tokens_details", "reasoning_tokens"]);
+    mapped.cache_read_tokens = vendor.take(&["input_tokens_details", "cached_tokens"]);
+    mapped.cache_write_tokens = vendor.take(&["input_tokens_details", "cache_write_tokens"]);
+    mapped.vendor = vendor.remainder();
     mapped
-}
-
-/// Reads one vendor counter out of a details object, if present.
-fn counter(details: Option<&Value>, key: &str) -> Option<u64> {
-    details?.get(key).and_then(Value::as_u64)
 }
 
 fn failed_error(value: &Value) -> Error {
@@ -630,7 +625,7 @@ mod tests {
         let events = drain(&[
             r#"{"type":"response.output_text.delta","output_index":0,"delta":"Hel"}"#,
             r#"{"type":"response.output_text.delta","output_index":0,"delta":"lo"}"#,
-            r#"{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":7,"output_tokens":2,"input_tokens_details":{"cached_tokens":3,"cache_write_tokens":1}}}}"#,
+            r#"{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":7,"output_tokens":2,"total_tokens":9,"input_tokens_details":{"cached_tokens":3,"cache_write_tokens":1,"text_tokens":5,"image_tokens":2},"output_tokens_details":{"reasoning_tokens":1}}}}"#,
         ])
         .await;
         assert_eq!(
@@ -654,6 +649,19 @@ mod tests {
         assert_eq!(usage.output_tokens, Some(2));
         assert_eq!(usage.cache_read_tokens, Some(3));
         assert_eq!(usage.cache_write_tokens, Some(1));
+        assert_eq!(usage.reasoning_tokens, Some(1));
+        // No field of this family is named by the neutral vocabulary, so they
+        // survive in `vendor` rather than dying at the parser.
+        assert_eq!(
+            usage.vendor.get("total_tokens").and_then(Value::as_u64),
+            Some(9)
+        );
+        let details = usage
+            .vendor
+            .get("input_tokens_details")
+            .expect("leftover details");
+        assert_eq!(details.get("text_tokens").and_then(Value::as_u64), Some(5));
+        assert_eq!(details.get("image_tokens").and_then(Value::as_u64), Some(2));
         assert_eq!(events[3], StreamEvent::Finish(FinishReason::Stop));
     }
 

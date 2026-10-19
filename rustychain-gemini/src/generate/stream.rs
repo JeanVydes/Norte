@@ -2,7 +2,7 @@ use futures_util::StreamExt;
 use rustychain_core::{
     CallId, Citation, CitationSource, Error, ExtensionPart, FinishReason, MediaKind, MediaMetadata,
     MediaPart, MediaSource, MimeType, ModelStream, Part, ProviderError, ProviderErrorKind,
-    ProviderTool, ReasoningVisibility, Result, SafetyRating, StreamEvent, Usage,
+    ProviderTool, ReasoningVisibility, Result, SafetyRating, StreamEvent, Usage, VendorUsage,
 };
 use rustychain_http::SseStream;
 use serde_json::{Value, json};
@@ -562,11 +562,13 @@ fn media_kind(mime: &str) -> MediaKind {
 }
 
 fn usage_of(usage: &Value) -> Usage {
+    let mut vendor = VendorUsage::new(usage);
     let mut mapped = Usage::default();
-    mapped.input_tokens = usage.get("promptTokenCount").and_then(Value::as_u64);
-    mapped.output_tokens = usage.get("candidatesTokenCount").and_then(Value::as_u64);
-    mapped.reasoning_tokens = usage.get("thoughtsTokenCount").and_then(Value::as_u64);
-    mapped.cache_read_tokens = usage.get("cachedContentTokenCount").and_then(Value::as_u64);
+    mapped.input_tokens = vendor.take(&["promptTokenCount"]);
+    mapped.output_tokens = vendor.take(&["candidatesTokenCount"]);
+    mapped.reasoning_tokens = vendor.take(&["thoughtsTokenCount"]);
+    mapped.cache_read_tokens = vendor.take(&["cachedContentTokenCount"]);
+    mapped.vendor = vendor.remainder();
     mapped
 }
 
@@ -720,7 +722,7 @@ mod tests {
     async fn text_deltas_and_usage_survive_the_decode() {
         let events = drain(&[
             r#"{"candidates":[{"content":{"role":"model","parts":[{"text":"Hel"}]}}]}"#,
-            r#"{"candidates":[{"content":{"role":"model","parts":[{"text":"lo"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":2,"cachedContentTokenCount":3}}"#,
+            r#"{"candidates":[{"content":{"role":"model","parts":[{"text":"lo"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":2,"cachedContentTokenCount":3,"totalTokenCount":9,"toolUsePromptTokenCount":1,"promptTokensDetails":[{"modality":"TEXT","tokenCount":7}]}}"#,
         ])
         .await;
         assert_eq!(
@@ -743,6 +745,27 @@ mod tests {
         assert_eq!(usage.input_tokens, Some(7));
         assert_eq!(usage.output_tokens, Some(2));
         assert_eq!(usage.cache_read_tokens, Some(3));
+        // Gemini breaks tokens down by modality and counts tool prompts: the
+        // neutral vocabulary names none of it, so it survives verbatim.
+        assert_eq!(
+            usage.vendor.get("totalTokenCount").and_then(Value::as_u64),
+            Some(9)
+        );
+        assert_eq!(
+            usage
+                .vendor
+                .get("toolUsePromptTokenCount")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            usage
+                .vendor
+                .get("promptTokensDetails")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(1)
+        );
         assert_eq!(events[3], StreamEvent::Finish(FinishReason::Stop));
     }
 

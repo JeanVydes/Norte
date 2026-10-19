@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::domain::media::MediaPart;
 use crate::domain::part::{Part, ReasoningPart, TextPart, ToolCallPart, ToolResultPart};
@@ -78,6 +79,16 @@ pub struct Usage {
     pub audio_output_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub extension: BTreeMap<String, u64>,
+    /// What the vendor reported and this vocabulary does not model: the price a
+    /// request cost, a flag, a breakdown with no neutral field — and whatever a
+    /// vendor ships that this crate has never heard of. Kept verbatim, so the
+    /// parser is not where an unknown field dies.
+    ///
+    /// An adapter fills it through [`VendorUsage`], which also keeps the two
+    /// sides honest: claiming is what removes a field from here, so a field an
+    /// adapter forgets to map is visible rather than lost.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub vendor: BTreeMap<String, Value>,
 }
 
 impl Usage {
@@ -85,6 +96,71 @@ impl Usage {
     pub fn total_tokens(&self) -> u64 {
         self.input_tokens.unwrap_or(0) + self.output_tokens.unwrap_or(0)
     }
+}
+
+/// Reads one vendor usage object into the neutral counters.
+///
+/// A vendor reports more than this vocabulary names, and the vocabulary grows
+/// slower than the vendors do: an `OpenAI`-compatible payload carries `cost` and
+/// `is_byok`, Anthropic a `cache_creation` breakdown, Gemini token detail
+/// arrays. An adapter claims here what it models — [`take`](Self::take) removes a
+/// counter from the object — and [`remainder`](Self::remainder) hands back
+/// everything no claim touched, which lands in [`Usage::vendor`].
+#[derive(Debug)]
+pub struct VendorUsage {
+    left: Value,
+}
+
+impl VendorUsage {
+    /// Starts a read of one vendor usage object.
+    #[must_use]
+    pub fn new(vendor: &Value) -> Self {
+        Self {
+            left: vendor.clone(),
+        }
+    }
+
+    /// Claims the counter at `path`, returning it and removing it from the
+    /// remainder.
+    ///
+    /// A value that is not an unsigned integer stays where it is: a vendor that
+    /// reports a count as a string or a float belongs in `vendor`, not in a
+    /// deprecated, coerced neutral field.
+    pub fn take(&mut self, path: &[&str]) -> Option<u64> {
+        let (last, parents) = path.split_last()?;
+        let mut cursor = &mut self.left;
+        for step in parents {
+            cursor = cursor.get_mut(*step)?;
+        }
+        let claimed = cursor.get(*last)?.as_u64()?;
+        cursor.as_object_mut()?.remove(*last);
+        Some(claimed)
+    }
+
+    /// Everything no claim touched, with the objects the claims emptied pruned
+    /// away: a payload that is fully modelled leaves no map at all.
+    #[must_use]
+    pub fn remainder(self) -> BTreeMap<String, Value> {
+        prune(self.left)
+    }
+}
+
+/// The fields of a vendor object that no claim touched. An object whose every
+/// field was claimed is dropped; a field that is not an object is kept whole.
+fn prune(value: Value) -> BTreeMap<String, Value> {
+    let Value::Object(map) = value else {
+        // A usage payload that is not an object has no fields to keep.
+        return BTreeMap::new();
+    };
+    map.into_iter()
+        .filter_map(|(key, field)| {
+            if !field.is_object() {
+                return Some((key, field));
+            }
+            let kept = prune(field);
+            (!kept.is_empty()).then(|| (key, Value::Object(kept.into_iter().collect())))
+        })
+        .collect()
 }
 
 /// Model-side provenance of an assistant message.
@@ -266,6 +342,128 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].call_id, first);
         assert_eq!(results[1].call_id, second);
+    }
+
+    #[test]
+    fn a_claimed_counter_leaves_the_rest_of_the_payload_alone() {
+        // The payload is one Relace answered with: the neutral counters are
+        // claimed, and the price and the flags — which the neutral vocabulary
+        // does not name — survive instead of dying at the parser.
+        let payload = serde_json::json!({
+            "prompt_tokens": 86,
+            "completion_tokens": 8,
+            "total_tokens": 94,
+            "cost": 0.000_004_339_6,
+            "is_byok": false,
+            "prompt_tokens_details": {
+                "cached_tokens": 0,
+                "cache_write_tokens": 0,
+                "audio_tokens": 0,
+                "video_tokens": 0
+            },
+            "cost_details": { "upstream_inference_cost": 0.000_004_339_6 },
+            "completion_tokens_details": { "reasoning_tokens": 8, "image_tokens": 0 }
+        });
+        let mut vendor = VendorUsage::new(&payload);
+        let usage = Usage {
+            input_tokens: vendor.take(&["prompt_tokens"]),
+            output_tokens: vendor.take(&["completion_tokens"]),
+            reasoning_tokens: vendor.take(&["completion_tokens_details", "reasoning_tokens"]),
+            cache_read_tokens: vendor.take(&["prompt_tokens_details", "cached_tokens"]),
+            cache_write_tokens: vendor.take(&["prompt_tokens_details", "cache_write_tokens"]),
+            audio_input_tokens: vendor.take(&["prompt_tokens_details", "audio_tokens"]),
+            vendor: vendor.remainder(),
+            ..Usage::default()
+        };
+
+        assert_eq!(usage.input_tokens, Some(86));
+        assert_eq!(usage.output_tokens, Some(8));
+        assert_eq!(usage.reasoning_tokens, Some(8));
+        assert_eq!(usage.cache_read_tokens, Some(0));
+        assert_eq!(usage.cache_write_tokens, Some(0));
+        assert_eq!(usage.audio_input_tokens, Some(0));
+        // Claimed fields are not duplicated, and a details object is pruned only
+        // where every one of its fields was claimed.
+        assert!(!usage.vendor.contains_key("prompt_tokens"));
+        assert_eq!(
+            usage.vendor.get("cost").and_then(Value::as_f64),
+            Some(0.000_004_339_6)
+        );
+        assert_eq!(
+            usage.vendor.get("is_byok").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            usage.vendor.get("total_tokens").and_then(Value::as_u64),
+            Some(94)
+        );
+        assert!(usage.vendor.contains_key("cost_details"));
+        // `prompt_tokens_details` keeps the `video_tokens` no field claims, and
+        // the completion side keeps `image_tokens`, so both objects stay.
+        assert_eq!(
+            usage
+                .vendor
+                .get("prompt_tokens_details")
+                .and_then(|details| details.get("video_tokens"))
+                .and_then(Value::as_u64),
+            Some(0)
+        );
+        assert!(usage.vendor.contains_key("completion_tokens_details"));
+    }
+
+    #[test]
+    fn a_fully_claimed_payload_leaves_no_vendor_map() {
+        let payload = serde_json::json!({
+            "prompt_tokens": 3,
+            "prompt_tokens_details": { "cached_tokens": 1 }
+        });
+        let mut vendor = VendorUsage::new(&payload);
+        let usage = Usage {
+            input_tokens: vendor.take(&["prompt_tokens"]),
+            cache_read_tokens: vendor.take(&["prompt_tokens_details", "cached_tokens"]),
+            vendor: vendor.remainder(),
+            ..Usage::default()
+        };
+        assert!(usage.vendor.is_empty());
+        assert_eq!(
+            usage,
+            Usage {
+                input_tokens: Some(3),
+                cache_read_tokens: Some(1),
+                ..Usage::default()
+            }
+        );
+    }
+
+    #[test]
+    fn a_counter_that_is_not_a_number_is_not_coerced_away() {
+        let payload = serde_json::json!({ "prompt_tokens": "86" });
+        let mut vendor = VendorUsage::new(&payload);
+        let usage = Usage {
+            input_tokens: vendor.take(&["prompt_tokens"]),
+            vendor: vendor.remainder(),
+            ..Usage::default()
+        };
+        assert_eq!(usage.input_tokens, None);
+        assert_eq!(
+            usage.vendor.get("prompt_tokens").and_then(Value::as_str),
+            Some("86")
+        );
+    }
+
+    #[test]
+    fn usage_round_trips_with_its_vendor_payload() {
+        let payload = serde_json::json!({ "cost": 0.000_004_339_6, "is_byok": true });
+        let usage = Usage {
+            vendor: VendorUsage::new(&payload).remainder(),
+            ..Usage::default()
+        };
+        let json = serde_json::to_string(&usage).expect("serialize");
+        let decoded: Usage = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded, usage);
+        // And an empty map adds no bytes at all.
+        let empty = serde_json::to_string(&Usage::default()).expect("serialize");
+        assert_eq!(empty, "{}");
     }
 
     #[test]

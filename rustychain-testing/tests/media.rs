@@ -6,11 +6,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rustychain_core::{
-    BlobStore, Capabilities, EngineBuilder, EngineConfig, FinishReason, InMemoryBlobStore,
+    BlobId, BlobStore, Capabilities, EngineBuilder, EngineConfig, FinishReason, InMemoryBlobStore,
     InMemoryStore, MediaAdapter, MediaKind, MediaMetadata, MediaPart, MediaPayload,
-    MediaPreprocessor, MediaSource, Message, MimeType, Modality, Part, Result, Role, StreamEvent,
-    StreamingGranularity, ToolRegistry,
+    MediaPreprocessor, MediaSource, Message, MimeType, Modality, Part, ProviderFileRef,
+    ProviderFiles, ProviderId, Result, Role, StreamEvent, StreamingGranularity, ToolRegistry,
 };
+use rustychain_http::{HttpClient, HttpMedia};
 use rustychain_testing::{ScriptedModel, model};
 
 /// Marks inline bytes so a test can see the pass ran.
@@ -186,4 +187,142 @@ async fn output_media_is_ingested_and_externalized() {
         vec![7; 64],
         "the committed part points at durable bytes"
     );
+}
+
+/// The vendor file port `HttpMedia` re-uploads through.
+struct Files {
+    bytes: Vec<u8>,
+    uploads: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl ProviderFiles for Files {
+    async fn download(&self, _reference: &ProviderFileRef) -> Result<Vec<u8>> {
+        Ok(self.bytes.clone())
+    }
+
+    async fn upload(
+        &self,
+        _kind: MediaKind,
+        _mime: &MimeType,
+        bytes: &[u8],
+    ) -> Result<ProviderFileRef> {
+        let n = self.uploads.fetch_add(1, Ordering::Relaxed) + 1;
+        Ok(ProviderFileRef {
+            provider: ProviderId::new("test").expect("provider"),
+            file_id: format!("fresh-{n}"),
+            expires_at: None,
+            blob: Some(BlobId::of(bytes)),
+        })
+    }
+}
+
+fn expired_reference(blob: BlobId) -> ProviderFileRef {
+    ProviderFileRef {
+        provider: ProviderId::new("test").expect("provider"),
+        file_id: "stale".to_owned(),
+        expires_at: Some(chrono::DateTime::from_timestamp(0, 0).expect("a timestamp before now")),
+        blob: Some(blob),
+    }
+}
+
+#[tokio::test]
+async fn an_expired_provider_file_is_revived_once_and_the_prefix_stays_stable() {
+    let blobs = Arc::new(InMemoryBlobStore::new());
+    let blob = blobs.put(b"document bytes").await.expect("put");
+    let files = Arc::new(Files {
+        bytes: b"document bytes".to_vec(),
+        uploads: AtomicUsize::new(0),
+    });
+    let media = Arc::new(
+        HttpMedia::new(&HttpClient::new().expect("client")).with_provider_files(files.clone()),
+    );
+    let scripted = Arc::new(
+        ScriptedModel::new(model("test/echo"))
+            .with_capabilities(
+                Capabilities::builder()
+                    .input(Modality::Text)
+                    .input(Modality::Image)
+                    .output(Modality::Text)
+                    .streaming(StreamingGranularity::Delta)
+                    .build(),
+            )
+            .turn_text("one")
+            .turn_text("two"),
+    );
+    let engine = EngineBuilder::new()
+        .store(Arc::new(InMemoryStore::new()))
+        .blobs(blobs)
+        .model(scripted.clone())
+        .tools(ToolRegistry::new())
+        .media_adapter(media)
+        .build()
+        .expect("build engine");
+
+    let session = engine.create().await.expect("create");
+    engine
+        .append_history(
+            session.id,
+            vec![
+                Message::new(
+                    Role::User,
+                    vec![image(MediaSource::ProviderFile(expired_reference(blob)))],
+                ),
+                Message::user("first"),
+            ],
+        )
+        .await
+        .expect("seed");
+
+    engine
+        .resume(session.id)
+        .finish()
+        .await
+        .expect("first turn");
+    engine
+        .send(session.id, Message::user("second"))
+        .finish()
+        .await
+        .expect("second turn");
+
+    let requests = scripted.requests();
+    assert_eq!(requests.len(), 2);
+    let first = &requests[0];
+    let second = &requests[1];
+
+    // The expired reference is replaced on the way out, and the replacement is
+    // the same on both turns: only the appended suffix is new bytes. The whole
+    // prefix would otherwise be re-billed (FR-RECON-4, FR-RECON-3).
+    let revived = first.messages[0]
+        .media()
+        .first()
+        .map(|media| media.source.clone())
+        .expect("the media part reaches the wire");
+    let MediaSource::ProviderFile(fresh) = &revived else {
+        panic!("the expired reference must be replaced by a fresh one");
+    };
+    assert_ne!(fresh.file_id, "stale");
+    assert_eq!(
+        serde_json::to_vec(&second.messages[..first.messages.len()]).expect("prefix"),
+        serde_json::to_vec(&first.messages).expect("first request"),
+        "the revived reference is reused, so the prefix does not move"
+    );
+    assert_eq!(
+        files.uploads.load(Ordering::Relaxed),
+        1,
+        "the file is re-uploaded once and remembered by the adapter"
+    );
+
+    // The graph itself is untouched: the node keeps the reference it was written
+    // with, and every reconstruction substitutes the fresh one (FR-GRAPH-2).
+    let history = engine.history(session.id).await.expect("history");
+    let stored = history[0]
+        .media()
+        .first()
+        .map(|media| media.source.clone())
+        .expect("stored media");
+    let MediaSource::ProviderFile(original) = &stored else {
+        panic!("the stored part is still a provider file");
+    };
+    assert_eq!(original.file_id, "stale");
 }

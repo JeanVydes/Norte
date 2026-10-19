@@ -8,13 +8,15 @@
 use std::sync::Arc;
 
 use rustychain_core::{
-    CallId, Conversation, Engine, EngineBuilder, FnExecutor, GrantScope, Message, Model, ModelRef,
-    ModelRequest, Part, Phase, PolicySet, Result, Role, TextPart, ToolApprovalPolicy, ToolCallPart,
-    ToolName, ToolRegistry, ToolResultPart,
+    CallId, ContinuityScope, ContinuityToken, Conversation, Engine, EngineBuilder, Error,
+    FnExecutor, GrantScope, Message, Model, ModelRef, ModelRequest, Part, Phase, PolicySet,
+    ReasoningPart, ReasoningVisibility, Result, Role, TextPart, ToolApprovalPolicy, ToolCallPart,
+    ToolName, ToolRegistry, ToolResultPart, WireFamily,
 };
 use rustychain_openai::OpenAiChat;
 use rustychain_testing::{
-    InMemoryBlobStore, InMemoryStore, ProbeModel, ScriptedModel, text_capabilities,
+    InMemoryBlobStore, InMemoryStore, ProbeModel, ScriptedModel, StrictContinuity, model,
+    text_capabilities,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -374,4 +376,184 @@ async fn a_forked_conversation_moves_only_the_cache_key() {
         .expect("object")
         .remove("prompt_cache_key");
     assert_eq!(without_key, forked_without_key);
+}
+
+/// A probe over a scripted model whose continuity table is the strict one: it
+/// replays only for its own exact model and refuses a cross-model replay while a
+/// tool result is still owed (FR-CONT-2, FR-CONT-4).
+fn strict(reference: ModelRef) -> Arc<ProbeModel> {
+    let scripted = ScriptedModel::new(reference.clone())
+        .with_continuity(Arc::new(StrictContinuity::new(reference)));
+    Arc::new(ProbeModel::new(Arc::new(scripted)))
+}
+
+fn signature(reference: &ModelRef) -> ContinuityToken {
+    ContinuityToken::new(
+        WireFamily::new("test.strict").expect("family"),
+        ContinuityScope::Exact(reference.clone()),
+        1,
+        b"opaque thinking signature".to_vec(),
+    )
+}
+
+/// A history whose assistant turn carries a vendor signature, optionally ending
+/// mid tool loop: the state in which dropping the signature makes a vendor
+/// reject the next request.
+fn signed(reference: &ModelRef, mid_tool_loop: bool) -> Vec<Message> {
+    let call_id = CallId::new();
+    let mut history = vec![
+        Message::system("You are terse."),
+        Message::user("Why is the sky blue?"),
+        Message::new(
+            Role::Assistant,
+            vec![Part::Reasoning(ReasoningPart {
+                visibility: ReasoningVisibility::Summary,
+                text: "Rayleigh scattering.".to_owned(),
+                continuity: Some(signature(reference)),
+            })],
+        ),
+    ];
+    if mid_tool_loop {
+        history.push(Message::new(
+            Role::Assistant,
+            vec![Part::ToolCall(ToolCallPart {
+                call_id,
+                name: "weather".to_owned(),
+                arguments: json!({ "city": "Paris" }),
+                continuity: None,
+            })],
+        ));
+        history.push(Message::tool(vec![ToolResultPart::text(call_id, "sunny")]));
+    }
+    history
+}
+
+async fn exported(reference: &ModelRef, mid_tool_loop: bool) -> Conversation {
+    let source = strict(reference.clone());
+    let engine = engine(source, Arc::new(InMemoryStore::new()));
+    let session = engine.create().await.expect("create");
+    engine
+        .append_history(session.id, signed(reference, mid_tool_loop))
+        .await
+        .expect("seed");
+    engine.export(session.id).await.expect("export")
+}
+
+fn carried_tokens(request: &ModelRequest) -> usize {
+    request
+        .messages
+        .iter()
+        .flat_map(|message| &message.parts)
+        .filter_map(Part::continuity)
+        .count()
+}
+
+#[tokio::test]
+async fn export_import_carries_signatures_that_the_same_model_replays() {
+    let reference = model("test/strict");
+    let source = strict(reference.clone());
+    let engine_a = engine(source.clone(), Arc::new(InMemoryStore::new()));
+    let session = engine_a.create().await.expect("create");
+    engine_a
+        .append_history(session.id, signed(&reference, false))
+        .await
+        .expect("seed");
+    let conversation = engine_a.export(session.id).await.expect("export");
+
+    // The envelope is the transcript: the signature travels with it. Stripping
+    // it would make a restored session send a different prefix (FR-EXP-2).
+    assert_eq!(
+        conversation
+            .messages
+            .iter()
+            .flat_map(|message| &message.parts)
+            .filter_map(Part::continuity)
+            .count(),
+        1,
+        "the export carries the signature"
+    );
+
+    let target = strict(reference.clone());
+    let engine_b = engine(target.clone(), Arc::new(InMemoryStore::new()));
+    let imported = engine_b
+        .import(Conversation::from_json(&conversation.to_json().expect("json")).expect("decode"))
+        .await
+        .expect("import");
+
+    engine_a
+        .send(session.id, Message::user("and at sunset?"))
+        .finish()
+        .await
+        .expect("send a");
+    engine_b
+        .send(imported.id, Message::user("and at sunset?"))
+        .finish()
+        .await
+        .expect("send b");
+
+    let request_a = source.last_request().expect("request a");
+    let request_b = target.last_request().expect("request b");
+    assert_eq!(carried_tokens(&request_b), 1, "the model replays it");
+    assert_eq!(
+        serde_json::to_string(&request_a).expect("bytes a"),
+        serde_json::to_string(&request_b).expect("bytes b"),
+        "an identically configured engine reproduces the request byte-identically"
+    );
+}
+
+#[tokio::test]
+async fn a_different_model_drops_a_signature_it_cannot_replay() {
+    let source_reference = model("test/strict");
+    let target_reference = model("test/other");
+    let conversation = exported(&source_reference, false).await;
+
+    let target = strict(target_reference);
+    let engine = engine(target.clone(), Arc::new(InMemoryStore::new()));
+    let imported = engine.import(conversation).await.expect("import");
+    let outcome = engine
+        .send(imported.id, Message::user("go on"))
+        .finish()
+        .await
+        .expect("a foreign signature is dropped, not fatal");
+    assert_eq!(outcome.session.phase, Phase::Idle);
+
+    let request = target.last_request().expect("request");
+    assert_eq!(
+        carried_tokens(&request),
+        0,
+        "the token is dropped before the request is built"
+    );
+    assert_eq!(
+        request.messages[2]
+            .reasoning()
+            .first()
+            .map(|reasoning| reasoning.text.as_str()),
+        Some("Rayleigh scattering."),
+        "only the signature goes; the reasoning text stays"
+    );
+}
+
+#[tokio::test]
+async fn a_model_switch_mid_tool_loop_is_blocked_instead_of_dropping_the_signature() {
+    let source_reference = model("test/strict");
+    let target_reference = model("test/other");
+    let conversation = exported(&source_reference, true).await;
+
+    let engine = engine(strict(target_reference), Arc::new(InMemoryStore::new()));
+    let imported = engine.import(conversation).await.expect("import");
+    let error = engine
+        .send(imported.id, Message::user("go on"))
+        .finish()
+        .await
+        .expect_err("dropping the signature here would make the vendor reject the turn");
+
+    assert!(
+        matches!(error, Error::ContinuityBlocked(_)),
+        "a replay that cannot be satisfied is blocked, got {error:?}"
+    );
+    assert_eq!(
+        engine.session(imported.id).await.expect("session").phase,
+        Phase::Streaming,
+        "the failed turn stays resumable (FR-ERR-5)"
+    );
 }

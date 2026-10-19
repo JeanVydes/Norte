@@ -7,7 +7,7 @@ use rustychain_core::{
     CallId, ContinuityFragment, ContinuityScope, ContinuitySemantics, Decision, Engine,
     EngineBuilder, EngineConfig, EngineEvent, Error, FinishReason, FnExecutor, Message,
     MessageStatus, Part, Phase, Policy, PolicySet, PolicyView, Result, Role, Store, StreamEvent,
-    ToolApprovalPolicy, ToolContext, ToolName, ToolRegistry, WireFamily,
+    ToolApprovalPolicy, ToolContext, ToolName, ToolRegistry, ToolResultPart, WireFamily,
 };
 use rustychain_testing::{
     InMemoryBlobStore, InMemoryStore, ScriptedModel, StrictContinuity, model, text_capabilities,
@@ -308,6 +308,21 @@ async fn a_park_after_a_call_does_not_run_that_call_again() {
         0,
         "the gated call has not run"
     );
+
+    // The result the message already produced travels with the park commit, so a
+    // resume seeds it instead of running the call a second time (FR-APPR-8).
+    let stored: Vec<ToolResultPart> = serde_json::from_value(
+        outcome
+            .session
+            .metadata
+            .get(rustychain_core::PARTIAL_TOOLS_KEY)
+            .expect("the park commit records the results already produced")
+            .clone(),
+    )
+    .expect("partial results decode");
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].call_id, first);
+    assert_eq!(stored[0].structured, Some(json!({ "echoed": "one" })));
 
     let pending = harness
         .engine

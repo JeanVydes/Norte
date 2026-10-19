@@ -10,9 +10,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rustychain_core::{
-    Engine, EngineBuilder, EngineConfig, EngineEvent, Error, FnExecutor, GenerationParams, Message,
-    Model, ModelRequest, Observer, ReasoningEffort, ReasoningRequest, Result, ToolName,
-    ToolRegistry, TurnOptions,
+    Conversation, Digest, Engine, EngineBuilder, EngineConfig, EngineEvent, Error, FnExecutor,
+    GenerationParams, Message, Model, ModelRequest, Observer, ReasoningEffort, ReasoningRequest,
+    Result, ToolName, ToolRegistry, TurnOptions,
 };
 use rustychain_testing::{
     InMemoryBlobStore, InMemoryStore, ProbeModel, RecordingObserver, ScriptedModel, model,
@@ -319,6 +319,79 @@ async fn tool_subset_is_canonical_and_deduplicated() {
     )
     .await;
     assert!(empty.tools.is_empty());
+}
+
+/// Seeds the same fixed history into a session and exports it, so every
+/// imported copy reconstructs exactly those messages: no generated origin,
+/// timestamp or id can differ between runs.
+async fn seed_conversation() -> Conversation {
+    let engine = build(probe(), registry(), Vec::new(), EngineConfig::default());
+    let session = engine.create().await.expect("create");
+    engine
+        .append_history(
+            session.id,
+            vec![
+                Message::system("sys"),
+                Message::user("q1"),
+                Message::assistant("a1"),
+                Message::user("q2"),
+            ],
+        )
+        .await
+        .expect("seed");
+    engine.export(session.id).await.expect("export")
+}
+
+/// Imports the seeded conversation into a fresh engine and runs one turn with
+/// `tools`, so two requests share the session id — and therefore the provider
+/// cache key — and differ only in what the turn itself sets.
+async fn seeded_request(conversation: &Conversation, tools: Vec<ToolName>) -> ModelRequest {
+    let probe = probe();
+    let engine = build(
+        probe.clone(),
+        registry(),
+        Vec::new(),
+        EngineConfig::default(),
+    );
+    let imported = engine.import(conversation.clone()).await.expect("import");
+    engine
+        .turn(imported.id)
+        .tools(tools)
+        .start()
+        .finish()
+        .await
+        .expect("turn");
+    probe.last_request().expect("request")
+}
+
+fn messages(request: &ModelRequest) -> String {
+    serde_json::to_string(&request.messages).expect("messages")
+}
+
+fn digest(request: &ModelRequest) -> Digest {
+    Digest::of_json(&serde_json::to_value(request).expect("request"))
+}
+
+#[tokio::test]
+async fn a_tool_subset_change_invalidates_the_request_but_not_the_messages() {
+    let conversation = seed_conversation().await;
+    let ab = seeded_request(&conversation, vec![name("alpha"), name("beta")]).await;
+    let ac = seeded_request(&conversation, vec![name("alpha"), name("gamma")]).await;
+    let ba = seeded_request(&conversation, vec![name("beta"), name("alpha")]).await;
+
+    // Tool declarations are a sibling of the message sequence, so a changed
+    // subset leaves the history byte-identical and moves the request identity
+    // from the tools section onward (FR-CACHE-5).
+    assert_eq!(messages(&ab), messages(&ac));
+    assert_eq!(messages(&ab), messages(&ba));
+    assert_eq!(names(&ab), vec!["alpha", "beta"]);
+    assert_eq!(names(&ac), vec!["alpha", "gamma"]);
+    assert_ne!(digest(&ab), digest(&ac));
+
+    // The same set named in another order is prefix-stable: the emitted specs
+    // keep the registry's canonical order.
+    assert_eq!(names(&ba), names(&ab));
+    assert_eq!(digest(&ba), digest(&ab));
 }
 
 #[tokio::test]

@@ -28,7 +28,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.0.1"
+version = "0.0.2"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
@@ -37,17 +37,17 @@ homepage = "https://jeanvydes.github.io/Norte/"
 authors = ["Jean Vides <j@vyde.dev>"]
 
 [workspace.dependencies]
-norte-macros = { path = "norte-macros", version = "0.0.1" }
-norte-core = { path = "norte-core", version = "0.0.1" }
-norte-http = { path = "norte-http", version = "0.0.1" }
-norte-anthropic = { path = "norte-anthropic", version = "0.0.1" }
-norte-openai = { path = "norte-openai", version = "0.0.1" }
-norte-gemini = { path = "norte-gemini", version = "0.0.1" }
-norte-tools = { path = "norte-tools", version = "0.0.1" }
-norte-media = { path = "norte-media", version = "0.0.1" }
-norte-testing = { path = "norte-testing", version = "0.0.1" }
-norte-mcp = { path = "norte-mcp", version = "0.0.1" }
-norte-bench-support = { path = "benchmarks/support", version = "0.0.1" }
+norte-macros = { path = "norte-macros", version = "0.0.2" }
+norte-core = { path = "norte-core", version = "0.0.2" }
+norte-http = { path = "norte-http", version = "0.0.2" }
+norte-anthropic = { path = "norte-anthropic", version = "0.0.2" }
+norte-openai = { path = "norte-openai", version = "0.0.2" }
+norte-gemini = { path = "norte-gemini", version = "0.0.2" }
+norte-tools = { path = "norte-tools", version = "0.0.2" }
+norte-media = { path = "norte-media", version = "0.0.2" }
+norte-testing = { path = "norte-testing", version = "0.0.2" }
+norte-mcp = { path = "norte-mcp", version = "0.0.2" }
+norte-bench-support = { path = "benchmarks/support", version = "0.0.2" }
 
 proc-macro2 = "1"
 quote = "1"

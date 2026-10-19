@@ -48,7 +48,8 @@ OPTIONS:
     --help, -h      print this help
 
 Live: needs a key and a route in the environment.
-  OPENROUTER_API_KEY (or BENCH_KEY_ENV), BENCH_ENDPOINT, BENCH_MODEL, BENCH_PROVIDER.
+  OPENROUTER_API_KEY (or BENCH_KEY_ENV), BENCH_ENDPOINT, BENCH_MODEL, BENCH_PROVIDER,
+  BENCH_PAUSE_MS.
 ";
 
 /// One measured turn.
@@ -64,6 +65,7 @@ struct Round {
     other_deltas: u64,
     bytes: u64,
     output_tokens: Option<u64>,
+    cache_read: Option<u64>,
     tokens_per_second: Option<f64>,
     cost: Option<f64>,
 }
@@ -95,9 +97,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut records = Vec::new();
     for round in 0..rounds {
         let engine = build_engine(&route)?;
-        records.push(measure_streaming(&engine, &prompt, options.clone(), round).await?);
+        records.push(
+            measure_streaming(&engine, &prompt, options.clone(), round, route.pause()).await?,
+        );
         let engine = build_engine(&route)?;
-        records.push(measure_buffered(&engine, &prompt, options.clone(), round).await?);
+        records
+            .push(measure_buffered(&engine, &prompt, options.clone(), round, route.pause()).await?);
     }
 
     let report = render(&route, &records, &prompt, rounds);
@@ -111,7 +116,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 fn build_engine(route: &norte_bench_support::Route) -> Result<Engine, Box<dyn Error>> {
     let adapter = route.openai(text_capabilities())?;
-    let probe = norte_bench_support::RecordingOpenAi::new(adapter, new_capture());
+    // The pause is taken by the benchmark, before the clock starts, so it does
+    // not land in either latency figure.
+    let probe = norte_bench_support::RecordingOpenAi::new(adapter, new_capture(), Duration::ZERO);
     Ok(EngineBuilder::new()
         .store(Arc::new(InMemoryStore::new()))
         .blobs(Arc::new(InMemoryBlobStore::new()))
@@ -133,8 +140,12 @@ async fn measure_streaming(
     prompt: &str,
     options: norte_core::TurnOptions,
     round: u64,
+    pause: Duration,
 ) -> Result<Round, Box<dyn Error>> {
     let session = engine.create().await?;
+    if !pause.is_zero() {
+        tokio::time::sleep(pause).await;
+    }
     let started = Instant::now();
     let mut stream = engine
         .turn(session.id)
@@ -183,8 +194,12 @@ async fn measure_buffered(
     prompt: &str,
     options: norte_core::TurnOptions,
     round: u64,
+    pause: Duration,
 ) -> Result<Round, Box<dyn Error>> {
     let session = engine.create().await?;
+    if !pause.is_zero() {
+        tokio::time::sleep(pause).await;
+    }
     let started = Instant::now();
     engine
         .turn(session.id)
@@ -241,6 +256,7 @@ fn assemble(mode: &str, round: u64, counts: &Counts, usage: &Usage) -> Round {
         other_deltas: counts.other_deltas,
         bytes: counts.bytes,
         output_tokens,
+        cache_read: usage.cache_read_tokens,
         tokens_per_second,
         cost: norte_bench_support::cost_of(usage),
     }
@@ -281,7 +297,7 @@ fn as_u64(value: f64) -> u64 {
     value.max(0.0) as u64
 }
 
-const CSV_HEADERS: [&str; 12] = [
+const CSV_HEADERS: [&str; 13] = [
     "mode",
     "round",
     "ttft_ms",
@@ -291,6 +307,7 @@ const CSV_HEADERS: [&str; 12] = [
     "other_deltas",
     "bytes",
     "output_tokens",
+    "cache_read",
     "tokens_per_second",
     "cost",
     "note",
@@ -316,6 +333,9 @@ fn csv_rows(records: &[Round]) -> Vec<Vec<String>> {
                 record.bytes.to_string(),
                 record
                     .output_tokens
+                    .map_or_else(|| "—".to_owned(), |v| v.to_string()),
+                record
+                    .cache_read
                     .map_or_else(|| "—".to_owned(), |v| v.to_string()),
                 record
                     .tokens_per_second
@@ -356,6 +376,13 @@ fn render(
     report.section("Run");
     report.kv(&[
         ("route", route.summary()),
+        (
+            "pause",
+            format!(
+                "{} ms before each request, outside the timer",
+                route.pause_ms
+            ),
+        ),
         ("rounds per mode", rounds.to_string()),
         ("prompt", prompt.to_owned()),
         ("modes", "streaming, buffered".to_owned()),
@@ -374,6 +401,7 @@ fn render(
             let text: u64 = subset.iter().map(|r| r.text_deltas).sum();
             let reasoning: u64 = subset.iter().map(|r| r.reasoning_deltas).sum();
             let output: u64 = subset.iter().filter_map(|r| r.output_tokens).sum();
+            let cache_read: u64 = subset.iter().filter_map(|r| r.cache_read).sum();
             let cost: f64 = subset.iter().filter_map(|r| r.cost).sum();
             vec![
                 (*mode).to_owned(),
@@ -386,6 +414,7 @@ fn render(
                 text.to_string(),
                 reasoning.to_string(),
                 output.to_string(),
+                cache_read.to_string(),
                 format!("{cost:.6}"),
             ]
         })
@@ -402,10 +431,12 @@ fn render(
             "text deltas",
             "reasoning",
             "output tokens",
+            "cache read",
             "cost",
         ],
         &[
             Align::Left,
+            Align::Right,
             Align::Right,
             Align::Right,
             Align::Right,
@@ -441,12 +472,14 @@ fn render(
             "other",
             "bytes",
             "out tokens",
+            "cache read",
             "tok/s",
             "cost",
             "note",
         ],
         &[
             Align::Left,
+            Align::Right,
             Align::Right,
             Align::Right,
             Align::Right,

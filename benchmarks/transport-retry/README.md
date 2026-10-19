@@ -45,7 +45,8 @@ Offline: options are `--rounds <n>`, `--report <p>`, `--jsonl <p>`, `--help`.
   modelled wait, whether the request bytes stayed identical, the median time and
   what was finally surfaced.
 - **Attempts** — every attempt, in order, with the error it saw and the wait the
-  host chose.
+  host chose. An attempt followed by another is `retry`; the last attempt of a
+  policy that stops is `surfaced`, even when the error is transient.
 
 Each run also writes `<stem>.jsonl`, `<stem>-scenarios.csv`,
 `<stem>-attempts.csv` and a manifest beside the markdown.

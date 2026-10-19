@@ -65,7 +65,8 @@ OPTIONS:
     --help, -h      print this help
 
 Live: needs a key and a route in the environment.
-  OPENROUTER_API_KEY (or BENCH_KEY_ENV), BENCH_ENDPOINT, BENCH_MODEL, BENCH_PROVIDER.
+  OPENROUTER_API_KEY (or BENCH_KEY_ENV), BENCH_ENDPOINT, BENCH_MODEL, BENCH_PROVIDER,
+  BENCH_PAUSE_MS.
 ";
 
 /// The instructions both arms carry: the only part of the prefix they share by
@@ -251,7 +252,7 @@ async fn run_arm(
     let adapter = route
         .openai(text_capabilities())
         .map_err(|error| error.to_string())?;
-    let model = RecordingOpenAi::new(adapter, Arc::clone(&captured));
+    let model = RecordingOpenAi::new(adapter, Arc::clone(&captured), route.pause());
     let engine = EngineBuilder::new()
         .store(Arc::new(InMemoryStore::new()))
         .blobs(Arc::new(InMemoryBlobStore::new()))
@@ -633,6 +634,10 @@ fn render(outcome: &Outcome) -> Report {
     report.section("Run");
     report.kv(&[
         ("route", outcome.route.clone()),
+        (
+            "pause",
+            "`BENCH_PAUSE_MS` before each request; the elapsed column includes it".to_owned(),
+        ),
         ("exchanges in the notes", outcome.turns.to_string()),
         ("lines per exchange", outcome.lines.to_string()),
         ("system message", SYSTEM.to_owned()),
@@ -650,6 +655,11 @@ fn render(outcome: &Outcome) -> Report {
         ),
         ("summary", summary().replace('\n', " ")),
     ]);
+    report.paragraph(
+        "**Cold** means the first request of the arm, not a globally cold cache. The notes are \
+         deterministic, so an earlier run with the same prefix can leave a cache that this run's \
+         first request reads; the `cache read` column is the evidence.",
+    );
 
     if let Some(error) = &outcome.error {
         report.section("Error");
@@ -730,6 +740,12 @@ fn render(outcome: &Outcome) -> Report {
              is cheaper than its token count suggests. Read the two rows above against each other \
              — a policy that always compacts would throw that cache away.",
         );
+        report.paragraph(
+            "A byte-identical prefix is necessary, not sufficient: the provider decides whether \
+             it has that prefix cached and which instance serves the request. A zero in `cache \
+             read` beside a byte-identical prefix means the provider did not serve one; it does \
+             not mean the prefix changed.",
+        );
     }
 
     report.section("Per request");
@@ -771,8 +787,8 @@ fn render(outcome: &Outcome) -> Report {
 
     report.section("Prefix reuse");
     for arm in &outcome.arms {
-        if let (Some(first), Some(second)) = (arm.requests.first(), arm.requests.get(1)) {
-            match (first.shared, second.byte_identical) {
+        if let Some(second) = arm.requests.get(1) {
+            match (second.shared, second.byte_identical) {
                 (Some(shared), Some(true)) => report.paragraph(&format!(
                     "**{}**: the warm request carried {shared} message(s) byte-identical to the \
                      cold one (shared digest `{}`), which is the prefix a provider can serve from \

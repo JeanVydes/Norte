@@ -34,8 +34,14 @@ cargo run -p norte-bench-token-counting -- --turns 3
 | `BENCH_ENDPOINT` | *required* | The `OpenAI`-compatible base `URL`. |
 | `BENCH_MODEL` | *required* | The model id. |
 | `BENCH_PROVIDER` | the router decides | Pins the upstream so two runs stay comparable. |
+| `BENCH_PAUSE_MS` | `2000` | Wait before each model request, so an asynchronous provider cache can publish the previous prefix. `0` disables it. |
 
 Options: `--turns <n>`, `--report <p>`, `--jsonl <p>`, `--help`.
+
+The pause is part of the measurement protocol. The session also carries a long,
+fixed system message: the prefix has to clear the provider's caching floor before
+the cache counters in the reconciliation mean anything. With the pause, the later
+turns should report cache reads.
 
 ## The report
 

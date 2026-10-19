@@ -201,6 +201,8 @@ struct Attempt {
     #[serde(rename = "attempt")]
     index: u32,
     ok: bool,
+    /// Whether the host decided to make another attempt after this one.
+    retried: bool,
     kind: Option<String>,
     status: Option<u16>,
     retry_after_ms: Option<u64>,
@@ -496,6 +498,7 @@ async fn run_with_policy(
                 trace.push(Attempt {
                     index: attempt,
                     ok: true,
+                    retried: false,
                     kind: None,
                     status: None,
                     retry_after_ms: None,
@@ -519,6 +522,7 @@ async fn run_with_policy(
                     trace.push(Attempt {
                         index: attempt,
                         ok: false,
+                        retried: true,
                         kind: kind.map(|kind| format!("{kind:?}")),
                         status,
                         retry_after_ms: retry_after.map(millis),
@@ -532,6 +536,7 @@ async fn run_with_policy(
                     trace.push(Attempt {
                         index: attempt,
                         ok: false,
+                        retried: false,
                         kind: kind.map(|kind| format!("{kind:?}")),
                         status,
                         retry_after_ms: retry_after.map(millis),
@@ -597,10 +602,11 @@ fn summary_rows(records: &[ScenarioRecord]) -> Vec<Vec<String>> {
         .collect()
 }
 
-const ATTEMPT_HEADERS: [&str; 8] = [
+const ATTEMPT_HEADERS: [&str; 9] = [
     "scenario",
     "attempt",
     "ok",
+    "retried",
     "kind",
     "status",
     "retry_after_ms",
@@ -616,6 +622,7 @@ fn attempt_rows(records: &[ScenarioRecord]) -> Vec<Vec<String>> {
                 record.scenario.clone(),
                 attempt.index.to_string(),
                 attempt.ok.to_string(),
+                attempt.retried.to_string(),
                 attempt.kind.clone().unwrap_or_default(),
                 attempt.status.map_or_else(String::new, |s| s.to_string()),
                 attempt
@@ -722,8 +729,10 @@ fn render(records: &[ScenarioRecord], rounds: u64) -> Report {
                     attempt.index.to_string(),
                     if attempt.ok {
                         "ok".to_owned()
-                    } else {
+                    } else if attempt.retried {
                         "retry".to_owned()
+                    } else {
+                        "surfaced".to_owned()
                     },
                     attempt.kind.clone().unwrap_or_else(|| "-".to_owned()),
                     attempt
@@ -803,6 +812,10 @@ mod tests {
         let record = run_scenario(&scenario, 1).await;
         assert_eq!(record.attempts, 1, "a 401 must not be retried");
         assert!(!record.trace[0].transient, "a 401 is not transient");
+        assert!(
+            !record.trace[0].retried,
+            "a terminal attempt must be reported as surfaced, not retried"
+        );
     }
 
     #[tokio::test]
@@ -814,5 +827,13 @@ mod tests {
         let record = run_scenario(&scenario, 1).await;
         assert_eq!(record.attempts, scenario.policy.max_attempts);
         assert!(!record.ok);
+        assert!(
+            !record
+                .trace
+                .last()
+                .expect("an exhausted policy has an attempt")
+                .retried,
+            "the last attempt has no successor"
+        );
     }
 }

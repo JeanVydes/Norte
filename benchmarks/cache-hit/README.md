@@ -31,10 +31,17 @@ cargo run -p norte-bench-cache-hit
 | `BENCH_ENDPOINT` | *required* | The `OpenAI`-compatible base `URL`. |
 | `BENCH_MODEL` | *required* | The model id. |
 | `BENCH_PROVIDER` | the router decides | Pins the upstream through the router, so two runs stay comparable. A routing hint, never a price. |
+| `BENCH_PAUSE_MS` | `2000` | Wait before each model request, so an asynchronous provider cache can publish the previous prefix. `0` disables it and measures a back-to-back host. |
 
 Nothing external is defaulted in the source: a missing variable is an error that
 names it. `--help` prints this, `--report <path>` writes the report somewhere
 other than `results/`, and `--jsonl <path>` writes the trail elsewhere.
+
+The pause is part of the protocol. Provider caches are published
+asynchronously: requests fired immediately one after another can both miss a
+prefix that is readable a second later. The default gives the cache that second;
+`BENCH_PAUSE_MS=0` keeps the old back-to-back pace and is useful only when that
+pace is exactly what is being measured.
 
 The prompt has to be past the provider's caching floor — often about a thousand
 tokens — so the system message is long on purpose. Whether a hit is *reported* is

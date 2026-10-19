@@ -1,6 +1,7 @@
 //! A model wrapper that records the exact wire body of every request.
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -33,16 +34,28 @@ pub struct RequestRecord {
 
 /// An `OpenAI`-chat model that records every request body and then makes the
 /// call anyway, so a benchmark stays live: what is recorded is what was sent.
+///
+/// Before each request it waits `pause`, so a provider's asynchronous prefix
+/// cache has time to publish the request before it. That is a property of the
+/// measurement protocol, not of the model: without it, two turns fired back to
+/// back can both miss a cache that would have served the second one a moment
+/// later.
 pub struct RecordingOpenAi {
     inner: OpenAiChat,
     captured: Captured,
+    pause: Duration,
 }
 
 impl RecordingOpenAi {
-    /// Wraps an adapter and the record it appends to.
+    /// Wraps an adapter, the record it appends to, and the pause before each
+    /// request.
     #[must_use]
-    pub fn new(inner: OpenAiChat, captured: Captured) -> Self {
-        Self { inner, captured }
+    pub fn new(inner: OpenAiChat, captured: Captured, pause: Duration) -> Self {
+        Self {
+            inner,
+            captured,
+            pause,
+        }
     }
 
     /// The requests recorded so far.
@@ -67,6 +80,9 @@ impl Model for RecordingOpenAi {
     }
 
     async fn stream(&self, request: ModelRequest) -> norte_core::Result<ModelStream> {
+        if !self.pause.is_zero() {
+            tokio::time::sleep(self.pause).await;
+        }
         let body = self.inner.request_body(&request)?;
         {
             let mut captured = self

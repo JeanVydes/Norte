@@ -33,9 +33,13 @@ cargo run -p norte-bench-long-context -- --turns 32 --lines 8
 | `BENCH_ENDPOINT` | *required* | The `OpenAI`-compatible base `URL`. |
 | `BENCH_MODEL` | *required* | The model id. |
 | `BENCH_PROVIDER` | the router decides | Pins the upstream so two runs stay comparable. |
+| `BENCH_PAUSE_MS` | `2000` | Wait before each model request, so an asynchronous provider cache can publish the previous prefix. `0` disables it. |
 
 Options: `--turns <n>` (exchanges in the notes, default 32), `--lines <n>` (lines
 per exchange, default 8), `--report <p>`, `--jsonl <p>`, `--help`.
+
+The pause is included in the elapsed columns. It matters here because the warm
+follow-up is exactly the request that should reuse the cold request's prefix.
 
 Nothing external is defaulted in the source: a missing variable is an error that
 names it. `--report` and `--jsonl` write elsewhere than `results/`.
@@ -75,10 +79,25 @@ a manifest beside the markdown.
   the provider's cache, so the whole arm may cost less than its input tokens
   suggest. Compare the two rows and the `cache read` column before choosing a
   policy.
+- **Cold means first in the arm, not globally cold.** The notes are deterministic,
+  so a previous run with the same prefix can leave a cache that this run's first
+  request reads. The `cache read` column is the evidence; a zero beside a
+  byte-identical prefix means the provider did not serve one, not that the prefix
+  changed.
 - **The notes are deterministic.** The transcript is generated from the run's
   `--turns` and `--lines`, so two runs on the same route send the same bytes.
 
 ## Results
 
-No canonical result is committed yet: the benchmark is implemented and linted,
-but it has not been run against a live provider. Run it before citing a number.
+Canonical run: `results/2026-10-19T200009-baidu-deepseek-deepseek-v4-flash-0731.md`
+(`deepseek/deepseek-v4-flash-0731` at Baidu, 2 s pause).
+
+| arm | requests | input | cache read | output | cost |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| whole | 2 | 30,271 | 28,672 | 418 | $0.000489 |
+| compacted | 2 | 480 | 0 | 148 | $0.000120 |
+
+The whole transcript cost 75.5% more than the summary on this run; the cold
+request still read 14,336 tokens from a cache left by an earlier deterministic
+run, so the saving is smaller than the 98.5% input reduction. The two answers are
+quoted in the report and are not graded.

@@ -90,7 +90,8 @@ OPTIONS:
     --help, -h      print this help
 
 Live: needs a key and a route in the environment.
-  OPENROUTER_API_KEY (or BENCH_KEY_ENV), BENCH_ENDPOINT, BENCH_MODEL, BENCH_PROVIDER.
+  OPENROUTER_API_KEY (or BENCH_KEY_ENV), BENCH_ENDPOINT, BENCH_MODEL, BENCH_PROVIDER,
+  BENCH_PAUSE_MS.
 ";
 
 #[tokio::main]
@@ -667,6 +668,10 @@ fn render_report(bench: &Bench, closing: &str, route: &Route, started: DateTime<
                 .unwrap_or_else(|| "the router decides".to_owned()),
         ),
         ("endpoint", format!("`{}`", route.endpoint)),
+        (
+            "pause",
+            format!("{} ms before each request", route.pause_ms),
+        ),
         ("phases", "normal, tool, approval, export".to_owned()),
     ]);
 
@@ -674,6 +679,14 @@ fn render_report(bench: &Bench, closing: &str, route: &Route, started: DateTime<
     report.code("sh", &reproduce(route));
 
     report.section("Turns");
+    report.paragraph(if route.pause_ms == 0 {
+        "No pause is inserted between requests; a provider cache sees exactly the pace the host \
+         would produce."
+    } else {
+        "Every request waits `BENCH_PAUSE_MS` before it is sent, so the provider can publish the \
+         prefix cache of the request before it. The wait is included in the elapsed column and is \
+         protocol, not model time."
+    });
     report.table(
         &["phase", "turn", "elapsed"],
         &[Align::Left, Align::Left, Align::Right],
@@ -738,6 +751,7 @@ fn reproduce(route: &Route) -> String {
     if let Some(provider) = &route.provider {
         let _ = writeln!(out, "export BENCH_PROVIDER={provider}");
     }
+    let _ = writeln!(out, "export BENCH_PAUSE_MS={}", route.pause_ms);
     out.push_str("cargo run -p norte-bench-cache-hit");
     out
 }
@@ -965,7 +979,11 @@ fn new_engine(route: &Route) -> Result<(Engine, Captured), Box<dyn Error>> {
         "deploying touches production",
     ))]);
     let captured = new_capture();
-    let model = RecordingOpenAi::new(route.openai(tool_capabilities())?, Arc::clone(&captured));
+    let model = RecordingOpenAi::new(
+        route.openai(tool_capabilities())?,
+        Arc::clone(&captured),
+        route.pause(),
+    );
     let engine = EngineBuilder::new()
         .store(Arc::new(InMemoryStore::new()))
         .blobs(Arc::new(InMemoryBlobStore::new()))
@@ -1051,6 +1069,7 @@ mod tests {
             endpoint: "https://example.test/v1".to_owned(),
             provider: Some("test".to_owned()),
             key_env: "TEST_KEY".to_owned(),
+            pause_ms: 0,
         };
         let report = render_report(&bench, "closing", &route, Utc::now()).finish();
         assert!(report.contains("test/model"));

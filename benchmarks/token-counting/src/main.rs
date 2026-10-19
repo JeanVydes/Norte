@@ -25,6 +25,7 @@
 //! ```
 
 use std::error::Error;
+use std::fmt::Write as _;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -49,6 +50,8 @@ OPTIONS:
     --help, -h      print this help
 
 Live: needs a key and a route in the environment.
+  OPENROUTER_API_KEY (or BENCH_KEY_ENV), BENCH_ENDPOINT, BENCH_MODEL, BENCH_PROVIDER,
+  BENCH_PAUSE_MS.
 ";
 
 const PROMPTS: [&str; 6] = [
@@ -59,6 +62,24 @@ const PROMPTS: [&str; 6] = [
     "In one sentence: what is streaming?",
     "In one sentence: what is a tool call?",
 ];
+
+/// A long, fixed system message: the prefix has to clear the provider's caching
+/// floor before the cache counters in the reconciliation mean anything. The
+/// rules are deliberately dull; they exist to be re-read, not to be answered.
+fn system() -> String {
+    let mut text = String::from(
+        "You are a concise assistant. Answer the user in one sentence, in plain text. The rules \
+         below are part of the session and never change.\n\n",
+    );
+    for index in 0..64 {
+        let _ = writeln!(
+            text,
+            "Rule {index:02}: keep the ledger append-only; name every request; never rewrite a \
+             committed message; the whole prefix is re-read on every turn."
+        );
+    }
+    text
+}
 
 /// One usage record, with the vendor's own payload beside it.
 #[derive(Serialize, Clone)]
@@ -161,7 +182,8 @@ async fn measure_inner(
     let adapter = route
         .openai(text_capabilities())
         .map_err(|e| e.to_string())?;
-    let probe = norte_bench_support::RecordingOpenAi::new(adapter, Arc::clone(&captured));
+    let probe =
+        norte_bench_support::RecordingOpenAi::new(adapter, Arc::clone(&captured), route.pause());
     let engine = EngineBuilder::new()
         .store(Arc::new(InMemoryStore::new()))
         .blobs(Arc::new(InMemoryBlobStore::new()))
@@ -169,6 +191,10 @@ async fn measure_inner(
         .build()
         .map_err(|e| e.to_string())?;
     let session = engine.create().await.map_err(|e| e.to_string())?;
+    engine
+        .append_history(session.id, vec![Message::system(system())])
+        .await
+        .map_err(|e| e.to_string())?;
 
     for turn in 0..turns {
         let prompt = PROMPTS[usize::try_from(turn).unwrap_or(0) % PROMPTS.len()];
@@ -310,6 +336,14 @@ fn render(route: &norte_bench_support::Route, verdict: &Verdict) -> Report {
     report.section("Run");
     report.kv(&[
         ("route", route.summary()),
+        (
+            "pause",
+            format!("{} ms before each request", route.pause_ms),
+        ),
+        (
+            "system prefix",
+            format!("{} bytes, so the cache floor is cleared", system().len()),
+        ),
         ("user turns", verdict.turns.to_string()),
         (
             "verdict",

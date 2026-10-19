@@ -54,9 +54,9 @@ a bill the library never had to guess.
 An agent's cost is not one request; it is the transcript re-sent once per
 iteration, and the transcript grows by every tool result. A three-task coding
 session in this repository's own benchmark (`benchmarks/agent-cost`) shows the
-shape: the cheap run spent 13 requests, the expensive one 36 — same model, same
-tasks, same route — because the model spent one of them guessing at a tool
-schema until the iteration budget ran out.
+shape: the three tasks spent 9, 10 and 13 requests, and 14 of 41 tool calls were
+refused — most from guessing at the `command` schema — and every refusal was a
+billed request of its own.
 
 Two things follow:
 

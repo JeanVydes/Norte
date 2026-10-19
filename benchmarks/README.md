@@ -36,9 +36,28 @@ come from there, so two benchmarks write their results the same way.
 ## How to read a result
 
 Compare only runs that agree on the lines in the report's *The run* table: the
-model, the provider, the endpoint, the budget and the commit. A different route
-is a different measurement, and run-to-run variance on the same route is normal —
-the model decides how many requests a task takes.
+model, the provider, the endpoint, the pause, the budget and the commit. A
+different route is a different measurement, and run-to-run variance on the same
+route is normal — the model decides how many requests a task takes.
+
+## Pacing the provider cache
+
+A provider's prefix cache is written asynchronously. Two requests fired back to
+back can both miss a prefix that would have been readable a moment later, which
+makes a cache measurement look like a provider bug when it is only the pace of
+the benchmark. Every live benchmark therefore waits `BENCH_PAUSE_MS` before each
+model request. The default is **2000 ms**; `BENCH_PAUSE_MS=0` restores the
+back-to-back pace for a host that wants to measure exactly that.
+
+The pause is part of the protocol: it is written into the route line of every
+report and into the manifest. `latency` takes the wait before it starts its
+timer, so neither TTFT nor turn time includes it. The other live benchmarks
+include it in any elapsed column and say so. A result produced before the pause
+was introduced is not comparable with one produced after it.
+
+`agent-cost`, `cache-hit`, `latency`, `long-context`, `schema-friction`,
+`token-counting` and `tool-loop` all report the provider's `cache read`, so the
+effect of the pace is visible rather than assumed.
 
 ## Index
 
@@ -47,7 +66,7 @@ the model decides how many requests a task takes.
 | [`agent-cost`](agent-cost) | What a coding agent costs on an existing crate, per request, per task and in total | runs |
 | [`cache-hit`](cache-hit) | What survives a turn, a tool call, a park and an export: cache reads, the bill and the latency of each request | runs |
 | [`latency`](latency) | Time to first token and time per turn, streaming against `finish()` | runs |
-| [`long-context`](long-context) | A long session kept whole against the same session with its history compacted | implemented, not run yet |
+| [`long-context`](long-context) | A long session kept whole against the same session with its history compacted | runs |
 | [`roundtrip-fidelity`](roundtrip-fidelity) | Export and import over many sessions, four wires, byte for byte | runs |
 | [`schema-friction`](schema-friction) | How many requests a model spends getting a tool call the schema accepts | runs |
 | [`token-counting`](token-counting) | The provider's counters against the engine's accounting | runs |
@@ -58,8 +77,9 @@ the model decides how many requests a task takes.
 call a live provider and need a key. `roundtrip-fidelity` and `transport-retry`
 are offline and deterministic, and run in CI.
 
-`long-context` is implemented and linted but has no canonical result yet: run it
-before citing a number.
+Every live benchmark now has a canonical run with the 2 s pause. Compare only
+runs that agree on route, model and `BENCH_PAUSE_MS`; the old unpinned results
+are in git history and are not comparable.
 
 ## Proposed
 

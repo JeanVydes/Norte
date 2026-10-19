@@ -52,6 +52,8 @@ OPTIONS:
 
 The matrix crosses declared tools (1 vs 5) with transcript size (0 vs --prior
 turns). Live: needs a key and a route in the environment.
+  OPENROUTER_API_KEY (or BENCH_KEY_ENV), BENCH_ENDPOINT, BENCH_MODEL, BENCH_PROVIDER,
+  BENCH_PAUSE_MS.
 ";
 
 // ── the tools ───────────────────────────────────────────────────────────────
@@ -326,7 +328,8 @@ async fn one_round(
     let adapter = route
         .openai(text_capabilities())
         .map_err(|e| e.to_string())?;
-    let probe = norte_bench_support::RecordingOpenAi::new(adapter, Arc::clone(&captured));
+    let probe =
+        norte_bench_support::RecordingOpenAi::new(adapter, Arc::clone(&captured), route.pause());
     let engine = EngineBuilder::new()
         .store(Arc::new(InMemoryStore::new()))
         .blobs(Arc::new(InMemoryBlobStore::new()))
@@ -561,6 +564,13 @@ fn render(route: &norte_bench_support::Route, records: &[ConfigRecord], rounds: 
     report.section("Run");
     report.kv(&[
         ("route", route.summary()),
+        (
+            "pause",
+            format!(
+                "{} ms before each request; the elapsed column includes it",
+                route.pause_ms
+            ),
+        ),
         ("rounds per configuration", rounds.to_string()),
         ("ask", PROMPT.to_owned()),
     ]);

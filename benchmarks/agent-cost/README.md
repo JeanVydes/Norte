@@ -38,10 +38,15 @@ cargo run -p norte-bench-agent-cost
 | `BENCH_ENDPOINT` | *required* | The `OpenAI`-compatible base `URL`. |
 | `BENCH_MODEL` | *required* | The model id. |
 | `BENCH_PROVIDER` | the router decides | Pins the upstream through the router, so two runs stay comparable. A routing hint, never a price. |
+| `BENCH_PAUSE_MS` | `2000` | Wait before each model request, so an asynchronous provider cache can publish the previous prefix. `0` disables it. |
 
 Nothing external is defaulted in the source: a missing variable is an error that
 names it. `--help` prints this, `--report <path>` writes the report somewhere
 other than `results/`, and `--jsonl <path>` writes the trail elsewhere.
+
+The pause is part of the measurement protocol, not model time: without it, a
+request fired immediately after another can miss a prefix the provider would have
+cached a moment later.
 
 ## The report
 

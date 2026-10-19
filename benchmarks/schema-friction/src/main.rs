@@ -48,6 +48,8 @@ OPTIONS:
 
 Three shapes are exercised with a trap ask: a flat string, an enum, and a nested
 object with `deny_unknown_fields`. Live: needs a key and a route.
+  OPENROUTER_API_KEY (or BENCH_KEY_ENV), BENCH_ENDPOINT, BENCH_MODEL, BENCH_PROVIDER,
+  BENCH_PAUSE_MS.
 ";
 
 // ── the schemas, from easy to awkward ───────────────────────────────────────
@@ -204,6 +206,7 @@ struct Round {
     answered: bool,
     input_tokens: u64,
     output_tokens: u64,
+    cache_read: u64,
     cost: f64,
     micros: u64,
 }
@@ -219,8 +222,11 @@ struct SchemaRecord {
     rejected: u64,
     accepted: u64,
     answered: u64,
+    /// Rounds in which the model actually called the tool at least once.
+    called_rounds: u64,
     input_tokens: u64,
     output_tokens: u64,
+    cache_read_tokens: u64,
     cost: f64,
     median_micros: u64,
     detail: Vec<Round>,
@@ -286,8 +292,10 @@ async fn run_scenario(
         rejected: detail.iter().map(|round| round.rejected).sum(),
         accepted: detail.iter().map(|round| round.accepted).sum(),
         answered: detail.iter().filter(|round| round.answered).count() as u64,
+        called_rounds: detail.iter().filter(|round| round.calls > 0).count() as u64,
         input_tokens: detail.iter().map(|round| round.input_tokens).sum(),
         output_tokens: detail.iter().map(|round| round.output_tokens).sum(),
+        cache_read_tokens: detail.iter().map(|round| round.cache_read).sum(),
         cost: detail.iter().map(|round| round.cost).sum(),
         median_micros: micros.get(micros.len() / 2).copied().unwrap_or(0),
         detail,
@@ -305,7 +313,8 @@ async fn one_round(
     let adapter = route
         .openai(text_capabilities())
         .map_err(|e| e.to_string())?;
-    let probe = norte_bench_support::RecordingOpenAi::new(adapter, Arc::clone(&captured));
+    let probe =
+        norte_bench_support::RecordingOpenAi::new(adapter, Arc::clone(&captured), route.pause());
     let engine = EngineBuilder::new()
         .store(Arc::new(InMemoryStore::new()))
         .blobs(Arc::new(InMemoryBlobStore::new()))
@@ -357,6 +366,7 @@ async fn one_round(
         answered,
         input_tokens: totals.input,
         output_tokens: totals.output,
+        cache_read: totals.cache_read,
         cost: totals.cost,
         micros,
     })
@@ -395,7 +405,7 @@ fn text_capabilities() -> Capabilities {
         .build()
 }
 
-const SUMMARY_HEADERS: [&str; 11] = [
+const SUMMARY_HEADERS: [&str; 12] = [
     "schema",
     "shape",
     "trap",
@@ -405,6 +415,7 @@ const SUMMARY_HEADERS: [&str; 11] = [
     "rejected",
     "accepted",
     "answered",
+    "called",
     "median_micros",
     "error",
 ];
@@ -423,6 +434,7 @@ fn summary_rows(records: &[SchemaRecord]) -> Vec<Vec<String>> {
                 record.rejected.to_string(),
                 record.accepted.to_string(),
                 record.answered.to_string(),
+                record.called_rounds.to_string(),
                 record.median_micros.to_string(),
                 record.error.clone().unwrap_or_default(),
             ]
@@ -430,7 +442,7 @@ fn summary_rows(records: &[SchemaRecord]) -> Vec<Vec<String>> {
         .collect()
 }
 
-const ROUND_HEADERS: [&str; 10] = [
+const ROUND_HEADERS: [&str; 11] = [
     "schema",
     "round",
     "requests",
@@ -440,6 +452,7 @@ const ROUND_HEADERS: [&str; 10] = [
     "answered",
     "input_tokens",
     "output_tokens",
+    "cache_read",
     "cost",
 ];
 
@@ -457,6 +470,7 @@ fn round_rows(records: &[SchemaRecord]) -> Vec<Vec<String>> {
                 round.answered.to_string(),
                 round.input_tokens.to_string(),
                 round.output_tokens.to_string(),
+                round.cache_read.to_string(),
                 format!("{:.6}", round.cost),
             ]);
         }
@@ -476,6 +490,13 @@ fn render(route: &norte_bench_support::Route, records: &[SchemaRecord], rounds: 
     report.section("Run");
     report.kv(&[
         ("route", route.summary()),
+        (
+            "pause",
+            format!(
+                "{} ms before each request; the elapsed column includes it",
+                route.pause_ms
+            ),
+        ),
         ("rounds per schema", rounds.to_string()),
         ("shapes", records.len().to_string()),
     ]);
@@ -493,8 +514,10 @@ fn render(route: &norte_bench_support::Route, records: &[SchemaRecord], rounds: 
                 record.rejected.to_string(),
                 record.accepted.to_string(),
                 format!("{}/{}", record.answered, record.rounds),
+                format!("{}/{}", record.called_rounds, record.rounds),
                 record.input_tokens.to_string(),
                 record.output_tokens.to_string(),
+                record.cache_read_tokens.to_string(),
                 format!("{:.6}", record.cost),
                 record.error.clone().unwrap_or_default(),
             ]
@@ -502,13 +525,27 @@ fn render(route: &norte_bench_support::Route, records: &[SchemaRecord], rounds: 
         .collect();
     report.table(
         &[
-            "schema", "shape", "trap", "requests", "calls", "rejected", "accepted", "answered",
-            "input", "output", "cost", "error",
+            "schema",
+            "shape",
+            "trap",
+            "requests",
+            "calls",
+            "rejected",
+            "accepted",
+            "answered",
+            "called",
+            "input",
+            "output",
+            "cache read",
+            "cost",
+            "error",
         ],
         &[
             Align::Left,
             Align::Left,
             Align::Left,
+            Align::Right,
+            Align::Right,
             Align::Right,
             Align::Right,
             Align::Right,
@@ -544,6 +581,7 @@ fn render(route: &norte_bench_support::Route, records: &[SchemaRecord], rounds: 
                     round.answered.to_string(),
                     round.input_tokens.to_string(),
                     round.output_tokens.to_string(),
+                    round.cache_read.to_string(),
                     format!("{:.6}", round.cost),
                 ]
             })
@@ -551,11 +589,21 @@ fn render(route: &norte_bench_support::Route, records: &[SchemaRecord], rounds: 
         .collect();
     report.table(
         &[
-            "schema", "round", "requests", "calls", "rejected", "accepted", "answered", "input",
-            "output", "cost",
+            "schema",
+            "round",
+            "requests",
+            "calls",
+            "rejected",
+            "accepted",
+            "answered",
+            "input",
+            "output",
+            "cache read",
+            "cost",
         ],
         &[
             Align::Left,
+            Align::Right,
             Align::Right,
             Align::Right,
             Align::Right,
@@ -572,11 +620,28 @@ fn render(route: &norte_bench_support::Route, records: &[SchemaRecord], rounds: 
     report.section("Reading");
     let rejected: u64 = records.iter().map(|record| record.rejected).sum();
     let requests: u64 = records.iter().map(|record| record.requests).sum();
+    let rounds: u64 = records.iter().map(|record| record.rounds).sum();
+    let called: u64 = records.iter().map(|record| record.called_rounds).sum();
+    let uncalled: Vec<&str> = records
+        .iter()
+        .filter(|record| record.called_rounds == 0)
+        .map(|record| record.schema.as_str())
+        .collect();
+    let uncalled = if uncalled.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " The {} row(s) answered without ever calling the tool, so their zero rejects are \
+             not evidence about the schema.",
+            uncalled.join(", ")
+        )
+    };
     report.paragraph(&format!(
         "Across {requests} requests the schema rejected {rejected} call(s). A rejected call is \
          a whole extra request — the transcript, the schemas and the failed arguments again — \
-         so the count is a cost, not a footnote. A shape with zero rejected calls is a schema \
-         the model got right the first time."
+         so the count is a cost, not a footnote. The model called the tool in {called} of \
+         {rounds} rounds: a shape with zero rejected calls is a schema success only when that \
+         count is nonzero.{uncalled}"
     ));
     report
 }

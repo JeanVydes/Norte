@@ -33,8 +33,12 @@ cargo run -p norte-bench-schema-friction -- --rounds 3
 | `BENCH_ENDPOINT` | *required* | The `OpenAI`-compatible base `URL`. |
 | `BENCH_MODEL` | *required* | The model id. |
 | `BENCH_PROVIDER` | the router decides | Pins the upstream so two runs stay comparable. |
+| `BENCH_PAUSE_MS` | `2000` | Wait before each model request, so an asynchronous provider cache can publish the previous prefix. `0` disables it. |
 
 Options: `--rounds <n>`, `--report <p>`, `--jsonl <p>`, `--help`.
+
+The pause is included in the elapsed column. It gives a tool-loop request or a
+repeat round a chance to hit the prefix cache instead of racing its publication.
 
 ## The report
 
@@ -51,7 +55,9 @@ and a manifest beside the markdown.
 
 - **A rejected call is a whole extra request** — the transcript, the schemas and
   the failed arguments again. That is why the count is a cost.
-- **Zero rejects is a finding, not a failure.** A schema the model gets right the
-  first time is the outcome a schema author wants.
+- **Zero rejects is only a schema finding if the tool was called.** The
+  `called` column counts the rounds in which the model actually invoked the
+  tool. A row that answered without calling did not exercise the schema, so its
+  zero rejects says nothing about the shape.
 - **The bill is the provider's.** Cost is summed from the `usage.cost` the
-  response carried.
+  response carried. The pause is included in the elapsed column.

@@ -79,7 +79,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
 use norte_bench_support::report::{Align, Report};
-use norte_bench_support::{Mode, Route, Run};
+use norte_bench_support::{Mode, RecordingOpenAi, Route, Run, captured as new_capture};
 use norte_core::{
     Capabilities, Decision, Engine, EngineBuilder, EngineConfig, EngineEvent, InMemoryBlobStore,
     InMemoryStore, Message, Modality, Part, Policy, PolicySet, PolicyView, SessionId, StreamDelta,
@@ -260,7 +260,8 @@ OPTIONS:
     --help, -h      print this help
 
 Live: needs a key and a route in the environment.
-  OPENROUTER_API_KEY (or BENCH_KEY_ENV), BENCH_ENDPOINT, BENCH_MODEL, BENCH_PROVIDER.
+  OPENROUTER_API_KEY (or BENCH_KEY_ENV), BENCH_ENDPOINT, BENCH_MODEL, BENCH_PROVIDER,
+  BENCH_PAUSE_MS.
 ";
 
 #[tokio::main]
@@ -299,6 +300,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .join(", ")
     );
     println!("provider: {provider}");
+    println!("pause:    {} ms before each request", route.pause_ms);
     println!(
         "money:    the `usage.cost` every response reports, summed; the benchmark applies no price \
          of its own\n"
@@ -1007,6 +1009,10 @@ fn render_report(
         ("model", format!("`{}`", route.model)),
         ("provider", provider),
         ("endpoint", format!("`{}`", route.endpoint)),
+        (
+            "pause",
+            format!("{} ms before each request", route.pause_ms),
+        ),
         ("norte", env!("CARGO_PKG_VERSION").to_owned()),
         (
             "budget",
@@ -1101,6 +1107,7 @@ fn reproduce(route: &Route) -> String {
     if let Some(provider) = &route.provider {
         let _ = writeln!(out, "export BENCH_PROVIDER={provider}");
     }
+    let _ = writeln!(out, "export BENCH_PAUSE_MS={}", route.pause_ms);
     out.push_str("cargo run -p norte-bench-agent-cost");
     out
 }
@@ -1576,10 +1583,12 @@ fn engine(root: &Path, route: &Route) -> Result<Engine, Box<dyn Error>> {
         .streaming(StreamingGranularity::Delta)
         .tool_kind(ToolKind::Function)
         .build();
+    let adapter = route.openai(capabilities)?;
+    let probe = RecordingOpenAi::new(adapter, new_capture(), route.pause());
     let engine = EngineBuilder::new()
         .store(Arc::new(InMemoryStore::new()))
         .blobs(Arc::new(InMemoryBlobStore::new()))
-        .model(Arc::new(route.openai(capabilities)?))
+        .model(Arc::new(probe))
         .tools(tools)
         .policies(policies)
         // A real coding agent reads, edits and reads back over a dozen times; the
@@ -1640,6 +1649,7 @@ mod tests {
             endpoint: "https://example.test/v1".to_owned(),
             provider: Some("test".to_owned()),
             key_env: "TEST_KEY".to_owned(),
+            pause_ms: 0,
         }
     }
 

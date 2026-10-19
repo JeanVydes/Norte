@@ -31,9 +31,14 @@ cargo run -p norte-bench-tool-loop -- --rounds 1 --prior 3
 | `BENCH_ENDPOINT` | *required* | The `OpenAI`-compatible base `URL`. |
 | `BENCH_MODEL` | *required* | The model id. |
 | `BENCH_PROVIDER` | the router decides | Pins the upstream so two runs stay comparable. |
+| `BENCH_PAUSE_MS` | `2000` | Wait before each model request, so an asynchronous provider cache can publish the previous prefix. `0` disables it. |
 
 Options: `--rounds <n>`, `--prior <n>`, `--report <p>`, `--jsonl <p>`, `--help`.
 The matrix crosses declared tools (1 vs 5) with transcript size (0 vs `--prior`).
+
+The pause is included in the median turn time. It matters most for the second
+request of a tool loop, which otherwise follows the first by no more than the
+tool's local execution time.
 
 ## The report
 
@@ -57,3 +62,7 @@ Each run also writes `<stem>.jsonl`, `<stem>-configs.csv`,
   prefix is billed again.
 - **The bill is the provider's.** The benchmark sums the `usage.cost` field the
   response carried; it never applies a rate.
+- **The cache read column is also a routing measurement.** Pin `BENCH_PROVIDER`:
+  with a free router, two requests of the same loop can land on different
+  upstreams, each with its own cache. The pause gives a pinned cache the moment
+  it needs; it cannot make a different upstream share one.

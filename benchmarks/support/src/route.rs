@@ -1,11 +1,16 @@
 //! The route a live benchmark talks to: model, endpoint and provider pin.
 
 use std::error::Error;
+use std::time::Duration;
 
 use norte_core::{Capabilities, ModelId, ModelRef, ProviderId, TurnOptions, WireFamily};
 use norte_http::{AuthScheme, VendorProfile};
 use norte_openai::{OpenAiChat, WIRE_CHAT};
 use serde::Serialize;
+
+/// The default pause before each model request: long enough for a provider's
+/// asynchronous prefix cache to publish the request before it.
+pub const DEFAULT_PAUSE_MS: u64 = 2_000;
 
 /// An `OpenAI`-compatible route, read from the environment.
 #[derive(Debug, Clone, Serialize)]
@@ -18,6 +23,8 @@ pub struct Route {
     pub provider: Option<String>,
     /// The environment variable that holds the key.
     pub key_env: String,
+    /// Pause before each model request, in milliseconds. Zero disables it.
+    pub pause_ms: u64,
 }
 
 impl Route {
@@ -28,13 +35,29 @@ impl Route {
     ///
     /// Returns a message naming the first variable that is missing.
     pub fn from_env() -> Result<Self, Box<dyn Error>> {
+        let pause_ms = std::env::var("BENCH_PAUSE_MS")
+            .ok()
+            .map(|raw| {
+                raw.parse::<u64>().map_err(|_| {
+                    format!("BENCH_PAUSE_MS must be a whole number of milliseconds, got `{raw}`")
+                })
+            })
+            .transpose()?
+            .unwrap_or(DEFAULT_PAUSE_MS);
         Ok(Self {
             model: required("BENCH_MODEL", "deepseek/deepseek-v4-flash-0731")?,
             endpoint: required("BENCH_ENDPOINT", "https://openrouter.ai/api/v1")?,
             provider: std::env::var("BENCH_PROVIDER").ok(),
             key_env: std::env::var("BENCH_KEY_ENV")
                 .unwrap_or_else(|_| "OPENROUTER_API_KEY".to_owned()),
+            pause_ms,
         })
+    }
+
+    /// The pause to take before each model request.
+    #[must_use]
+    pub fn pause(&self) -> Duration {
+        Duration::from_millis(self.pause_ms)
     }
 
     /// Builds the `OpenAI`-chat adapter for this route.
@@ -83,10 +106,11 @@ impl Route {
     #[must_use]
     pub fn summary(&self) -> String {
         format!(
-            "{} at {} ({})",
+            "{} at {} ({}; pause {} ms)",
             self.model,
             self.endpoint,
-            self.provider.as_deref().unwrap_or("the router decides")
+            self.provider.as_deref().unwrap_or("the router decides"),
+            self.pause_ms
         )
     }
 }

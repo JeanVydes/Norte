@@ -28,10 +28,15 @@ cargo run -p norte-bench-latency -- --rounds 5
 | `BENCH_ENDPOINT` | *required* | The `OpenAI`-compatible base `URL`. |
 | `BENCH_MODEL` | *required* | The model id. |
 | `BENCH_PROVIDER` | the router decides | Pins the upstream so two runs stay comparable. |
+| `BENCH_PAUSE_MS` | `2000` | Wait before each model request, so an asynchronous provider cache can publish the previous prefix. `0` disables it. |
 
 Nothing external is defaulted in the source: a missing variable is an error that
 names it. Options: `--rounds <n>`, `--prompt <s>`, `--report <p>`, `--jsonl <p>`,
 `--help`.
+
+The wait is taken **before** the timer starts, so neither TTFT nor turn time
+includes it. The cache read is reported per round: after the first request, the
+same ask should be served from the prefix cache.
 
 ## The report
 

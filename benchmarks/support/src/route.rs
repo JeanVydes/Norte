@@ -45,7 +45,7 @@ impl Route {
             .transpose()?
             .unwrap_or(DEFAULT_PAUSE_MS);
         Ok(Self {
-            model: required("BENCH_MODEL", "deepseek/deepseek-v4-flash-0731")?,
+            model: required("BENCH_MODEL", "deepseek/deepseek-v4.1-flash-1017")?,
             endpoint: required("BENCH_ENDPOINT", "https://openrouter.ai/api/v1")?,
             provider: std::env::var("BENCH_PROVIDER").ok(),
             key_env: std::env::var("BENCH_KEY_ENV")
@@ -84,11 +84,12 @@ impl Route {
     }
 
     /// The turn options a benchmark starts from: an output ceiling and an
-    /// explicit route order when the run pins an upstream.
+    /// explicit provider restriction when the run pins an upstream.
     ///
     /// Pinning is not about the price — the response carries that. It is what
     /// makes two runs comparable, because with a router free to choose, two
-    /// turns of one conversation can land on different endpoints.
+    /// turns of one conversation can land on different endpoints. `only`, not
+    /// `order`, is what pins a provider tag such as `deepinfra/fp8/flex`.
     #[must_use]
     pub fn turn_options(&self, max_output_tokens: u64) -> TurnOptions {
         let mut options = TurnOptions::default();
@@ -96,7 +97,7 @@ impl Route {
         if let Some(provider) = &self.provider {
             options.extensions.insert(
                 "openai.chat:provider".to_owned(),
-                serde_json::json!({ "order": [provider], "allow_fallbacks": false }),
+                serde_json::json!({ "only": [provider], "allow_fallbacks": false }),
             );
         }
         options

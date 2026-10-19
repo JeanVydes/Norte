@@ -47,7 +47,7 @@ Switching providers is now an environment change:
 ```sh
 MODEL=openai/gpt-5 API_KEY=sk-...        cargo run
 MODEL=anthropic/claude-sonnet-4-5 API_KEY=sk-ant-... cargo run
-MODEL=compatible/deepseek/deepseek-v4-flash-0731 BASE_URL=https://openrouter.ai/api/v1 API_KEY=sk-or-... cargo run
+MODEL=compatible/deepseek/deepseek-v4.1-flash-1017 BASE_URL=https://openrouter.ai/api/v1 API_KEY=sk-or-... cargo run
 ```
 
 ## Declare capabilities with the model
@@ -91,7 +91,7 @@ comparable:
 let mut options = TurnOptions::default();
 options.extensions.insert(
     "openai.chat:provider".to_owned(),
-    json!({ "order": ["DeepInfra"], "allow_fallbacks": false }),
+    json!({ "only": ["DeepInfra"], "allow_fallbacks": false }),
 );
 ```
 

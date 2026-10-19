@@ -26,7 +26,7 @@ impl Layer for PinRoute {
     ) -> Result<ModelStream> {
         request.extensions.insert(
             "openai.chat:provider".to_owned(),
-            serde_json::json!({ "order": ["DeepInfra"], "allow_fallbacks": false }),
+            serde_json::json!({ "only": ["DeepInfra"], "allow_fallbacks": false }),
         );
         next.call(context, request).await
     }

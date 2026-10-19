@@ -8,7 +8,7 @@
 //! ```sh
 //! OPENROUTER_API_KEY=sk-or-... \
 //! COOKBOOK_ENDPOINT=https://openrouter.ai/api/v1 \
-//! COOKBOOK_MODEL=deepseek/deepseek-v4-flash-0731 \
+//! COOKBOOK_MODEL=deepseek/deepseek-v4.1-flash-1017 \
 //!   cargo run -p norte-cookbook --example rate_limit
 //! ```
 //!
@@ -124,7 +124,7 @@ fn new_engine() -> Result<Engine, Box<dyn Error>> {
         VendorProfile::new(provider.clone(), WireFamily::new(WIRE_CHAT)?, &endpoint)?.with_auth(
             AuthScheme::bearer(required("OPENROUTER_API_KEY", "sk-or-...")?),
         );
-    let id = required("COOKBOOK_MODEL", "deepseek/deepseek-v4-flash-0731")?;
+    let id = required("COOKBOOK_MODEL", "deepseek/deepseek-v4.1-flash-1017")?;
     let model = OpenAiChat::new(
         ModelRef::new(provider, ModelId::new(&id)?),
         profile,

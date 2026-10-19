@@ -48,7 +48,7 @@ fn compatible_endpoint() -> Result<Engine> {
     )?
     .with_auth(AuthScheme::bearer("sk-test"));
     let model = OpenAiChat::new(
-        ModelRef::new(provider, ModelId::new("deepseek/deepseek-v4-flash-0731")?),
+        ModelRef::new(provider, ModelId::new("deepseek/deepseek-v4.1-flash-1017")?),
         profile,
         capabilities,
     )?;

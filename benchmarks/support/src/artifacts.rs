@@ -122,8 +122,8 @@ pub fn default_path(dir: &Path, stem: &str, extension: &str) -> PathBuf {
     dir.join("results").join(format!("{stem}.{extension}"))
 }
 
-/// A file-name-safe form of a name: `deepseek/deepseek-v4-flash-0731` becomes
-/// `deepseek-deepseek-v4-flash-0731`.
+/// A file-name-safe form of a name: `deepseek/deepseek-v4.1-flash-1017` becomes
+/// `deepseek-deepseek-v4.1-flash-1017`.
 #[must_use]
 pub fn slug(text: &str) -> String {
     let mut out = String::with_capacity(text.len());

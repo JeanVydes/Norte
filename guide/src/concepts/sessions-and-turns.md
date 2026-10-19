@@ -42,7 +42,7 @@ let mut stream = engine
     .input(Message::user("Summarise src/lib.rs"))   // optional
     .temperature(0.2)                               // any GenerationParams field
     .tools([ToolName::new("read")?])                // expose a subset of the registry
-    .extension("openai.chat:provider", json!({ "order": ["DeepInfra"] }))
+    .extension("openai.chat:provider", json!({ "only": ["DeepInfra"] }))
     .start();
 ```
 

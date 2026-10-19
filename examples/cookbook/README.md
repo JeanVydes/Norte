@@ -8,7 +8,7 @@ can be read — and copied — without the rest of the crate.
 
 ```sh
 OPENROUTER_API_KEY=sk-or-... \
-COOKBOOK_MODEL=deepseek/deepseek-v4-flash-0731 \
+COOKBOOK_MODEL=deepseek/deepseek-v4.1-flash-1017 \
 COOKBOOK_ENDPOINT=https://openrouter.ai/api/v1 \
 cargo run -p norte-cookbook --example approval
 ```

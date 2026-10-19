@@ -27,7 +27,7 @@ The verdict is printed beside the agent's answer, and written into the report.
 ```sh
 export OPENROUTER_API_KEY=sk-or-...
 export BENCH_ENDPOINT=https://openrouter.ai/api/v1
-export BENCH_MODEL=deepseek/deepseek-v4-flash-0731
+export BENCH_MODEL=deepseek/deepseek-v4.1-flash-1017
 export BENCH_PROVIDER=DeepInfra          # optional: pins the upstream
 cargo run -p norte-bench-agent-cost
 ```

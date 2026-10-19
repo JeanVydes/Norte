@@ -16,7 +16,7 @@
 //! ```sh
 //! OPENROUTER_API_KEY=sk-or-... \
 //! BENCH_ENDPOINT=https://openrouter.ai/api/v1 \
-//! BENCH_MODEL=deepseek/deepseek-v4-flash-0731 \
+//! BENCH_MODEL=deepseek/deepseek-v4.1-flash-1017 \
 //!   cargo run -p norte-bench-schema-friction -- --rounds 3
 //! ```
 

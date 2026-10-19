@@ -348,7 +348,7 @@ fn turn_options() -> TurnOptions {
     if let Ok(provider) = std::env::var("COOKBOOK_PROVIDER") {
         options.extensions.insert(
             "openai.chat:provider".to_owned(),
-            json!({ "order": [provider], "allow_fallbacks": false }),
+            json!({ "only": [provider], "allow_fallbacks": false }),
         );
     }
     options
@@ -367,7 +367,7 @@ fn openrouter() -> Result<OpenAiChat, Box<dyn Error>> {
     let endpoint = required("COOKBOOK_ENDPOINT", "https://openrouter.ai/api/v1")?;
     let profile = VendorProfile::new(provider.clone(), WireFamily::new(WIRE_CHAT)?, &endpoint)?
         .with_auth(AuthScheme::bearer(std::env::var("OPENROUTER_API_KEY")?));
-    let id = required("COOKBOOK_MODEL", "deepseek/deepseek-v4-flash-0731")?;
+    let id = required("COOKBOOK_MODEL", "deepseek/deepseek-v4.1-flash-1017")?;
     Ok(OpenAiChat::new(
         ModelRef::new(provider, ModelId::new(&id)?),
         profile,

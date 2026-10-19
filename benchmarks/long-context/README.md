@@ -23,7 +23,7 @@ warm request's shared prefix is compared with the cold one byte for byte.
 ```sh
 export OPENROUTER_API_KEY=sk-or-...
 export BENCH_ENDPOINT=https://openrouter.ai/api/v1
-export BENCH_MODEL=deepseek/deepseek-v4-flash-0731
+export BENCH_MODEL=deepseek/deepseek-v4.1-flash-1017
 cargo run -p norte-bench-long-context -- --turns 32 --lines 8
 ```
 

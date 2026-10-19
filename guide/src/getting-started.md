@@ -118,7 +118,7 @@ let profile =
     VendorProfile::new(provider.clone(), WireFamily::new(WIRE_CHAT)?, "https://openrouter.ai/api/v1")?
         .with_auth(AuthScheme::bearer(std::env::var("OPENROUTER_API_KEY")?));
 let model = OpenAiChat::new(
-    ModelRef::new(provider, ModelId::new("deepseek/deepseek-v4-flash-0731")?),
+    ModelRef::new(provider, ModelId::new("deepseek/deepseek-v4.1-flash-1017")?),
     profile,
     capabilities,
 )?;
@@ -136,7 +136,7 @@ topic, each wiring its own engine:
 ```sh
 OPENROUTER_API_KEY=sk-or-... \
 COOKBOOK_ENDPOINT=https://openrouter.ai/api/v1 \
-COOKBOOK_MODEL=deepseek/deepseek-v4-flash-0731 \
+COOKBOOK_MODEL=deepseek/deepseek-v4.1-flash-1017 \
 cargo run -p norte-cookbook --example events
 ```
 

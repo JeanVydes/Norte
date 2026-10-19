@@ -47,9 +47,9 @@ use norte_core::{ModelId, ModelRef, ProviderId};
 
 let reference = ModelRef::new(
     ProviderId::new("openrouter")?,
-    ModelId::new("deepseek/deepseek-v4-flash-0731")?,
+    ModelId::new("deepseek/deepseek-v4.1-flash-1017")?,
 );
-assert_eq!(reference.to_string(), "openrouter/deepseek/deepseek-v4-flash-0731");
+assert_eq!(reference.to_string(), "openrouter/deepseek/deepseek-v4.1-flash-1017");
 ```
 
 - `ProviderId` is a name used to route and to label history. It allows

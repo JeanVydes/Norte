@@ -33,7 +33,7 @@
 //! ```sh
 //! OPENROUTER_API_KEY=sk-or-... \
 //! BENCH_ENDPOINT=https://openrouter.ai/api/v1 \
-//! BENCH_MODEL=deepseek/deepseek-v4-flash-0731 \
+//! BENCH_MODEL=deepseek/deepseek-v4.1-flash-1017 \
 //! BENCH_PROVIDER=DeepInfra \
 //! cargo run -p norte-bench-cache-hit
 //! ```

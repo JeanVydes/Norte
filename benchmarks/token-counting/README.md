@@ -24,7 +24,7 @@ holds or it does not.
 ```sh
 export OPENROUTER_API_KEY=sk-or-...
 export BENCH_ENDPOINT=https://openrouter.ai/api/v1
-export BENCH_MODEL=deepseek/deepseek-v4-flash-0731
+export BENCH_MODEL=deepseek/deepseek-v4.1-flash-1017
 cargo run -p norte-bench-token-counting -- --turns 3
 ```
 

@@ -90,7 +90,7 @@ impl Debug for ContinuityToken {
     }
 }
 
-/// A streamed contribution to a continuity token.
+/// How a fragment's bytes combine with the token they target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]

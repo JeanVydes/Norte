@@ -46,7 +46,7 @@ fn parse_http_date(value: &str) -> Option<chrono::DateTime<chrono::Utc>> {
 /// because by then the request may be running and a generation must never run
 /// twice. Neither is anything the provider answered with — a rate limit, a
 /// quota, a `5xx` — since that is application policy: the error reaches the host
-/// with [`retry_after`](crate::Error::retry_after) intact.
+/// with [`retry_after`](rustychain_core::Error::retry_after) intact.
 ///
 /// **Timeouts.** `connect_timeout` bounds establishing a connection,
 /// `request_timeout` bounds a whole `JSON` call, and `stream_idle_timeout`

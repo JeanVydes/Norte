@@ -36,15 +36,19 @@ declare what your models can do and the library does the rest.
 
 ## Providers
 
-| Provider | SDK | Compatibility |
+| Provider | SDK | Wire surface |
 | --- | --- | --- |
-| OpenAI | `rustychain-openai` | 100% |
-| Anthropic | `rustychain-anthropic` | 100% |
-| Google Gemini | `rustychain-gemini` | 100% |
+| OpenAI | `rustychain-openai` | Responses (primary) and Chat Completions, including the compatible long tail |
+| Anthropic | `rustychain-anthropic` | Messages |
+| Google Gemini | `rustychain-gemini` | generateContent, with explicit cached content |
 
-Measured against each provider's documented API — nothing is silently dropped.
-OpenRouter, Groq, Together, vLLM and any other OpenAI-compatible endpoint work
-through the OpenAI SDK with a different base URL.
+Each adapter covers roughly 95 % of that wire's documented surface. What is
+missing is small and named: the Realtime API (out of scope), `logprobs`, and
+unary `stream: false` delivery (`collect()` already covers blocking callers). A
+modality a wire cannot express is a typed error, never a silent drop, and a
+documented block with no typed neutral form is kept verbatim and replayed
+unchanged. OpenRouter, Groq, Together, vLLM and any other OpenAI-compatible
+endpoint work through the OpenAI SDK with a different base URL.
 
 ## Install
 

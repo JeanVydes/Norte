@@ -3,7 +3,6 @@ resolver = "3"
 exclude = ["fuzz"]
 members = [
     "examples/cookbook",
-    "examples/react-agent",
     "rustychain-macros",
     "rustychain-core",
     "rustychain-http",

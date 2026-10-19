@@ -14,12 +14,13 @@
 //! price table below is the arithmetic and the vendor's field is printed beside
 //! it — a price table is a list price, and the payload is what was billed.
 //!
-//! Two things about that arithmetic are easy to get wrong:
+//! Three things about that arithmetic are easy to get wrong:
 //!
 //! 1. **Cached tokens are inside `input`.** An `OpenAI`-compatible provider
 //!    counts what it read from the cache as part of `prompt_tokens`, so the
-//!    billed input is `input - cache_read`; counting the whole input at the full
-//!    rate double-bills the hit. The recipe prints the counterfactual — the same
+//!    billed input is `input - cache_read` and the hit rate is
+//!    `cache_read / input`; counting the whole input at the full rate
+//!    double-bills the hit. The recipe prints the counterfactual — the same
 //!    tokens with no cache at all — next to the bill.
 //! 2. **The published price is not always the billed price.** The table below is
 //!    a *list* price, and the closing shows the vendor's own field next to what
@@ -27,6 +28,12 @@
 //!    `COOKBOOK_PRICE_IN`, `COOKBOOK_PRICE_OUT` and `COOKBOOK_PRICE_CACHE_READ`
 //!    override the table when a run has to be priced with a rate it does not
 //!    carry.
+//! 3. **A hit rate is not a bill reduction.** A cached token saves only the gap
+//!    between the input rate and the read rate, and the output side pays its own
+//!    rate either way, so the whole-bill share is below the input-side share —
+//!    slightly in an agentic session, where the input dominates (this run is
+//!    roughly 37 input tokens per output token), and heavily in a chatty one.
+//!    Both are printed, and neither is the raw hit rate.
 //!
 //! ```sh
 //! OPENROUTER_API_KEY=sk-or-... \
@@ -158,7 +165,10 @@ impl Task {
         let reported = reported
             .map(|reported| format!(" · vendor ${reported:.6}"))
             .unwrap_or_default();
-        let line = format!("input {input} · output {output} · cache read {cached}{reported}");
+        let line = format!(
+            "input {input} · output {output} · cache read {cached}{}{reported}",
+            hit_of(cached, input)
+        );
         let Some(price) = price else {
             return line;
         };
@@ -170,8 +180,12 @@ impl Task {
 
     fn line(&self, price: Option<&Price>) -> String {
         let tokens = format!(
-            "{} request(s) · input {} · output {} · cache read {}",
-            self.requests, self.input, self.output, self.cached
+            "{} request(s) · input {} · output {} · cache read {}{}",
+            self.requests,
+            self.input,
+            self.output,
+            self.cached,
+            hit_of(self.cached, self.input)
         );
         let reported = self
             .reported
@@ -230,7 +244,14 @@ fn closing(ledger: &Ledger, price: Option<&Price>) {
             reported / tasks
         );
     }
-    let Some(_) = price else {
+    if let Some(hit) = hit_rate(ledger.cached, ledger.input) {
+        println!(
+            "cache hit: {hit:.1} % of the input ({} of {} tokens were read from the provider's \
+             cache)",
+            ledger.cached, ledger.input
+        );
+    }
+    let Some(price) = price else {
         println!(
             "no price was applied, so the tokens above and the provider's own field are the \
              whole statement. Name the provider with COOKBOOK_PROVIDER to price the run."
@@ -244,12 +265,21 @@ fn closing(ledger: &Ledger, price: Option<&Price>) {
         per_task,
         per_task * 100.0
     );
+    let saved = ledger.uncached - ledger.cost;
+    // Why the whole-bill share is not the hit rate: a cached token saves the
+    // difference between the input rate and the read rate, and the output side
+    // pays its own rate either way, so it dilutes the share.
+    let input_side = 100.0 * as_f64(ledger.cached) * (price.input - price.cache_read)
+        / (as_f64(ledger.input) * price.input).max(f64::MIN_POSITIVE);
     println!(
-        "the same tokens with no cache at all would have been ${:.6}: the cache saved ${:.6} \
-         ({:.1} %)",
+        "the same tokens with no cache at all would have been ${:.6}: the cache saved ${:.6} — \
+         {input_side:.1} % of the input side (read at ${:.5}/M against ${:.4}/M input), {:.1} % \
+         of the whole bill, because output tokens get no cache rate",
         ledger.uncached,
-        ledger.uncached - ledger.cost,
-        100.0 * (ledger.uncached - ledger.cost) / ledger.uncached.max(f64::MIN_POSITIVE)
+        saved,
+        price.cache_read,
+        price.input,
+        100.0 * saved / ledger.uncached.max(f64::MIN_POSITIVE)
     );
     if let Some(reported) = ledger.reported {
         if reported > 0.0 && (reported - ledger.cost).abs() > 1e-9 {
@@ -266,6 +296,22 @@ fn closing(ledger: &Ledger, price: Option<&Price>) {
 /// conversion is explicit. A token count never nears the ceiling.
 fn as_f64(tokens: u64) -> f64 {
     f64::from(u32::try_from(tokens).unwrap_or(u32::MAX))
+}
+
+/// How much of the input the provider read from its own cache.
+///
+/// The read counters are a subset of `input` on every `OpenAI`-compatible wire,
+/// so this is the hit rate the provider reports and not a rate of the engine's
+/// making; a provider that never reports one leaves this absent.
+fn hit_rate(cached: u64, input: u64) -> Option<f64> {
+    (input > 0).then(|| 100.0 * as_f64(cached.min(input)) / as_f64(input))
+}
+
+/// The hit rate as a suffix for a token line, or nothing when there is none.
+fn hit_of(cached: u64, input: u64) -> String {
+    hit_rate(cached, input)
+        .map(|hit| format!(" ({hit:.1} % of input)"))
+        .unwrap_or_default()
 }
 
 /// USD per million tokens, as the provider publishes them.

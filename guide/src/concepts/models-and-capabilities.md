@@ -74,7 +74,7 @@ Two consequences worth knowing:
 
 - **Testing needs no network.** `norte-testing`'s `ScriptedModel` is a
   `Model`; so is `ProbeModel`, which wraps another model and records the requests
-  that went through it. See [Test without a network](guides/test-without-a-network.md).
+  that went through it. See [Test without a network](../guides/test-without-a-network.md).
 - **A missing field is not a failure.** When a wire reports a block the neutral
   model has no field for, it is kept as a `ProviderToolCall`,
   `ProviderToolResult` or `Extension` part and replayed unchanged. Nothing is

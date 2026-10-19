@@ -68,7 +68,7 @@ The library itself keeps none of this. Probabilities are informational: never a
 `Part`, never part of the committed message, never replayed on the next request,
 so asking for them leaves the cache prefix where it was. A model that does not
 declare `Feature::Logprobs` is rejected before the request is built (see
-[Models and capabilities](concepts/models-and-capabilities.md)), and how long the
+[Models and capabilities](models-and-capabilities.md)), and how long the
 numbers live is the host's decision, made from its own observer.
 
 ## EngineEvent — the turn
@@ -118,7 +118,7 @@ being built. Everything settled is there, in order.
 
 An `Observer` sees every `EngineEvent`; a `StreamTransform` rewrites or drops
 deltas before they reach your loop. Both are registered on the builder. See
-[Layers and observers](concepts/layers-and-observers.md).
+[Layers and observers](layers-and-observers.md).
 
 ## Errors inside a stream
 

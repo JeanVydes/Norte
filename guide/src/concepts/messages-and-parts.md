@@ -55,7 +55,7 @@ reasoning blocks, tool calls, tool results and provider-executed steps, and each
 one has to be replayable *unchanged* — a provider that hands back a signature has
 to get it back exactly, or it will refuse the next request. Modelling that as a
 list of typed parts is what makes byte-identical export and re-import possible
-(see [History and durability](concepts/history-and-durability.md)).
+(see [History and durability](history-and-durability.md)).
 
 ## Tool calls and results
 
@@ -78,7 +78,7 @@ chance to fix its own mistake.
 
 `Message.origin` carries a `Usage` — the token counters for the request that
 produced the message. `engine::usage_of(&Message)` returns it without unwrapping
-the `Option`. See [Usage and cost](concepts/usage-and-cost.md).
+the `Option`. See [Usage and cost](usage-and-cost.md).
 
 ## Non-exhaustiveness
 

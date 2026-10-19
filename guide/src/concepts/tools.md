@@ -126,7 +126,7 @@ of them — a test in this repository fails if one reaches the wire.
 
 A `command` request names any program. **Authorizing it is the host's job.** The
 executor will run what it is given; the policy is what decides whether `cargo`
-yes and `rm` no. See [Policies and approval](concepts/policies-and-approval.md).
+yes and `rm` no. See [Policies and approval](policies-and-approval.md).
 
 ## Results
 

@@ -76,7 +76,7 @@ parked at `AwaitingApproval` or interrupted mid-loop.
   result.
 
 `EngineStream` also has `cancel()` and is a `Stream<Item = Result<EngineEvent>>`;
-dropping it cancels. See [Streaming](concepts/streaming.md).
+dropping it cancels. See [Streaming](streaming.md).
 
 ## Commits
 

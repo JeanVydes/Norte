@@ -9,7 +9,7 @@ fall. It is a class, not a cache: the engine declares, the provider decides.
 
 **Capabilities** — the host's declaration of what a model can do (modalities,
 tool kind, streaming granularity, cache mode, limits). Checked before a request is
-built. See [Models and capabilities](concepts/models-and-capabilities.md).
+built. See [Models and capabilities](../concepts/models-and-capabilities.md).
 
 **Commit** — the single atomic write that ends a turn: messages, phase, version,
 head and any new approval, together. Compare-and-swap on `expected_version`.
@@ -29,18 +29,18 @@ registry, the policies, the layers and the observers, and runs turns.
 
 **EngineEvent** — the lifecycle of a turn: phase changes, deltas, part
 completions, tool starts and finishes, approvals, commits, request reconstruction,
-errors. See [Streaming](concepts/streaming.md).
+errors. See [Streaming](../concepts/streaming.md).
 
 **Grant** — a live tool approval, with a scope (`Call`, `Tool`, `Session`,
 `Global`) and the actor who issued it.
 
 **Layer** — a wrapper around the model call that can rewrite a request, answer it
-locally, or pass it on. See [Layers and observers](concepts/layers-and-observers.md).
+locally, or pass it on. See [Layers and observers](../concepts/layers-and-observers.md).
 
 **Logprob** — the probability a model assigned to a token, wanted by evaluation
 and guardrail hosts and rarely by others. Opt-in per turn (`logprobs(n)`), gated
 on `Feature::Logprobs`, delivered as a `Logprobs` delta and never written to the
-conversation. See [Streaming](concepts/streaming.md).
+conversation. See [Streaming](../concepts/streaming.md).
 
 **Message** — a `Role` plus a list of `Part`s, plus an optional origin (which
 carries `Usage`).

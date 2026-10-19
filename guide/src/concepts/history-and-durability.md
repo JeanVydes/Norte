@@ -81,6 +81,18 @@ does not differ from the original by a byte.
 resumed. `engine.pending_approvals(session)` returns the live ones; the audit
 entries stay with the record.
 
+## What a commit does not cover
+
+A commit makes the *conversation* durable; it says nothing about the world
+outside it. A committed tool result is never produced twice (FR-ERR-5), but a
+tool's external effect — a charge, an email, a write to another system — is not
+part of that commit, and the window between the effect and the commit is the
+host's to close: a process killed there is handed the same call on `resume`. The
+engine gives the tool the stable identity to key on, `session` and the
+engine-assigned `call_id` (FR-ID-2), and leaves the record to the host. The
+pattern is [`cookbook/idempotent_tool`](https://github.com/JeanVydes/Norte/blob/dev/examples/cookbook/examples/idempotent_tool.rs);
+the requirement is FR-ERR-6.
+
 ## What is deliberately absent
 
 - **No migrations, no schema, no SQL.** The engine defines the shape of a commit;
@@ -89,3 +101,7 @@ entries stay with the record.
   engine only ever loads by id.
 - **No implicit retention.** Blobs are referenced by history and never collected
   by the engine. A host that deletes sessions owns the garbage collection.
+- **No effect-delivery machinery.** Leases, effect classes and an
+  `OutcomeUnknown` state are not in the engine: deciding which effects are
+  idempotent, and resolving an ambiguous one, is host policy, like retries and
+  rate limits (FR-ERR-4, FR-ERR-6).

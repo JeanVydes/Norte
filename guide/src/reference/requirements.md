@@ -43,6 +43,7 @@ Norte is an open-source Rust framework for constructing production agents on the
 - Multi-agent orchestration and routing.
 - MCP client/server implementations beyond the tool foundation.
 - Any derived or compacted view of the conversation, or any other higher-level interpretation of history. Core models exactly one node kind, `Message`; hosts that want derived views express them with ordinary messages and host-owned metadata, never with a new node kind.
+- Effect-delivery machinery in the engine: leases, effect classes and an `OutcomeUnknown` state. The engine guarantees commit-at-most-once, not effect-at-most-once (FR-ERR-6); deciding which effects are idempotent, and how to resolve an ambiguous one, is host policy, on the same ground as retries and rate limits (FR-ERR-4).
 
 ### 1.3 Audience
 
@@ -685,7 +686,9 @@ The engine emits a typed event stream that observers and host code may subscribe
 
 **FR-ERR-5.** A turn that fails is never lost and never duplicated: the user message stays committed, any tool results already produced stay committed (FR-APPR-8), and the session stays in `Streaming`, which is exactly where `resume` picks it up. A host that retries a transient failure therefore re-issues the turn without the agent having to ask again.
 
-**Where it lives:** `norte-testing/tests/export.rs` (`a_model_switch_mid_tool_loop_is_blocked_instead_of_dropping_the_signature`).
+**FR-ERR-6.** The guarantee above is precisely stated: the engine provides *commit-at-most-once*, not *effect-at-most-once*. Committing a tool result is atomic and idempotent, but a tool's external effect — a charge, an email, a write to another system — is not part of that commit, and the window between the effect and the commit lies outside the library: a process killed inside it resumes the session and has the same call delivered again. The engine supplies the identity a host needs to close that window — the session and the engine-assigned, stable `call_id` (FR-ID-2), both on `ToolContext` — and deliberately supplies nothing else. Leases, effect classes and an `OutcomeUnknown` state are not implemented: whether an effect is idempotent, and what to do when its outcome is ambiguous, is host policy, exactly as retries and rate limits are (FR-ERR-4, §1.2). The pattern a host applies is the one in [`examples/cookbook/examples/idempotent_tool.rs`](https://github.com/JeanVydes/Norte/blob/dev/examples/cookbook/examples/idempotent_tool.rs): a durable `intent → effect → done` record keyed by `(session, call_id)`, plus an idempotency key the upstream understands so the ambiguous case is resolved by asking rather than guessing.
+
+**Where it lives:** `norte-core/src/tool/mod.rs` (`ToolContext` carries `session` and `call_id`); the broader error model lives across `norte-core/src/error.rs` and the adapters, and `norte-testing/tests/export.rs` (`a_model_switch_mid_tool_loop_is_blocked_instead_of_dropping_the_signature`).
 
 **Verified by:** The workspace suites assert the typed variants; no external input reaches an unwrap.
 

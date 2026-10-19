@@ -14,9 +14,10 @@ cargo run -p norte-cookbook --example approval
 ```
 
 The key comes from the environment; a local `.env` works with
-`set -a; . ./.env; set +a`. `tools` and `executors` need no key and no model:
-the first declares tools and prints the schema that would go to the provider,
-the second calls the shipped executors directly.
+`set -a; . ./.env; set +a`. `tools`, `executors` and `idempotent_tool` need no
+key and no model: the first declares tools and prints the schema that would go
+to the provider, the second calls the shipped executors directly, and the third
+is the host-side idempotency pattern for a tool with an external effect.
 
 ## Recipes
 
@@ -30,6 +31,7 @@ the second calls the shipped executors directly.
 | `tools` | Declaring tools: macro, explicit, and rich `ToolOutput` |
 | `agent` | An agent turn: the model edits a file through the host tools |
 | `executors` | Calling `read`, `write`, `edit` and `command` directly |
+| `idempotent_tool` | Making a tool's external effect happen once across a resume |
 | `observers` | Observers and stream transforms |
 | `export_import` | A byte-identical restore: the same request before and after a round trip |
 | `branching` | Rewind to an ancestor and branch: the shared prefix stays cached |
@@ -43,7 +45,7 @@ also a measurement: [`benchmarks/cache-hit`](../../benchmarks/cache-hit).
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `OPENROUTER_API_KEY` | *required* | The key every recipe that calls a model uses (`tools` and `executors` need none). |
+| `OPENROUTER_API_KEY` | *required* | The key every recipe that calls a model uses (`tools`, `executors` and `idempotent_tool` need none). |
 | `COOKBOOK_MODEL` | *required* | The model the recipes call. |
 | `COOKBOOK_ENDPOINT` | *required* | The `OpenAI`-compatible base `URL` the recipes call. |
 | `COOKBOOK_PROVIDER` | OpenRouter decides | Pins the upstream provider for `branching`, so two runs of the same recipe stay comparable. |

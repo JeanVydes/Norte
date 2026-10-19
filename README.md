@@ -43,6 +43,28 @@ under a policy you write, every turn in a history you can audit.
   payloads, per request and per turn: chargeback-ready, with no rate table to
   maintain.
 
+## Durability and effects
+
+A turn is one atomic commit. A session survives a crash mid-turn, exports and
+re-imports byte for byte, and a tool result that was already committed is never
+produced twice (FR-ERR-5, FR-APPR-8). That guarantee is **commit-at-most-once**.
+
+It is not **effect-at-most-once**. A tool's external effect — a charge, an
+email, a write to another system — happens outside the commit, and the window
+between that effect and the commit is outside any library: kill the process
+there and `resume` hands the call back. So a tool with an external effect must
+be idempotent, or the host must make it so. The engine gives every call the
+stable identity that takes (`session` and the engine-assigned `call_id`,
+FR-ID-2) and nothing more; [`cookbook/idempotent_tool`][idempotent] is the host
+pattern — a durable `intent → effect → done` record keyed by the call, plus an
+idempotency key sent upstream, so the ambiguous case is resolved by asking
+rather than guessing.
+
+Leases, effect classes and an `OutcomeUnknown` state are deliberately not part
+of the engine. Which effects are idempotent, and what to do when one is
+ambiguous, is host policy — the same reason retries and rate limits are
+(FR-ERR-4).
+
 ## Providers and coverage
 
 | Provider | Crate | APIs | Coverage |
@@ -113,7 +135,7 @@ Runnable, end-to-end programs live in
 
 - [`cookbook`](https://github.com/JeanVydes/Norte/tree/dev/examples/cookbook) —
   one small, self-contained recipe per topic: events, streaming, approval,
-  policies, declaring tools, observers.
+  policies, declaring tools, observers, idempotent tools.
 
 Measurements live in
 [`benchmarks/`](https://github.com/JeanVydes/Norte/tree/dev/benchmarks): each one
@@ -145,6 +167,7 @@ is a folder with the program, how to run it, and the reports it writes.
 
 [ledger]: https://jeanvydes.github.io/Norte/reference/requirements.html
 [cookbook]: https://github.com/JeanVydes/Norte/tree/dev/examples/cookbook
+[idempotent]: https://github.com/JeanVydes/Norte/blob/dev/examples/cookbook/examples/idempotent_tool.rs
 [contributing]: https://github.com/JeanVydes/Norte/blob/dev/CONTRIBUTING.md
 [changelog]: https://github.com/JeanVydes/Norte/blob/dev/CHANGELOG.md
 

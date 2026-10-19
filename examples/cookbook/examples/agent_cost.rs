@@ -21,6 +21,12 @@
 //! rather than a chat turn's 16, and a task that fails anyway prints the
 //! requests it burned, because the provider billed every one of them.
 //!
+//! The engine runs no command — `read`, `write` and `edit` are the whole tool
+//! set — so nothing the model says about its own work has been tested by the
+//! time it says it. The host closes that gap: the run ends by building the crate
+//! the agent left, running its tests, and running the command line the tasks
+//! asked for, with the verdict printed beside the agent's answer.
+//!
 //! The money is the provider's own number, and not one this recipe works out.
 //! `Usage` carries the token counters (input, output, reasoning, cache read,
 //! cache write, audio), an extension map for the counters with no neutral field,
@@ -288,7 +294,89 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // The evidence, not the model's word: the crate as the agent left it.
     println!("\n--- the crate as the agent left it");
     print_tree(&root);
+    verify(&root);
     Ok(())
+}
+
+/// The host's check, and not the agent's claim.
+///
+/// No tool in this recipe runs a command, so a task's answer is a sentence about
+/// code that has never been built. The host builds it: the crate has to compile,
+/// its tests have to pass, and the command line the tasks named has to print what
+/// the task said it would. A toolchain that is not there is said out loud rather
+/// than passed off as a pass.
+fn verify(root: &Path) {
+    println!("\n--- the host checks the agent's claim");
+    match cargo(root, &["test", "--quiet", "--offline"]) {
+        None => println!("cargo test: not run — there is no `cargo` on PATH"),
+        Some((true, stdout, _)) => {
+            println!("cargo test: the crate builds and every test passes");
+            for line in stdout.lines().filter(|line| line.contains("test result")) {
+                println!("  {}", line.trim());
+            }
+        }
+        Some((false, stdout, stderr)) => {
+            println!("cargo test: FAILED");
+            for line in stdout
+                .lines()
+                .chain(stderr.lines())
+                .filter(|line| line.contains("test result") || line.contains("error"))
+                .take(6)
+            {
+                println!("  {}", line.trim());
+            }
+        }
+    }
+    let expected = "4 words: the, sky";
+    let line = [
+        "run",
+        "--quiet",
+        "--offline",
+        "--",
+        "--verbose",
+        "--limit",
+        "2",
+        "the sky, is blue.",
+    ];
+    match cargo(root, &line) {
+        None => println!("cargo run: not run — there is no `cargo` on PATH"),
+        Some((ok, stdout, stderr)) => {
+            let got = stdout.lines().next().unwrap_or("").trim();
+            let verdict = match (ok, got == expected) {
+                (_, true) => format!("prints `{expected}`"),
+                (true, false) => format!("prints `{got}` and not `{expected}`"),
+                (false, false) => format!(
+                    "failed: {}",
+                    stderr
+                        .lines()
+                        .find(|line| !line.trim().is_empty())
+                        .unwrap_or("no message")
+                        .trim()
+                ),
+            };
+            println!("cargo run -- --verbose --limit 2 \"the sky, is blue.\": {verdict}");
+        }
+    }
+}
+
+/// Runs `cargo` in the scratch directory, offline: a crate with no dependencies
+/// needs nothing from a registry. The host's tool, not the engine's — no policy
+/// sees this process and no model asks for it.
+fn cargo(root: &Path, args: &[&str]) -> Option<(bool, String, String)> {
+    let output = std::process::Command::new("cargo")
+        .args(args)
+        .current_dir(root)
+        .env("CARGO_TERM_COLOR", "never")
+        // The check must not land in the workspace's target directory, or it
+        // would contend for a build lock the recipe's own invocation holds.
+        .env_remove("CARGO_TARGET_DIR")
+        .output()
+        .ok()?;
+    Some((
+        output.status.success(),
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    ))
 }
 
 /// Writes the crate the agent is handed, so every run starts from the same

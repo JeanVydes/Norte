@@ -9,8 +9,7 @@ description = "What the provider cache was worth across a turn, a tool call, a p
 
 [dependencies]
 norte-core = { workspace = true }
-norte-http = { workspace = true }
-norte-openai = { workspace = true }
+norte-bench-support = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
 schemars = { workspace = true }

@@ -33,8 +33,8 @@ cargo run -p norte-bench-cache-hit
 | `BENCH_PROVIDER` | the router decides | Pins the upstream through the router, so two runs stay comparable. A routing hint, never a price. |
 
 Nothing external is defaulted in the source: a missing variable is an error that
-names it. `--help` prints this, and `--report <path>` writes the report somewhere
-other than `results/`.
+names it. `--help` prints this, `--report <path>` writes the report somewhere
+other than `results/`, and `--jsonl <path>` writes the trail elsewhere.
 
 The prompt has to be past the provider's caching floor — often about a thousand
 tokens — so the system message is long on purpose. Whether a hit is *reported* is
@@ -57,7 +57,8 @@ failure.
 Each run writes itself a markdown report under `results/`, named after the moment
 and the route:
 
-- **The run** — when, which model, which provider, the endpoint and the commit.
+- **The run** — when, which model, which provider, the endpoint and the phases.
+  The commit, the toolchain and the redacted environment are in the manifest.
 - **Reproduce** — the environment block for that exact run.
 - **Turns** — the wall-clock of each `finish()`.
 - **Requests** — every provider request, read from the assistant message it
@@ -67,6 +68,10 @@ and the route:
   request, whether they are byte-identical, and their digest.
 - **What this shows** — whether a live hit was reported, and on how many
   requests.
+
+Each run also writes `<stem>.jsonl` (one line per turn, request and prefix),
+`<stem>-turns.csv`, `<stem>-requests.csv`, `<stem>-prefix-audit.csv` and a
+manifest beside the markdown, all from `norte-bench-support`.
 
 The report is written by the run that measured it, so it cannot drift from what
 happened.

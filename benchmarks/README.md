@@ -47,18 +47,22 @@ the model decides how many requests a task takes.
 | [`agent-cost`](agent-cost) | What a coding agent costs on an existing crate, per request, per task and in total | runs |
 | [`cache-hit`](cache-hit) | What survives a turn, a tool call, a park and an export: cache reads, the bill and the latency of each request | runs |
 | [`latency`](latency) | Time to first token and time per turn, streaming against `finish()` | runs |
+| [`long-context`](long-context) | A long session kept whole against the same session with its history compacted | implemented, not run yet |
 | [`roundtrip-fidelity`](roundtrip-fidelity) | Export and import over many sessions, four wires, byte for byte | runs |
 | [`schema-friction`](schema-friction) | How many requests a model spends getting a tool call the schema accepts | runs |
 | [`token-counting`](token-counting) | The provider's counters against the engine's accounting | runs |
 | [`tool-loop`](tool-loop) | How requests and cost grow with declared tools and transcript size | runs |
 | [`transport-retry`](transport-retry) | What a rate limit or a timeout does under a host retry policy, and what the retries cost | runs |
 
-`latency`, `schema-friction`, `token-counting` and `tool-loop` call a live
-provider and need a key. `roundtrip-fidelity` and `transport-retry` are offline
-and deterministic, and run in CI.
+`latency`, `long-context`, `schema-friction`, `token-counting` and `tool-loop`
+call a live provider and need a key. `roundtrip-fidelity` and `transport-retry`
+are offline and deterministic, and run in CI.
+
+`long-context` is implemented and linted but has no canonical result yet: run it
+before citing a number.
 
 ## Proposed
 
-| Benchmark | What it would measure | Why it is worth the money |
-| --- | --- | --- |
-| `long-context` | A long session kept whole against the same session with its history compacted | A compaction policy is a claim about money; this is how it is checked. |
+No benchmark is currently proposed. A candidate is added here with the measurement
+it would make and why the number would be worth paying for; it moves to the index
+when it is implemented and run.

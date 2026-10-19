@@ -59,58 +59,69 @@
 
 use std::error::Error;
 use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
-use norte_core::{
-    Capabilities, ContinuityAdapter, Digest, Engine, EngineBuilder, FnExecutor, GrantScope,
-    InMemoryBlobStore, InMemoryStore, Message, Modality, Model, ModelId, ModelRef, ModelRequest,
-    ModelStream, PolicySet, ProviderId, Role, SessionId, StreamingGranularity, ToolApprovalPolicy,
-    ToolKind, ToolName, ToolRegistry, TurnOptions, Usage, WireFamily,
+use norte_bench_support::report::{Align, Report};
+use norte_bench_support::{
+    Captured, Mode, RecordingOpenAi, RequestRecord, Route, Run, captured as new_capture, duration,
+    money_opt, tokens,
 };
-use norte_http::{AuthScheme, VendorProfile};
-use norte_openai::{OpenAiChat, WIRE_CHAT};
+use norte_core::{
+    Capabilities, Digest, Engine, EngineBuilder, FnExecutor, GrantScope, InMemoryBlobStore,
+    InMemoryStore, Message, Modality, PolicySet, Role, SessionId, StreamingGranularity,
+    ToolApprovalPolicy, ToolKind, ToolName, ToolRegistry, TurnOptions, Usage,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+const USAGE: &str = "\
+cache-hit — what survives a turn, a tool call, a park and an export, live
+
+USAGE:
+    norte-bench-cache-hit [OPTIONS]
+
+OPTIONS:
+    --report <p>    write the markdown report to <p>
+    --jsonl <p>     write the JSONL trail to <p>
+    --help, -h      print this help
+
+Live: needs a key and a route in the environment.
+  OPENROUTER_API_KEY (or BENCH_KEY_ENV), BENCH_ENDPOINT, BENCH_MODEL, BENCH_PROVIDER.
+";
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let mut report_path = None;
-    let mut args = std::env::args().skip(1);
-    while let Some(argument) = args.next() {
-        match argument.as_str() {
-            "--report" => {
-                let path = args.next().ok_or("--report needs a path")?;
-                report_path = Some(PathBuf::from(path));
-            }
-            "--help" | "-h" => {
-                print_help();
-                return Ok(());
-            }
-            other => return Err(format!("unknown argument: {other}").into()),
-        }
-    }
+    let Some(mut run) = Run::start(
+        "cache-hit",
+        USAGE,
+        Mode::Live,
+        Path::new(env!("CARGO_MANIFEST_DIR")),
+    )?
+    else {
+        return Ok(());
+    };
+    let route = run
+        .route()
+        .ok_or("the cache-hit benchmark is live and needs a route")?
+        .clone();
+    let started = Utc::now();
 
-    let at = Utc::now();
-    let model = required("BENCH_MODEL", "deepseek/deepseek-v4-flash-0731")?;
-    let endpoint = required("BENCH_ENDPOINT", "https://openrouter.ai/api/v1")?;
-    let provider = std::env::var("BENCH_PROVIDER").ok();
-
-    let (engine, captured) = new_engine()?;
+    let (engine, captured) = new_engine(&route)?;
     let session = engine.create().await?;
     engine
         .append_history(session.id, vec![Message::system(manual())])
         .await?;
     let mut seen = engine.history(session.id).await?.len();
     let mut bench = Bench::default();
-    let options = turn_options();
+    let options = route.turn_options(512);
 
     println!(
         "--- route: {}",
-        provider.as_deref().map_or_else(
+        route.provider.as_deref().map_or_else(
             || "OpenRouter decides, and may switch upstream between turns".to_owned(),
             |provider| format!("pinned to {provider}")
         )
@@ -135,17 +146,25 @@ async fn main() -> Result<(), Box<dyn Error>> {
     .await?;
 
     println!("\n--- 4. after an export and an import into a fresh engine");
-    after_export(&engine, &captured, session.id, &mut bench, &options).await?;
+    after_export(&engine, &captured, session.id, &mut bench, &options, &route).await?;
 
     let closing = bench.closing();
     println!("\n--- what this shows\n{closing}");
 
-    let markdown = render_report(&bench, &closing, &model, &endpoint, provider.as_deref(), at);
-    let path = report_path.unwrap_or_else(|| {
-        default_report_path(provider.as_deref().unwrap_or("router"), &model, at)
-    });
-    write_report(&markdown, &path)?;
-    println!("\nreport: {}", path.display());
+    let report = render_report(&bench, &closing, &route, started);
+    for turn in &bench.turns {
+        run.record("turn", turn);
+    }
+    for request in &bench.requests {
+        run.record("request", request);
+    }
+    for audit in &bench.audits {
+        run.record("prefix", audit);
+    }
+    run.table("turns", TURN_HEADERS, turn_cells(&bench));
+    run.table("requests", REQUEST_HEADERS, request_rows(&bench));
+    run.table("prefix-audit", AUDIT_HEADERS, audit_rows(&bench));
+    run.finish(report)?;
     Ok(())
 }
 
@@ -341,6 +360,7 @@ async fn after_export(
     session: SessionId,
     bench: &mut Bench,
     options: &TurnOptions,
+    route: &Route,
 ) -> Result<(), Box<dyn Error>> {
     let conversation = engine.export(session).await?;
     println!(
@@ -349,7 +369,7 @@ async fn after_export(
         conversation.messages.len(),
         conversation.to_json()?.len()
     );
-    let (elsewhere, requests) = new_engine()?;
+    let (elsewhere, requests) = new_engine(route)?;
     let restored = elsewhere.import(conversation).await?;
     println!(
         "restored session: {} ({})",
@@ -392,6 +412,7 @@ async fn after_export(
 // ── the measurement ─────────────────────────────────────────────────────────
 
 /// One turn's wall-clock, and the phase it belongs to.
+#[derive(Serialize)]
 struct TurnRow {
     phase: &'static str,
     label: &'static str,
@@ -399,6 +420,7 @@ struct TurnRow {
 }
 
 /// One provider request, read from the assistant message it committed.
+#[derive(Serialize)]
 struct RequestRow {
     phase: &'static str,
     turn: &'static str,
@@ -410,6 +432,7 @@ struct RequestRow {
 }
 
 /// One request's place in the prefix audit.
+#[derive(Serialize)]
 struct AuditRow {
     phase: &'static str,
     label: String,
@@ -467,10 +490,10 @@ impl Bench {
             let number = self.requests.len() + 1;
             println!(
                 "  request {number} · input {} · output {} · cache read {} · cache write {} · {}",
-                show(row.input),
-                show(row.output),
-                show(row.cache_read),
-                show(row.cache_write),
+                tokens(row.input),
+                tokens(row.output),
+                tokens(row.cache_read),
+                tokens(row.cache_write),
                 row.cost.map_or_else(
                     || "no cost reported".to_owned(),
                     |cost| format!("${cost:.6}")
@@ -491,7 +514,7 @@ impl Bench {
     /// last request of the process that exported it — which is the whole point of
     /// the last phase.
     fn audit(&mut self, phase: &'static str, captured: &Captured, before: Option<&Captured>) {
-        let mut lines: Vec<(String, Value)> = Vec::new();
+        let mut lines: Vec<(String, RequestRecord)> = Vec::new();
         if let Some(before) = before {
             let requests = before
                 .lock()
@@ -512,8 +535,8 @@ impl Bench {
 
         let mut previous: Option<(String, Vec<Value>)> = None;
         for (label, request) in lines {
-            let messages = messages_of(&request);
-            let bytes = request.to_string().len();
+            let messages = messages_of(&request.body);
+            let bytes = request.bytes;
             let (shared, same, digest) = match &previous {
                 None => {
                     println!("  {label}: {} message(s), {bytes} bytes", messages.len());
@@ -584,142 +607,255 @@ fn reported_cost(usage: &Usage) -> Option<f64> {
     usage.vendor.get("cost").and_then(Value::as_f64)
 }
 
-fn show(value: Option<u64>) -> String {
-    value.map_or_else(|| "—".to_owned(), |value| value.to_string())
-}
-
-/// `u64 as f64` loses precision as far as the lint policy is concerned, so the
-/// conversion is explicit. A token count never nears the ceiling.
-fn as_f64(tokens: u64) -> f64 {
-    f64::from(u32::try_from(tokens).unwrap_or(u32::MAX))
-}
-
 fn hit_rate(input: Option<u64>, read: Option<u64>) -> String {
     match (input, read) {
-        (Some(input), Some(read)) if input > 0 => {
-            format!("{:.1}%", 100.0 * as_f64(read) / as_f64(input))
-        }
+        (Some(input), Some(read)) => norte_bench_support::percent(read.min(input), input),
         _ => "—".to_owned(),
     }
 }
 
-fn duration(elapsed: Duration) -> String {
-    let seconds = elapsed.as_secs_f64();
-    if seconds < 1.0 {
-        format!("{:.0} ms", seconds * 1000.0)
-    } else {
-        format!("{seconds:.2} s")
+/// The hit rate as a spreadsheet cell: a bare number, or empty when the
+/// provider reported no counters.
+fn hit_csv(input: Option<u64>, read: Option<u64>) -> String {
+    match (input, read) {
+        (Some(input), Some(read)) if input > 0 => format!(
+            "{:.1}",
+            100.0 * norte_bench_support::as_f64(read.min(input))
+                / norte_bench_support::as_f64(input)
+        ),
+        _ => String::new(),
     }
 }
 
 // ── the report ──────────────────────────────────────────────────────────────
 
-fn render_report(
-    bench: &Bench,
-    closing: &str,
-    model: &str,
-    endpoint: &str,
-    provider: Option<&str>,
-    at: DateTime<Utc>,
-) -> String {
+/// The CSV headers, one per table the run writes.
+const TURN_HEADERS: &[&str] = &["phase", "turn", "elapsed"];
+const REQUEST_HEADERS: &[&str] = &[
+    "number",
+    "phase",
+    "turn",
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "hit",
+    "cost",
+];
+const AUDIT_HEADERS: &[&str] = &[
+    "phase", "request", "messages", "bytes", "shared", "status", "digest",
+];
+
+fn render_report(bench: &Bench, closing: &str, route: &Route, started: DateTime<Utc>) -> Report {
+    let mut report = Report::new("cache-hit");
+    report.paragraph(
+        "What survives a turn, a tool call, a park and an export, in the provider's own numbers.",
+    );
+
+    report.section("The run");
+    report.kv(&[
+        (
+            "started",
+            started.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+        ),
+        ("model", format!("`{}`", route.model)),
+        (
+            "provider",
+            route
+                .provider
+                .clone()
+                .unwrap_or_else(|| "the router decides".to_owned()),
+        ),
+        ("endpoint", format!("`{}`", route.endpoint)),
+        ("phases", "normal, tool, approval, export".to_owned()),
+    ]);
+
+    report.section("Reproduce");
+    report.code("sh", &reproduce(route));
+
+    report.section("Turns");
+    report.table(
+        &["phase", "turn", "elapsed"],
+        &[Align::Left, Align::Left, Align::Right],
+        &turn_cells(bench),
+    );
+
+    report.section("Requests");
+    report.table(
+        &[
+            "#",
+            "phase",
+            "turn",
+            "input",
+            "output",
+            "cache read",
+            "cache write",
+            "hit",
+            "cost",
+        ],
+        &[
+            Align::Right,
+            Align::Left,
+            Align::Left,
+            Align::Right,
+            Align::Right,
+            Align::Right,
+            Align::Right,
+            Align::Right,
+            Align::Right,
+        ],
+        &request_cells(bench),
+    );
+    report.paragraph(&format!("**Bill.** {}.", bill(bench)));
+
+    report.section("Prefix audit");
+    report.table(
+        &[
+            "phase", "request", "messages", "bytes", "shared", "status", "digest",
+        ],
+        &[
+            Align::Left,
+            Align::Left,
+            Align::Right,
+            Align::Right,
+            Align::Right,
+            Align::Left,
+            Align::Left,
+        ],
+        &audit_cells(bench),
+    );
+
+    report.section("What this shows");
+    report.paragraph(closing);
+    report
+}
+
+fn reproduce(route: &Route) -> String {
     let mut out = String::new();
-    render_header(&mut out, model, endpoint, provider, at);
-    render_turns(&mut out, bench);
-    render_requests(&mut out, bench);
-    render_audit(&mut out, bench);
-    writeln!(out, "\n## What this shows\n\n{closing}\n").expect("writing to a String never fails");
+    out.push_str("export OPENROUTER_API_KEY=...\n");
+    let _ = writeln!(out, "export BENCH_ENDPOINT={}", route.endpoint);
+    let _ = writeln!(out, "export BENCH_MODEL={}", route.model);
+    if let Some(provider) = &route.provider {
+        let _ = writeln!(out, "export BENCH_PROVIDER={provider}");
+    }
+    out.push_str("cargo run -p norte-bench-cache-hit");
     out
 }
 
-fn render_header(
-    out: &mut String,
-    model: &str,
-    endpoint: &str,
-    provider: Option<&str>,
-    at: DateTime<Utc>,
-) {
-    writeln!(out, "# cache-hit\n").expect("writing to a String never fails");
-    writeln!(
-        out,
-        "What survives a turn, a tool call, a park and an export, in the provider's own numbers.\n"
-    )
-    .expect("writing to a String never fails");
-
-    writeln!(out, "## The run\n").expect("writing to a String never fails");
-    writeln!(out, "| | |\n| --- | --- |").expect("writing to a String never fails");
-    writeln!(out, "| Started | {} |", at.format("%Y-%m-%d %H:%M:%S UTC"))
-        .expect("writing to a String never fails");
-    writeln!(out, "| Model | `{model}` |").expect("writing to a String never fails");
-    writeln!(
-        out,
-        "| Provider | {} |",
-        provider.unwrap_or("the router decides")
-    )
-    .expect("writing to a String never fails");
-    writeln!(out, "| Endpoint | `{endpoint}` |").expect("writing to a String never fails");
-    writeln!(
-        out,
-        "| Commit | {} |",
-        commit().unwrap_or_else(|| "—".to_owned())
-    )
-    .expect("writing to a String never fails");
-
-    writeln!(out, "\n## Reproduce\n\n```sh").expect("writing to a String never fails");
-    writeln!(out, "OPENROUTER_API_KEY=...").expect("writing to a String never fails");
-    writeln!(out, "BENCH_ENDPOINT={endpoint}").expect("writing to a String never fails");
-    writeln!(out, "BENCH_MODEL={model}").expect("writing to a String never fails");
-    if let Some(provider) = provider {
-        writeln!(out, "BENCH_PROVIDER={provider}").expect("writing to a String never fails");
-    }
-    writeln!(out, "cargo run -p norte-bench-cache-hit\n```")
-        .expect("writing to a String never fails");
+fn turn_cells(bench: &Bench) -> Vec<Vec<String>> {
+    bench
+        .turns
+        .iter()
+        .map(|row| {
+            vec![
+                row.phase.to_owned(),
+                row.label.to_owned(),
+                duration(row.elapsed),
+            ]
+        })
+        .collect()
 }
 
-fn render_turns(out: &mut String, bench: &Bench) {
-    writeln!(out, "\n## Turns\n").expect("writing to a String never fails");
-    writeln!(out, "| Phase | Turn | Elapsed |\n| --- | --- | ---: |")
-        .expect("writing to a String never fails");
-    for row in &bench.turns {
-        writeln!(
-            out,
-            "| {} | {} | {} |",
-            row.phase,
-            row.label,
-            duration(row.elapsed)
-        )
-        .expect("writing to a String never fails");
-    }
+fn request_cells(bench: &Bench) -> Vec<Vec<String>> {
+    bench
+        .requests
+        .iter()
+        .enumerate()
+        .map(|(index, row)| {
+            vec![
+                (index + 1).to_string(),
+                row.phase.to_owned(),
+                row.turn.to_owned(),
+                tokens(row.input),
+                tokens(row.output),
+                tokens(row.cache_read),
+                tokens(row.cache_write),
+                hit_rate(row.input, row.cache_read),
+                money_opt(row.cost),
+            ]
+        })
+        .collect()
 }
 
-fn render_requests(out: &mut String, bench: &Bench) {
-    writeln!(out, "\n## Requests\n").expect("writing to a String never fails");
-    writeln!(
-        out,
-        "| # | Phase | Turn | Input | Output | Cache read | Cache write | Hit | Cost |\n\
-         | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |"
-    )
-    .expect("writing to a String never fails");
-    for (index, row) in bench.requests.iter().enumerate() {
-        writeln!(
-            out,
-            "| {} | {} | {} | {} | {} | {} | {} | {} | {} |",
-            index + 1,
-            row.phase,
-            row.turn,
-            show(row.input),
-            show(row.output),
-            show(row.cache_read),
-            show(row.cache_write),
-            hit_rate(row.input, row.cache_read),
-            row.cost
-                .map_or_else(|| "—".to_owned(), |cost| format!("${cost:.6}"))
-        )
-        .expect("writing to a String never fails");
-    }
+/// The request table as CSV: numbers stay numbers, so a spreadsheet can sum
+/// them, and an absent counter is an empty cell rather than an em dash.
+fn request_rows(bench: &Bench) -> Vec<Vec<String>> {
+    bench
+        .requests
+        .iter()
+        .enumerate()
+        .map(|(index, row)| {
+            let number =
+                |value: Option<u64>| value.map_or_else(String::new, |value| value.to_string());
+            let cost =
+                |value: Option<f64>| value.map_or_else(String::new, |value| format!("{value:.6}"));
+            vec![
+                (index + 1).to_string(),
+                row.phase.to_owned(),
+                row.turn.to_owned(),
+                number(row.input),
+                number(row.output),
+                number(row.cache_read),
+                number(row.cache_write),
+                hit_csv(row.input, row.cache_read),
+                cost(row.cost),
+            ]
+        })
+        .collect()
+}
 
+fn audit_cells(bench: &Bench) -> Vec<Vec<String>> {
+    bench
+        .audits
+        .iter()
+        .map(|row| {
+            vec![
+                row.phase.to_owned(),
+                row.label.clone(),
+                row.messages.to_string(),
+                row.bytes.to_string(),
+                row.shared
+                    .map_or_else(|| "—".to_owned(), |shared| shared.to_string()),
+                match row.same {
+                    Some(true) => "byte-identical",
+                    Some(false) => "CHANGED",
+                    None => "—",
+                }
+                .to_owned(),
+                row.digest.clone().unwrap_or_else(|| "—".to_owned()),
+            ]
+        })
+        .collect()
+}
+
+fn audit_rows(bench: &Bench) -> Vec<Vec<String>> {
+    bench
+        .audits
+        .iter()
+        .map(|row| {
+            vec![
+                row.phase.to_owned(),
+                row.label.clone(),
+                row.messages.to_string(),
+                row.bytes.to_string(),
+                row.shared
+                    .map_or_else(String::new, |shared| shared.to_string()),
+                match row.same {
+                    Some(true) => "byte-identical",
+                    Some(false) => "changed",
+                    None => "",
+                }
+                .to_owned(),
+                row.digest.clone().unwrap_or_default(),
+            ]
+        })
+        .collect()
+}
+
+fn bill(bench: &Bench) -> String {
     let prices: Vec<f64> = bench.requests.iter().filter_map(|row| row.cost).collect();
     let unpriced = bench.requests.len().saturating_sub(prices.len());
-    let bill = if prices.is_empty() {
+    if prices.is_empty() {
         "no request reported a `cost`".to_owned()
     } else if unpriced == 0 {
         format!(
@@ -734,104 +870,7 @@ fn render_requests(out: &mut String, bench: &Bench) {
             prices.len(),
             bench.requests.len()
         )
-    };
-    writeln!(out, "\n**Bill.** {bill}.").expect("writing to a String never fails");
-}
-
-fn render_audit(out: &mut String, bench: &Bench) {
-    writeln!(out, "\n## Prefix audit\n").expect("writing to a String never fails");
-    writeln!(
-        out,
-        "| Phase | Request | Messages | Bytes | Shared | Status | Digest |\n\
-         | --- | --- | ---: | ---: | ---: | --- | --- |"
-    )
-    .expect("writing to a String never fails");
-    for row in &bench.audits {
-        writeln!(
-            out,
-            "| {} | {} | {} | {} | {} | {} | {} |",
-            row.phase,
-            row.label,
-            row.messages,
-            row.bytes,
-            row.shared
-                .map_or_else(|| "—".to_owned(), |shared| shared.to_string()),
-            match row.same {
-                Some(true) => "byte-identical",
-                Some(false) => "CHANGED",
-                None => "—",
-            },
-            row.digest.as_deref().unwrap_or("—")
-        )
-        .expect("writing to a String never fails");
     }
-}
-
-/// Where a run writes itself when told nowhere else: beside this crate, named
-/// after the moment and the route, so one model's results do not overwrite
-/// another's.
-fn default_report_path(provider: &str, model: &str, at: DateTime<Utc>) -> PathBuf {
-    let name = format!(
-        "{}-{}-{}.md",
-        at.format("%Y-%m-%dT%H%M%S"),
-        slug(provider),
-        slug(model)
-    );
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("results")
-        .join(name)
-}
-
-/// A file-name-safe form of a name: `deepseek/deepseek-v4-flash-0731` becomes
-/// `deepseek-deepseek-v4-flash-0731`.
-fn slug(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for character in text.chars() {
-        if character.is_ascii_alphanumeric() {
-            out.push(character.to_ascii_lowercase());
-        } else if !out.is_empty() && !out.ends_with('-') {
-            out.push('-');
-        }
-    }
-    out.trim_end_matches('-').to_owned()
-}
-
-/// The commit the run started from, when it is run from a checkout. Optional on
-/// purpose: a benchmark has to run from a tarball too.
-fn commit() -> Option<String> {
-    let output = std::process::Command::new("git")
-        .args(["rev-parse", "--short", "HEAD"])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let sha = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    (!sha.is_empty()).then_some(sha)
-}
-
-/// Writes the report, making the directory if a first run has to.
-fn write_report(markdown: &str, path: &Path) -> Result<(), Box<dyn Error>> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(path, markdown)?;
-    Ok(())
-}
-
-fn print_help() {
-    println!(
-        "cache-hit: what survives a turn, a tool call, a park and an export, in the provider's \
-         numbers\n\n\
-         usage: norte-bench-cache-hit [--report <path>]\n\n\
-         OPENROUTER_API_KEY  the key for the endpoint\n\
-         BENCH_ENDPOINT      the OpenAI-compatible base URL\n\
-         BENCH_MODEL         the model id\n\
-         BENCH_PROVIDER      optional: pin the upstream\n\n\
-         the report defaults to results/<date>-<provider>-<model>.md beside this crate, and \
-         --report writes it elsewhere"
-    );
 }
 
 // ── the prompt ──────────────────────────────────────────────────────────────
@@ -913,46 +952,10 @@ const DEPLOY: &str = "Deploy the service checkout to staging.";
 
 // ── the wiring ──────────────────────────────────────────────────────────────
 
-/// The wire bodies a model was asked for, in call order.
-type Captured = Arc<Mutex<Vec<Value>>>;
-
-/// A model that records the exact body of every request and then makes the call
-/// anyway, so the benchmark stays live: what is compared is what was sent.
-struct Probe {
-    inner: OpenAiChat,
-    captured: Captured,
-}
-
-#[async_trait::async_trait]
-impl Model for Probe {
-    fn reference(&self) -> &ModelRef {
-        self.inner.reference()
-    }
-
-    fn capabilities(&self) -> &Capabilities {
-        self.inner.capabilities()
-    }
-
-    fn continuity(&self) -> &dyn ContinuityAdapter {
-        self.inner.continuity()
-    }
-
-    async fn stream(&self, request: ModelRequest) -> norte_core::Result<ModelStream> {
-        // `request_body` is the projection the live path uses (FR-RECON-12), so
-        // recording it records the bytes, not an approximation of them.
-        let body = self.inner.request_body(&request)?;
-        self.captured
-            .lock()
-            .expect("the probe lock is never held across an await")
-            .push(body);
-        self.inner.stream(request).await
-    }
-}
-
 /// A fresh engine — its own store, its own probe — over the same model, with
 /// both tools declared from the start: changing the exposed set between turns
 /// would change the request for reasons that have nothing to do with caching.
-fn new_engine() -> Result<(Engine, Captured), Box<dyn Error>> {
+fn new_engine(route: &Route) -> Result<(Engine, Captured), Box<dyn Error>> {
     let mut tools = ToolRegistry::new();
     tools.register_declarator(&WordCount)?;
     tools.register_declarator(&Deploy)?;
@@ -961,11 +964,8 @@ fn new_engine() -> Result<(Engine, Captured), Box<dyn Error>> {
         vec![ToolName::new("deploy")?],
         "deploying touches production",
     ))]);
-    let captured: Captured = Arc::new(Mutex::new(Vec::new()));
-    let model = Probe {
-        inner: openrouter(tool_capabilities())?,
-        captured: Arc::clone(&captured),
-    };
+    let captured = new_capture();
+    let model = RecordingOpenAi::new(route.openai(tool_capabilities())?, Arc::clone(&captured));
     let engine = EngineBuilder::new()
         .store(Arc::new(InMemoryStore::new()))
         .blobs(Arc::new(InMemoryBlobStore::new()))
@@ -985,43 +985,76 @@ fn tool_capabilities() -> Capabilities {
         .build()
 }
 
-/// Pins the upstream provider when `BENCH_PROVIDER` names one.
-///
-/// The measurement is about a prefix, and the cache that holds it lives inside
-/// one provider: with `OpenRouter` free to route, a turn can land elsewhere and
-/// report a miss the bytes never caused. Pinning turns the number back into a
-/// statement about the provider the run names.
-fn turn_options() -> TurnOptions {
-    let mut options = TurnOptions::default();
-    // Every answer here is a line or two. Saying so also keeps `OpenRouter` from
-    // reserving the model's whole output window against the key on every call.
-    options.params.max_output_tokens = Some(512);
-    if let Ok(provider) = std::env::var("BENCH_PROVIDER") {
-        options.extensions.insert(
-            "openai.chat:provider".to_owned(),
-            serde_json::json!({ "order": [provider], "allow_fallbacks": false }),
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample() -> Bench {
+        let mut bench = Bench::default();
+        bench.turn("1. normal", "the turn", Duration::from_millis(12));
+        bench.requests.push(RequestRow {
+            phase: "1. normal",
+            turn: "the turn",
+            input: Some(10),
+            output: Some(2),
+            cache_read: Some(5),
+            cache_write: Some(0),
+            cost: Some(0.000_1),
+        });
+        bench.audits.push(AuditRow {
+            phase: "1. normal",
+            label: "request 1".to_owned(),
+            messages: 3,
+            bytes: 100,
+            shared: None,
+            same: None,
+            digest: Some("abc".to_owned()),
+        });
+        bench
+    }
+
+    #[test]
+    fn every_row_matches_its_header() {
+        let bench = sample();
+        assert!(
+            turn_cells(&bench)
+                .iter()
+                .all(|row| row.len() == TURN_HEADERS.len())
+        );
+        assert!(
+            request_cells(&bench)
+                .iter()
+                .all(|row| row.len() == REQUEST_HEADERS.len())
+        );
+        assert!(
+            request_rows(&bench)
+                .iter()
+                .all(|row| row.len() == REQUEST_HEADERS.len())
+        );
+        assert!(
+            audit_cells(&bench)
+                .iter()
+                .all(|row| row.len() == AUDIT_HEADERS.len())
+        );
+        assert!(
+            audit_rows(&bench)
+                .iter()
+                .all(|row| row.len() == AUDIT_HEADERS.len())
         );
     }
-    options
-}
 
-/// A value the run has to be given: nothing external is defaulted in the
-/// source, because a model id or an endpoint written here is a pointer that
-/// rots, and a run that quietly picks one is a run nobody chose.
-fn required(name: &str, example: &str) -> Result<String, Box<dyn Error>> {
-    std::env::var(name).map_err(|_| format!("set {name}, for example {name}={example}").into())
-}
-
-/// Wires `OpenRouter`. An `OpenAI`-compatible vendor is a profile, not a preset.
-fn openrouter(capabilities: Capabilities) -> Result<OpenAiChat, Box<dyn Error>> {
-    let provider = ProviderId::new("openrouter")?;
-    let endpoint = required("BENCH_ENDPOINT", "https://openrouter.ai/api/v1")?;
-    let profile = VendorProfile::new(provider.clone(), WireFamily::new(WIRE_CHAT)?, &endpoint)?
-        .with_auth(AuthScheme::bearer(std::env::var("OPENROUTER_API_KEY")?));
-    let id = required("BENCH_MODEL", "deepseek/deepseek-v4-flash-0731")?;
-    Ok(OpenAiChat::new(
-        ModelRef::new(provider, ModelId::new(&id)?),
-        profile,
-        capabilities,
-    )?)
+    #[test]
+    fn the_report_names_the_route_and_the_audit() {
+        let bench = sample();
+        let route = Route {
+            model: "test/model".to_owned(),
+            endpoint: "https://example.test/v1".to_owned(),
+            provider: Some("test".to_owned()),
+            key_env: "TEST_KEY".to_owned(),
+        };
+        let report = render_report(&bench, "closing", &route, Utc::now()).finish();
+        assert!(report.contains("test/model"));
+        assert!(report.contains("Prefix audit"));
+        assert!(report.contains("**Bill.**"));
+    }
 }

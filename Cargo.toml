@@ -5,6 +5,7 @@ members = [
     "benchmarks/agent-cost",
     "benchmarks/cache-hit",
     "benchmarks/latency",
+    "benchmarks/long-context",
     "benchmarks/roundtrip-fidelity",
     "benchmarks/schema-friction",
     "benchmarks/support",

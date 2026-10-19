@@ -55,6 +55,8 @@ impl HttpClient {
         self.policy
     }
 
+    /// The underlying `reqwest` client, for a request the ad-hoc API does not
+    /// cover.
     #[must_use]
     pub fn raw(&self) -> &reqwest::Client {
         &self.inner

@@ -1,3 +1,5 @@
+//! Engine integration tests driven by the scripted model.
+
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};

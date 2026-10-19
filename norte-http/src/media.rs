@@ -45,6 +45,7 @@ impl std::fmt::Debug for HttpMedia {
 }
 
 impl HttpMedia {
+    /// A media port that shares `client` and uploads no provider files.
     #[must_use]
     pub fn new(client: &HttpClient) -> Self {
         Self {

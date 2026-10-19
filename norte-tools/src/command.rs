@@ -57,8 +57,10 @@ pub enum CommandLine {
         example = serde_json::json!({"kind": "program", "program": "cargo", "args": ["test"]})
     )]
     Program {
+        /// The executable to run.
         #[schemars(description = "The program to run.", example = &"cargo")]
         program: String,
+        /// The arguments passed to `program`, in order.
         #[serde(default)]
         #[schemars(description = "The program's arguments, in order.")]
         args: Vec<String>,
@@ -72,6 +74,7 @@ pub enum CommandLine {
         /// The interpreter; [`CommandRequest::shell`] fills in [`DEFAULT_SHELL`].
         #[schemars(description = "The shell to run the script with.", example = &"sh")]
         shell: String,
+        /// The script passed to the shell.
         #[schemars(description = "The script to run.")]
         script: String,
     },
@@ -87,6 +90,7 @@ pub enum CommandLine {
     description = "The command to run and the bounds for it. The host caps the run time and the output size, so asking for more than it allows is clamped, not honoured."
 )]
 pub struct CommandRequest {
+    /// What to run: a program with its arguments, or a script for a shell.
     pub command: CommandLine,
     /// Working directory for the process.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -187,54 +191,66 @@ impl CommandRequest {
         self
     }
 
+    /// A directory to run the process in.
     #[must_use]
     pub fn with_cwd(mut self, cwd: impl Into<PathBuf>) -> Self {
         self.cwd = Some(cwd.into());
         self
     }
 
+    /// Adds one environment variable.
     #[must_use]
     pub fn with_env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.env.insert(key.into(), value.into());
         self
     }
 
+    /// Sets the time bound.
     #[must_use]
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout_ms = Some(u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX));
         self
     }
 
+    /// Sets how many bytes of each stream the executor keeps.
     #[must_use]
     pub fn with_output_cap(mut self, bytes: usize) -> Self {
         self.max_output_bytes = Some(bytes);
         self
     }
 
+    /// Sets the process's standard input.
     #[must_use]
     pub fn with_stdin(mut self, stdin: impl Into<String>) -> Self {
         self.stdin = Some(stdin.into());
         self
     }
 
+    /// Sets a blob as the standard input, which wins over [`with_stdin`] when
+    /// both are set.
+    ///
+    /// [`with_stdin`]: Self::with_stdin
     #[must_use]
     pub fn with_stdin_blob(mut self, blob: BlobId) -> Self {
         self.stdin_blob = Some(blob);
         self
     }
 
+    /// Merges stderr into stdout.
     #[must_use]
     pub fn merging_stderr(mut self) -> Self {
         self.merge_stderr = true;
         self
     }
 
+    /// Includes the last `lines` lines of the output in the summary.
     #[must_use]
     pub fn with_summary_lines(mut self, lines: usize) -> Self {
         self.summary_lines = Some(lines);
         self
     }
 
+    /// Reports the output lines containing `pattern` in the summary.
     #[must_use]
     pub fn with_summary_pattern(mut self, pattern: impl Into<String>) -> Self {
         self.summary_patterns.push(pattern.into());
@@ -271,7 +287,9 @@ pub enum CommandCode {
 /// (FR-TOOL-BASH-8).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommandOutput {
+    /// How the invocation ended.
     pub code: CommandCode,
+    /// The process's exit code, when it exited on its own.
     pub exit_code: Option<i32>,
     /// The signal that ended the process, when one did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -281,13 +299,16 @@ pub struct CommandOutput {
     pub stdout: String,
     /// Standard error, redacted and bounded; empty when the request merged it.
     pub stderr: String,
+    /// How long the process ran, in milliseconds.
     pub duration_ms: u64,
     /// Bytes the process wrote in total, across both streams, whether or not
     /// they were kept.
     pub bytes_read: usize,
     /// Whether any of what the process wrote was left out of this result.
     pub truncated: bool,
+    /// Whether the host's time bound killed the process.
     pub timed_out: bool,
+    /// Whether the caller cancelled the invocation.
     pub cancelled: bool,
     /// The directory the process ran in, when the request named one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -305,7 +326,9 @@ pub struct CommandOutput {
     pub request_digest: Digest,
     /// Digest of the text this result carries.
     pub output_hash: Digest,
+    /// When the process was started.
     pub started_at: DateTime<Utc>,
+    /// When the invocation stopped.
     pub ended_at: DateTime<Utc>,
 }
 
@@ -341,6 +364,7 @@ impl CommandOutput {
 
 /// Packs a [`CommandOutput`] into the text and structure the model receives.
 pub trait CommandRenderer: Send + Sync {
+    /// Packs `output` into the text the model receives.
     fn render(&self, output: &CommandOutput) -> String;
 }
 
@@ -445,6 +469,8 @@ pub struct CommandTool {
 }
 
 impl CommandTool {
+    /// A command tool with the default limits, the plain renderer and no blob
+    /// store.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -456,12 +482,14 @@ impl CommandTool {
         }
     }
 
+    /// Sets the host's bounds.
     #[must_use]
     pub fn with_limits(mut self, limits: CommandLimits) -> Self {
         self.limits = limits;
         self
     }
 
+    /// Sets the renderer that shapes the text the model receives.
     #[must_use]
     pub fn with_renderer(mut self, renderer: Arc<dyn CommandRenderer>) -> Self {
         self.renderer = renderer;

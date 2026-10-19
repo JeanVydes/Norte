@@ -13,6 +13,7 @@ use crate::id::{ModelRef, ToolName};
 use crate::stream::StreamEvent;
 use crate::tool::ToolSpec;
 
+/// The boxed event stream one model call returns.
 pub type ModelStream = Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send + 'static>>;
 
 /// Request extension key carrying the originating session id, so adapters can
@@ -36,16 +37,22 @@ pub const MAX_TOP_LOGPROBS: u8 = 20;
 /// Sampling and output controls shared by every adapter.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct GenerationParams {
+    /// Sampling temperature: lower values repeat more, higher values vary more.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
+    /// Nucleus-sampling mass, in `(0, 1]`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f32>,
+    /// Keeps only the `n` most probable tokens at each step.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub top_k: Option<u32>,
+    /// Cap on the tokens one answer may produce.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u64>,
+    /// Sequences that end generation; the sequence is not part of the answer.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stop_sequences: Vec<String>,
+    /// Sampling seed, where the vendor honours it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seed: Option<u64>,
     /// JSON Schema the output must satisfy, when the model supports structured
@@ -168,21 +175,32 @@ impl Default for StreamLimits {
 /// whole conversation, in order; the last one is what the model must answer.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ModelRequest {
+    /// The exact model that must answer.
     pub model: ModelRef,
+    /// The whole conversation, in order; the last message is what must be
+    /// answered.
     pub messages: Vec<Message>,
+    /// The tools the model may call, already resolved from the turn's subset.
     pub tools: Vec<ToolSpec>,
+    /// The reasoning ask for this request.
     pub reasoning: ReasoningRequest,
+    /// The effective generation parameters (FR-ENG-9).
     pub params: GenerationParams,
+    /// The bounds the adapter must respect while streaming.
     pub limits: StreamLimits,
     /// Positions (exclusive end indices into `messages`) at which the provider
     /// may place a prompt-cache breakpoint. Deterministic: computed by
     /// reconstruction and unchanged when a new turn is appended.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cache_boundaries: Vec<u32>,
+    /// Vendor request extras, keyed `<wire-family>:<field>`; the adapter whose
+    /// family matches splices them into its body (Section 12).
     pub extensions: BTreeMap<String, Value>,
 }
 
 impl ModelRequest {
+    /// A request for `model` carrying `messages`, everything else at its
+    /// default.
     #[must_use]
     pub fn new(model: ModelRef, messages: Vec<Message>) -> Self {
         Self {
@@ -291,6 +309,7 @@ pub trait ContinuityAdapter: Send + Sync {
         fragment: ContinuityFragment,
     ) -> Result<ContinuityToken>;
 
+    /// Decides what to do with `token` when replaying `history` into `target`.
     fn replay(
         &self,
         target: &ModelRef,
@@ -303,12 +322,20 @@ pub trait ContinuityAdapter: Send + Sync {
 /// collected stream.
 #[async_trait::async_trait]
 pub trait Model: Send + Sync {
+    /// The exact model this port answers for, as the host named it.
     fn reference(&self) -> &ModelRef;
 
+    /// What this model declares it can do.
     fn capabilities(&self) -> &Capabilities;
 
+    /// The adapter that interprets this model's continuity tokens.
     fn continuity(&self) -> &dyn ContinuityAdapter;
 
+    /// Runs one generation and returns its events as they arrive.
+    ///
+    /// # Errors
+    ///
+    /// Returns a transport or wire error when the request cannot be run.
     async fn stream(&self, request: ModelRequest) -> Result<ModelStream>;
 }
 

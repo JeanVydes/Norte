@@ -1,6 +1,6 @@
 [package]
 name = "norte-gemini"
-description = "Google Gemini adapter for Norte: generateContent, streaming, function calls, safety ratings and cached content"
+description = "Google Gemini client: generateContent with streaming, function calls, safety ratings and cached content"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,7 +9,7 @@ repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
 readme = "../README.md"
-keywords = ["gemini", "google", "llm", "generatecontent"]
+keywords = ["gemini", "google", "llm", "multimodal", "function-calling"]
 categories = ["api-bindings", "web-programming::http-client", "asynchronous"]
 
 [dependencies]

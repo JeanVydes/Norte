@@ -258,7 +258,9 @@ pub struct ReadLine {
 /// What one read did.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadOutput {
+    /// The file the request named.
     pub path: PathBuf,
+    /// Whether the file is text or binary.
     pub text_kind: TextKind,
     /// Bytes in the file.
     pub bytes: usize,
@@ -281,7 +283,9 @@ pub struct ReadOutput {
     /// to continue where this result stopped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_start: Option<usize>,
+    /// Digest of the content the read worked from.
     pub content_digest: Digest,
+    /// Digest of the request as the executor judged it.
     pub request_digest: Digest,
 }
 
@@ -326,6 +330,7 @@ pub struct ReadTool {
 }
 
 impl ReadTool {
+    /// A read tool with the default limits.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -333,6 +338,7 @@ impl ReadTool {
         }
     }
 
+    /// Sets the bounds on what may be read.
     #[must_use]
     pub fn with_limits(mut self, limits: ReadLimits) -> Self {
         self.limits = limits;

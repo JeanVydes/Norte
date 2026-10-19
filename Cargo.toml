@@ -24,7 +24,7 @@ edition = "2024"
 rust-version = "1.85"
 license = "MIT"
 repository = "https://github.com/JeanVydes/Norte"
-homepage = "https://github.com/JeanVydes/Norte"
+homepage = "https://jeanvydes.github.io/Norte/"
 authors = ["Jean Vides <j@vyde.dev>"]
 
 [workspace.dependencies]
@@ -65,6 +65,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
+missing_docs = "deny"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }

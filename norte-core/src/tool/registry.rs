@@ -28,6 +28,7 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
+    /// An empty registry.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -127,26 +128,31 @@ impl ToolRegistry {
         self.register_tool_declaration(declarator.declare_tool())
     }
 
+    /// The function registered under `name`, if any.
     #[must_use]
     pub fn get(&self, name: &ToolName) -> Option<&Arc<dyn AnyFunction>> {
         self.tools.get(name).map(|registered| &registered.function)
     }
 
+    /// The spec registered under `name`, if any.
     #[must_use]
     pub fn spec(&self, name: &ToolName) -> Option<&ToolSpec> {
         self.tools.get(name).map(|registered| &registered.spec)
     }
 
+    /// Whether no tool is registered.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.tools.is_empty()
     }
 
+    /// How many tools are registered.
     #[must_use]
     pub fn len(&self) -> usize {
         self.tools.len()
     }
 
+    /// The spec of every registered tool, ordered by name.
     #[must_use]
     pub fn specs(&self) -> Vec<ToolSpec> {
         self.tools
@@ -190,6 +196,7 @@ pub struct FnTool<A, R, F> {
 }
 
 impl<A, R, F> FnTool<A, R, F> {
+    /// A tool whose executor is `function`.
     #[must_use]
     pub fn new(function: F) -> Self {
         Self {

@@ -1,6 +1,6 @@
 [package]
 name = "norte-mcp"
-description = "Model Context Protocol client and server for Norte: remote tools, resources and prompts become first-class host tools"
+description = "Model Context Protocol client and server: remote tools, resources and prompts as first-class tools"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,7 +9,7 @@ repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
 readme = "../README.md"
-keywords = ["mcp", "llm", "agent", "tools"]
+keywords = ["mcp", "llm", "ai-agents", "tools", "resources"]
 categories = ["api-bindings", "asynchronous"]
 
 [dependencies]

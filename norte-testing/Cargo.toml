@@ -1,6 +1,6 @@
 [package]
 name = "norte-testing"
-description = "Scripted models, fixture replay, request probes and conformance suites for Norte"
+description = "Scripted models, fixture replay and conformance suites for testing AI agent code"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,7 +9,7 @@ repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
 readme = "../README.md"
-keywords = ["llm", "testing", "fixtures", "conformance"]
+keywords = ["llm", "testing", "mocks", "fixtures", "conformance"]
 categories = ["development-tools::testing"]
 
 [dependencies]

@@ -9,14 +9,20 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum Role {
+    /// A system instruction.
     System,
+    /// A developer instruction.
     Developer,
+    /// The user.
     User,
+    /// The model.
     Assistant,
+    /// A tool result.
     Tool,
 }
 
 impl Role {
+    /// Whether the role carries an instruction rather than conversation.
     #[must_use]
     pub fn is_instruction(self) -> bool {
         matches!(self, Role::System | Role::Developer)

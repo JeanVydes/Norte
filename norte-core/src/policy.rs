@@ -12,10 +12,15 @@ use crate::id::{ModelRef, ToolName};
 /// A typed view of the request a policy decides on. Policies perform no I/O:
 /// anything external is fetched by a layer and placed in session metadata.
 pub struct PolicyView<'a> {
+    /// The session the call belongs to.
     pub session: &'a Session,
+    /// The model the turn is running.
     pub model: &'a ModelRef,
+    /// What the model declared it can do.
     pub capabilities: &'a Capabilities,
+    /// The call being decided.
     pub call: &'a ToolCallPart,
+    /// The assistant message that carries the call.
     pub message: &'a Message,
     /// Decisions produced by earlier policies, in declared order.
     pub prior: &'a [PolicyDecision],
@@ -36,13 +41,19 @@ pub struct PolicyView<'a> {
     pub history: &'a [Message],
 }
 
+/// What a policy decided.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Decision {
+    /// Let the call run.
     Allow,
+    /// Refuse the call, with a reason the model reads.
     Deny(String),
+    /// Park the call for a human decision, with a prompt.
     RequireApproval(String),
+    /// Run the call with rewritten arguments.
     Transform(Value),
+    /// Refuse for now, asking to retry after the duration.
     RateLimit(Duration),
 }
 
@@ -50,13 +61,18 @@ pub enum Decision {
 /// so the same inputs keep producing the same auditable outcome.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PolicyDecision {
+    /// The name of the policy that decided.
     pub policy: String,
+    /// What it decided.
     pub decision: Decision,
 }
 
+/// A pure decision rule over one tool call.
 pub trait Policy: Send + Sync {
+    /// The policy's name, recorded with every decision.
     fn name(&self) -> &str;
 
+    /// Decides what happens to the call.
     fn decide(&self, view: &PolicyView<'_>) -> Decision;
 }
 
@@ -67,16 +83,19 @@ pub struct PolicySet {
 }
 
 impl PolicySet {
+    /// A set that evaluates the policies in order.
     #[must_use]
     pub fn new(policies: Vec<Arc<dyn Policy>>) -> Self {
         Self { policies }
     }
 
+    /// Whether the set has no policies.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.policies.is_empty()
     }
 
+    /// Evaluates every policy in order, each seeing the decisions before it.
     #[must_use]
     pub fn evaluate(&self, view: &PolicyView<'_>) -> Vec<PolicyDecision> {
         let mut decisions = Vec::with_capacity(self.policies.len());
@@ -101,24 +120,38 @@ impl PolicySet {
     }
 }
 
+/// The folded outcome of a set of decisions.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum PolicyOutcome {
+    /// The call runs.
     Allow,
+    /// The call is refused.
     Deny {
+        /// The policy that denied it.
         policy: String,
+        /// The reason, as the model reads it.
         reason: String,
     },
+    /// The call is parked for a human decision.
     RequireApproval {
+        /// The policy that parked it.
         policy: String,
+        /// The prompt the human reads.
         reason: String,
     },
+    /// The call runs with rewritten arguments.
     Transform {
+        /// The policy that rewrote them.
         policy: String,
+        /// The rewritten arguments.
         arguments: Value,
     },
+    /// The call is refused for now.
     RateLimit {
+        /// The policy that set the limit.
         policy: String,
+        /// How long to wait before retrying.
         retry_after: Duration,
     },
 }
@@ -170,6 +203,7 @@ pub struct ToolApprovalPolicy {
 }
 
 impl ToolApprovalPolicy {
+    /// A policy that parks any call to one of `tools`, with `reason`.
     #[must_use]
     pub fn new(name: impl Into<String>, tools: Vec<ToolName>, reason: impl Into<String>) -> Self {
         Self {

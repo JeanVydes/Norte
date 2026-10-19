@@ -9,22 +9,35 @@ use crate::secret::Secret;
 #[derive(Clone, Debug, Default)]
 #[non_exhaustive]
 pub enum AuthScheme {
+    /// No credentials.
     #[default]
     None,
     /// `Authorization: Bearer <token>`.
     Bearer(Secret<String>),
     /// An arbitrary header, e.g. `x-api-key` or `api-key`.
-    Header { name: String, value: Secret<String> },
+    Header {
+        /// The header's name.
+        name: String,
+        /// The header's value, held as a secret.
+        value: Secret<String>,
+    },
     /// A query parameter, for vendors that sign the URL.
-    Query { name: String, value: Secret<String> },
+    Query {
+        /// The parameter's name.
+        name: String,
+        /// The parameter's value, held as a secret.
+        value: Secret<String>,
+    },
 }
 
 impl AuthScheme {
+    /// A bearer-token scheme.
     #[must_use]
     pub fn bearer(token: impl Into<String>) -> Self {
         Self::Bearer(Secret::new(token.into()))
     }
 
+    /// A scheme that sets one header.
     #[must_use]
     pub fn header(name: impl Into<String>, value: impl Into<String>) -> Self {
         Self::Header {
@@ -33,6 +46,7 @@ impl AuthScheme {
         }
     }
 
+    /// A scheme that sets one query parameter.
     #[must_use]
     pub fn query(name: impl Into<String>, value: impl Into<String>) -> Self {
         Self::Query {

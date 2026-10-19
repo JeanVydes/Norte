@@ -1,6 +1,6 @@
 [package]
 name = "norte-openai"
-description = "OpenAI adapter for Norte: the Responses and Chat Completions wires, streaming, tool calls and reasoning"
+description = "OpenAI client: the Responses and Chat Completions APIs with streaming, tool calls and reasoning"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,7 +9,7 @@ repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
 readme = "../README.md"
-keywords = ["openai", "llm", "gpt", "responses"]
+keywords = ["openai", "gpt", "llm", "responses", "chat-completions"]
 categories = ["api-bindings", "web-programming::http-client", "asynchronous"]
 
 [dependencies]

@@ -38,25 +38,30 @@ pub enum Quirk {
 pub struct Quirks(BTreeSet<Quirk>);
 
 impl Quirks {
+    /// An empty set.
     #[must_use]
     pub fn new() -> Self {
         Self(BTreeSet::new())
     }
 
+    /// Adds `quirk`.
     pub fn insert(&mut self, quirk: Quirk) {
         self.0.insert(quirk);
     }
 
+    /// Whether `quirk` is in the set.
     #[must_use]
     pub fn contains(&self, quirk: Quirk) -> bool {
         self.0.contains(&quirk)
     }
 
+    /// Whether the set is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
+    /// The quirks, in a deterministic order.
     pub fn iter(&self) -> impl Iterator<Item = Quirk> + '_ {
         self.0.iter().copied()
     }

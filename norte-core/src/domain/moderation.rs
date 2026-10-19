@@ -13,13 +13,18 @@ use serde_json::Value;
 /// [`FinishReason::ContentFilter`](crate::FinishReason).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SafetyRating {
+    /// The vendor's label for what was detected.
     pub category: String,
+    /// The vendor's probability label, kept verbatim.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub probability: Option<String>,
+    /// The vendor's severity label, kept verbatim.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub severity: Option<String>,
+    /// Whether the vendor blocked the candidate over this rating.
     #[serde(default)]
     pub blocked: bool,
+    /// Anything else the vendor reported, under its own key.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub extension: BTreeMap<String, Value>,
 }

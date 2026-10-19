@@ -1,6 +1,6 @@
 [package]
 name = "norte-http"
-description = "Shared HTTP transport for Norte: vendor profiles, auth schemes, transport policy and provider-file media"
+description = "HTTP transport for AI provider clients: vendor profiles, auth schemes, retry policy and SSE decoding"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,7 +9,7 @@ repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
 readme = "../README.md"
-keywords = ["llm", "http", "transport", "sse"]
+keywords = ["llm", "http-client", "sse", "streaming", "retry"]
 categories = ["web-programming::http-client", "asynchronous"]
 
 [dependencies]

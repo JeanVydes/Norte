@@ -22,37 +22,59 @@ use crate::model::{ModelRequest, StreamLimits};
 #[serde(rename_all = "snake_case", tag = "event")]
 #[non_exhaustive]
 pub enum StreamEvent {
+    /// A text part started.
     TextStart {
+        /// The index of the part in the message.
         index: u32,
     },
+    /// Text arrived.
     TextDelta {
+        /// The index of the part in the message.
         index: u32,
+        /// The text that arrived.
         text: String,
     },
+    /// A reasoning part started.
     ReasoningStart {
+        /// The index of the part in the message.
         index: u32,
+        /// How much of the reasoning the provider will make available.
         visibility: ReasoningVisibility,
     },
+    /// Reasoning arrived.
     ReasoningDelta {
+        /// The index of the part in the message.
         index: u32,
+        /// The reasoning that arrived.
         text: String,
     },
     /// A partial refusal. The vendor streams it the way it streams text, so it
     /// accumulates into one [`Part::Refusal`] at the part index.
     RefusalDelta {
+        /// The index of the part in the message.
         index: u32,
+        /// The refusal that arrived.
         text: String,
     },
+    /// A tool call started.
     ToolCallStart {
+        /// The index of the part in the message.
         index: u32,
+        /// The call.
         call_id: CallId,
+        /// The tool's name.
         name: String,
     },
+    /// A fragment of a tool call's arguments arrived.
     ToolCallDelta {
+        /// The index of the part in the message.
         index: u32,
+        /// The call the arguments belong to.
         call_id: CallId,
+        /// The tool's name, on the deltas that carry it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
+        /// The fragment of the arguments document.
         #[serde(default, skip_serializing_if = "String::is_empty")]
         arguments: String,
     },
@@ -62,19 +84,29 @@ pub enum StreamEvent {
     /// early tool execution can start the call before the message finishes
     /// (FR-STREAM-4).
     ToolCallDone {
+        /// The index of the part in the message.
         index: u32,
     },
+    /// A media part started.
     MediaStart {
+        /// The index of the part in the message.
         index: u32,
+        /// The kind of media.
         kind: MediaKind,
+        /// The media's MIME type.
         mime: MimeType,
+        /// The descriptive fields the part is created from.
         #[serde(default)]
         metadata: MediaMetadata,
     },
+    /// Media bytes arrived.
     MediaChunk {
+        /// The index of the part in the message.
         index: u32,
+        /// The bytes that arrived in this chunk.
         #[serde(with = "crate::codec::bytes_base64")]
         bytes: Vec<u8>,
+        /// Whether the chunk ends the part.
         last: bool,
     },
     /// Replaces the metadata of the in-flight media part at `index`.
@@ -84,40 +116,61 @@ pub enum StreamEvent {
     /// the bytes have started, so the adapter settles them here before closing
     /// the part.
     MediaMetadata {
+        /// The index of the part in the message.
         index: u32,
+        /// The metadata that replaces what the part carried.
         metadata: MediaMetadata,
     },
+    /// A tool the provider executed itself was called.
     ProviderToolCall {
+        /// The index of the part in the message.
         index: u32,
+        /// The call.
         call_id: CallId,
+        /// The tool that ran.
         tool: ProviderTool,
+        /// The input the vendor sent, kept verbatim.
         input: serde_json::Value,
     },
+    /// A tool the provider executed itself returned.
     ProviderToolResult {
+        /// The index of the part in the message.
         index: u32,
+        /// The call this is the result of.
         call_id: CallId,
+        /// The tool that ran.
         tool: ProviderTool,
+        /// The output the vendor produced, kept verbatim.
         output: serde_json::Value,
+        /// References the provider attached to the result.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         citations: Vec<Citation>,
     },
     /// A citation the vendor attached to the text part at `index`.
     Citation {
+        /// The index of the part in the message.
         index: u32,
+        /// The citation.
         citation: Citation,
     },
     /// A part the adapter could not express as deltas.
     Part {
+        /// The index of the part in the message.
         index: u32,
+        /// The part.
         part: Part,
     },
+    /// Continuity material for the part at `index`.
     Continuity {
+        /// The index of the part in the message.
         index: u32,
+        /// The fragment, opaque to core.
         fragment: ContinuityFragment,
     },
     /// The vendor's moderation labels for a generated candidate. Informational:
     /// the neutral model never gates on them (see [`SafetyRating`]).
     SafetyRatings {
+        /// The ratings, as the provider reported them.
         ratings: Vec<SafetyRating>,
     },
     /// The log probabilities of the tokens streamed for the part at `index`.
@@ -126,10 +179,14 @@ pub enum StreamEvent {
     /// for them; only the request digest records that it did (FR-LP-2). See
     /// [`TokenLogprob`].
     Logprobs {
+        /// The index of the part in the message.
         index: u32,
+        /// One entry per token, in the order the provider reported them.
         entries: Vec<TokenLogprob>,
     },
+    /// The usage the provider reported.
     Usage(Usage),
+    /// Why the provider stopped generating.
     Finish(FinishReason),
 }
 
@@ -159,10 +216,15 @@ enum Partial {
     },
 }
 
+/// The result of folding a whole stream: the parts, the finish reason and the
+/// usage the provider reported.
 #[derive(Clone, Debug, Default)]
 pub struct Accumulated {
+    /// The parts, in index order.
     pub parts: Vec<Part>,
+    /// Why the provider stopped generating.
     pub finish_reason: Option<FinishReason>,
+    /// The usage the provider reported.
     pub usage: Usage,
 }
 
@@ -181,6 +243,7 @@ pub struct StreamAccumulator {
 }
 
 impl StreamAccumulator {
+    /// An accumulator bounded by the given stream limits.
     #[must_use]
     pub fn new(limits: StreamLimits) -> Self {
         Self {
@@ -534,6 +597,7 @@ impl StreamAccumulator {
         }
     }
 
+    /// Attaches the continuity token for the part at `index`.
     pub fn attach_continuity(
         &mut self,
         index: u32,

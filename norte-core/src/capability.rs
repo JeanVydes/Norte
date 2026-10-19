@@ -9,14 +9,20 @@ use crate::id::ModelRef;
 use crate::model::{GenerationParams, MAX_TOP_LOGPROBS};
 use crate::tool::ToolSpec;
 
+/// A kind of content a model can accept or produce.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum Modality {
+    /// Text.
     Text,
+    /// Images.
     Image,
+    /// Audio.
     Audio,
+    /// Video.
     Video,
+    /// Documents, such as PDFs.
     Document,
 }
 
@@ -48,6 +54,7 @@ pub struct ModalityLimits {
 }
 
 impl ModalityLimits {
+    /// Whether the limits accept a MIME type; no configured types accepts any.
     #[must_use]
     pub fn accepts_mime(&self, mime: &MimeType) -> bool {
         self.mime_types.is_empty() || self.mime_types.contains(mime)
@@ -58,13 +65,16 @@ impl ModalityLimits {
 /// carry the host's limits; output modalities are a plain set.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModalityCapabilities {
+    /// The accepted input modalities, each with its limits.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub input: BTreeMap<Modality, ModalityLimits>,
+    /// The modalities the model can produce.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub output: BTreeSet<Modality>,
 }
 
 impl ModalityCapabilities {
+    /// Input modalities without extra limits, and output modalities.
     #[must_use]
     pub fn new(
         input: impl IntoIterator<Item = Modality>,
@@ -79,37 +89,47 @@ impl ModalityCapabilities {
         }
     }
 
+    /// Accepts `modality` on input under `limits`.
     pub fn allow_input(&mut self, modality: Modality, limits: ModalityLimits) {
         self.input.insert(modality, limits);
     }
 
+    /// Produces `modality` on output.
     pub fn allow_output(&mut self, modality: Modality) {
         self.output.insert(modality);
     }
 
+    /// Whether `modality` is accepted on input.
     #[must_use]
     pub fn supports_input(&self, modality: Modality) -> bool {
         self.input.contains_key(&modality)
     }
 
+    /// Whether `modality` is produced on output.
     #[must_use]
     pub fn supports_output(&self, modality: Modality) -> bool {
         self.output.contains(&modality)
     }
 
+    /// The limits configured for an input modality.
     #[must_use]
     pub fn limits(&self, modality: Modality) -> Option<&ModalityLimits> {
         self.input.get(&modality)
     }
 }
 
+/// How hard the model should reason.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ReasoningEffort {
+    /// The least effort the model offers.
     Minimal,
+    /// A low effort level.
     Low,
+    /// A medium effort level.
     Medium,
+    /// A high effort level.
     High,
 }
 
@@ -120,39 +140,57 @@ pub enum ReasoningEffort {
 #[serde(rename_all = "snake_case", tag = "mode", content = "value")]
 #[non_exhaustive]
 pub enum ReasoningRequest {
+    /// No reasoning.
     Disabled,
+    /// Whatever the model decides.
     #[default]
     Automatic,
+    /// A named effort level.
     Effort(ReasoningEffort),
+    /// A cap on reasoning tokens.
     Budget(u32),
 }
 
+/// What a model's reasoning supports.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Reasoning {
+    /// Whether the model reasons at all.
     pub supported: bool,
+    /// Whether the host may turn reasoning off.
     pub can_disable: bool,
+    /// The effort levels the model accepts.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub efforts: BTreeSet<ReasoningEffort>,
+    /// Whether the model accepts a reasoning token budget.
     pub supports_budget: bool,
+    /// The largest budget the model accepts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_budget: Option<u32>,
 }
 
+/// How a tool reaches the model.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ToolKind {
+    /// A function the host executes.
     Function,
+    /// A tool the provider executes itself.
     ProviderExecuted,
+    /// A declaration the provider supplies and the host does not execute.
     ProviderSchema,
 }
 
+/// How finely the model streams.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum StreamingGranularity {
+    /// As deltas within a part.
     Delta,
+    /// One part at a time.
     Part,
+    /// Not at all.
     Disabled,
 }
 
@@ -161,9 +199,12 @@ pub enum StreamingGranularity {
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum CacheMode {
+    /// No caching.
     #[default]
     None,
+    /// The provider caches prefixes on its own.
     Automatic,
+    /// The host marks the content that may be cached.
     Explicit,
 }
 
@@ -173,9 +214,13 @@ pub enum CacheMode {
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum Feature {
+    /// The model attaches citations to text.
     Citations,
+    /// The model can ask for several calls in one turn.
     ParallelToolCalls,
+    /// The host can force a tool call.
     ForcedToolChoice,
+    /// The provider offers a batch endpoint.
     Batch,
     /// Token-level log probabilities (`top_logprobs`) for a turn.
     Logprobs,
@@ -186,8 +231,11 @@ pub enum Feature {
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum StructuredOutputMode {
+    /// Valid JSON of any shape.
     JsonObject,
+    /// JSON that follows a supplied schema.
     JsonSchema,
+    /// A schema the provider enforces exactly.
     StrictSchema,
 }
 
@@ -196,19 +244,28 @@ pub enum StructuredOutputMode {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct Capabilities {
+    /// What the model accepts and produces, with the host's limits.
     pub modalities: ModalityCapabilities,
+    /// What the model's reasoning supports.
     #[serde(default)]
     pub reasoning: Reasoning,
+    /// The tool kinds the model accepts.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub tool_kinds: BTreeSet<ToolKind>,
+    /// The independent features the model declares.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub features: BTreeSet<Feature>,
+    /// How finely the model streams, when it does.
     pub streaming: Option<StreamingGranularity>,
+    /// The structured-output modes the model can produce.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub structured_output: BTreeSet<StructuredOutputMode>,
+    /// Whether and how the model caches prompt prefixes.
     pub cache: CacheMode,
+    /// The context window in tokens, where known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_context: Option<u64>,
+    /// The largest answer in tokens, where known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output: Option<u64>,
 }
@@ -223,11 +280,13 @@ impl Capabilities {
         CapabilitiesBuilder::default()
     }
 
+    /// Whether the model accepts a tool kind.
     #[must_use]
     pub fn supports(&self, kind: ToolKind) -> bool {
         self.tool_kinds.contains(&kind)
     }
 
+    /// Whether the model declares a feature.
     #[must_use]
     pub fn supports_feature(&self, feature: Feature) -> bool {
         self.features.contains(&feature)

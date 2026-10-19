@@ -42,15 +42,52 @@ use crate::stream::{Accumulated, StreamAccumulator, StreamEvent};
 use crate::tool::registry::ToolRegistry;
 use crate::tool::{ToolContext, ToolOutput, ToolSpec};
 
+/// The turn-level policy that is not a layer: what a turn inherits and the
+/// bounds the engine enforces.
+///
+/// The inheritable fields ([`reasoning`](Self::reasoning),
+/// [`params`](Self::params)) are defaults, not floors: a turn overlays its own
+/// values per field. The rest are bounds the engine applies to every turn.
 #[derive(Clone, Debug)]
 pub struct EngineConfig {
+    /// The reasoning ask a turn inherits when it does not set one.
+    ///
+    /// [`ReasoningRequest::Automatic`] by default: the engine asks for whatever
+    /// the model does on its own unless the host says otherwise.
     pub reasoning: ReasoningRequest,
+    /// The generation parameters a turn inherits.
+    ///
+    /// A turn merges its own over these per field, so a value set here is the
+    /// baseline the turn may override, never a value it cannot change.
     pub params: GenerationParams,
+    /// The bounds on buffered observer events and on one stream's size.
+    ///
+    /// A slow observer never stalls a turn: the observer set drops what does not
+    /// fit and counts it. [`StreamLimits::default`] sizes the buffer for
+    /// ordinary use.
     pub limits: StreamLimits,
-    /// Media above this many bytes is moved to the blob store.
+    /// Media above this many bytes is moved to the blob store instead of
+    /// travelling inline in the history. 64 KiB by default.
     pub inline_threshold: usize,
+    /// How long a parked approval stays decidable before
+    /// [`Error::ApprovalExpired`] is the answer.
+    ///
+    /// Ten minutes by default. The record itself is durable: the clock is what
+    /// expires, not the store.
     pub approval_ttl: Duration,
+    /// How many requests one turn may spend before it fails with
+    /// [`Error::InvalidInput`].
+    ///
+    /// 16 by default. The count covers every round of the tool loop, and every
+    /// request that ran was committed and billed before the error: a cost meter
+    /// must keep counting past it. A coding agent that reads, edits and reads
+    /// back raises it.
     pub max_iterations: usize,
+    /// Whether allowed tool calls run inside the turn.
+    ///
+    /// `true` by default. When `false`, the turn parks at
+    /// [`Phase::AwaitingTool`] and the host runs the
+    /// calls and resumes it.
     pub auto_execute_tools: bool,
     /// When `true` (and `auto_execute_tools` is also `true`), a tool call whose
     /// arguments complete mid-stream begins executing before the assistant
@@ -78,9 +115,12 @@ impl Default for EngineConfig {
     }
 }
 
+/// What a finished turn leaves behind.
 #[derive(Clone, Debug)]
 pub struct TurnOutcome {
+    /// The session as committed.
     pub session: Session,
+    /// The assistant message the turn committed, when it committed one.
     pub message: Option<Message>,
 }
 
@@ -203,8 +243,6 @@ fn cache_boundaries(messages: &[Message]) -> Vec<u32> {
     boundaries
 }
 
-/// The pure state machine over a session.
-///
 /// How a gated call resolved.
 enum Authorization {
     /// A matching, verified grant is in force: run the call.
@@ -229,8 +267,9 @@ fn denial_reason(record: &ApprovalRecord) -> String {
     }
 }
 
-/// It holds configuration only; every piece of durable state lives in the
-/// store. One transition produces exactly one atomic commit.
+/// The pure state machine over a session. It holds configuration only; every
+/// piece of durable state lives in the store. One transition produces exactly
+/// one atomic commit.
 #[derive(Clone)]
 pub struct Engine {
     store: Arc<dyn Store>,
@@ -246,16 +285,19 @@ pub struct Engine {
 }
 
 impl Engine {
+    /// Starts a fluent builder.
     #[must_use]
     pub fn builder() -> EngineBuilder {
         EngineBuilder::default()
     }
 
+    /// The engine-level configuration.
     #[must_use]
     pub fn config(&self) -> &EngineConfig {
         &self.config
     }
 
+    /// The registry the engine consults.
     #[must_use]
     pub fn tools(&self) -> &ToolRegistry {
         &self.tools
@@ -1804,6 +1846,7 @@ pub struct EngineStream {
 }
 
 impl EngineStream {
+    /// Asks the turn to stop.
     pub fn cancel(&self) {
         self.cancellation.cancel();
     }
@@ -1842,6 +1885,55 @@ impl Drop for EngineStream {
     }
 }
 
+/// Fluent builder for an engine.
+///
+/// Three ports are required — a [`Store`], a [`BlobStore`] and a [`Model`] — and
+/// [`build`](EngineBuilder::build) fails with [`Error::InvalidInput`] naming the
+/// one that is missing. Everything else has a default: an empty tool registry,
+/// no policies, no layers, no observers and [`EngineConfig::default`].
+///
+/// The ports are built once, at the edge of the program, from configuration; the
+/// rest of the application sees [`Engine`] and never a vendor. A knob left unset
+/// keeps its default behaviour, so a builder lists only what the host decided.
+///
+/// # Example
+///
+/// ```ignore
+/// use std::sync::Arc;
+///
+/// use norte_core::{
+///     Capabilities, EngineBuilder, InMemoryBlobStore, InMemoryStore, Message, Modality,
+///     ToolRegistry,
+/// };
+/// use norte_openai::presets::openai;
+///
+/// let capabilities = Capabilities::builder()
+///     .input(Modality::Text)
+///     .output(Modality::Text)
+///     .build();
+///
+/// // Built once, at the edge of the program; nothing above the `Model` port
+/// // learns which vendor answered.
+/// let key = std::env::var("OPENAI_API_KEY").expect("key");
+/// let model = Arc::new(openai("gpt-5", key, capabilities).expect("model"));
+///
+/// let engine = EngineBuilder::new()
+///     .store(Arc::new(InMemoryStore::new()))
+///     .blobs(Arc::new(InMemoryBlobStore::new()))
+///     .model(model)
+///     .tools(ToolRegistry::new())
+///     .build()
+///     .expect("engine");
+///
+/// let session = engine.create().await.expect("session");
+///
+/// // The outcome carries the turn's parts, its usage and why it stopped.
+/// let outcome = engine
+///     .send(session.id, Message::user("Hello!"))
+///     .finish()
+///     .await
+///     .expect("turn");
+/// ```
 #[derive(Default)]
 pub struct EngineBuilder {
     store: Option<Arc<dyn Store>>,
@@ -1860,8 +1952,27 @@ pub struct EngineBuilder {
 /// Fluent builder for a single turn (FR-ENG-7, FR-ENG-8).
 ///
 /// It borrows the engine; [`start`](TurnBuilder::start) hands back an
-/// [`EngineStream`] and the borrow ends. Every knob is optional and overlays
-/// the inherited defaults per field.
+/// [`EngineStream`] and the borrow ends there. Every knob is optional and
+/// overlays the inherited defaults per field: what a turn sets replaces that one
+/// field of the effective [`GenerationParams`] and nothing else, so a turn that
+/// only changes the temperature keeps the engine's other parameters.
+///
+/// # Example
+///
+/// ```ignore
+/// use norte_core::{Message, ToolName};
+///
+/// let outcome = engine
+///     .turn(session.id)
+///     .input(Message::user("Summarize src/lib.rs"))
+///     .temperature(0.2)
+///     .max_output_tokens(512)
+///     .tools([ToolName::new("read_file").expect("tool")])
+///     .start()
+///     .finish()
+///     .await
+///     .expect("turn");
+/// ```
 pub struct TurnBuilder<'a> {
     engine: &'a Engine,
     session: SessionId,
@@ -1887,7 +1998,8 @@ impl<'a> TurnBuilder<'a> {
         self
     }
 
-    /// Applies a whole set of overrides at once.
+    /// Applies a whole set of overrides at once. A per-field knob called after
+    /// this one wins.
     #[must_use]
     pub fn options(mut self, options: TurnOptions) -> Self {
         self.options = options;
@@ -1901,42 +2013,54 @@ impl<'a> TurnBuilder<'a> {
         self
     }
 
+    /// Sets the sampling temperature for this turn.
     #[must_use]
     pub fn temperature(mut self, value: f32) -> Self {
         self.options.params.temperature = Some(value);
         self
     }
 
+    /// Sets the nucleus-sampling mass: the most probable tokens whose cumulative
+    /// probability reaches this value are the ones sampled from.
     #[must_use]
     pub fn top_p(mut self, value: f32) -> Self {
         self.options.params.top_p = Some(value);
         self
     }
 
+    /// Keeps only the `value` most probable tokens at each step.
     #[must_use]
     pub fn top_k(mut self, value: u32) -> Self {
         self.options.params.top_k = Some(value);
         self
     }
 
+    /// Caps how many tokens the model may produce in this turn.
     #[must_use]
     pub fn max_output_tokens(mut self, value: u64) -> Self {
         self.options.params.max_output_tokens = Some(value);
         self
     }
 
+    /// Stops generation when the model produces any of these sequences. The
+    /// sequences themselves are not part of the answer.
     #[must_use]
     pub fn stop_sequences(mut self, values: impl IntoIterator<Item = impl Into<String>>) -> Self {
         self.options.params.stop_sequences = values.into_iter().map(Into::into).collect();
         self
     }
 
+    /// Fixes the sampling seed, where the vendor honours it.
+    ///
+    /// The same seed and parameters promise the same sampling, not the same
+    /// answer: the model's own state and the provider's version still count.
     #[must_use]
     pub fn seed(mut self, value: u64) -> Self {
         self.options.params.seed = Some(value);
         self
     }
 
+    /// Asks for structured output against this JSON Schema.
     #[must_use]
     pub fn output_schema(mut self, schema: Value) -> Self {
         self.options.params.output_schema = Some(schema);
@@ -1954,12 +2078,12 @@ impl<'a> TurnBuilder<'a> {
         self
     }
 
+    /// Overrides the reasoning ask for this turn.
     #[must_use]
     pub fn reasoning(mut self, request: ReasoningRequest) -> Self {
         self.options.reasoning = Some(request);
         self
     }
-
     /// Restricts the tools exposed to the model for this turn (FR-ENG-8). Names
     /// must exist in the registry; the subset is emitted in canonical order.
     #[must_use]
@@ -1986,47 +2110,77 @@ impl<'a> TurnBuilder<'a> {
 }
 
 impl EngineBuilder {
+    /// An empty builder: no store, no blob store, no model, and every optional
+    /// piece at its default.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Sets the session store: sessions, nodes, messages and approval records.
+    ///
+    /// Required. [`InMemoryStore`](crate::InMemoryStore) is the reference
+    /// implementation; a host whose sessions outlive the process implements
+    /// [`Store`] over its own database.
     #[must_use]
     pub fn store(mut self, store: Arc<dyn Store>) -> Self {
         self.store = Some(store);
         self
     }
 
+    /// Sets the blob store that holds media bytes and large tool output by
+    /// content hash.
+    ///
+    /// Required. [`InMemoryBlobStore`](crate::InMemoryBlobStore) is the
+    /// reference implementation; the bytes live where the host puts them.
     #[must_use]
     pub fn blobs(mut self, blobs: Arc<dyn BlobStore>) -> Self {
         self.blobs = Some(blobs);
         self
     }
 
+    /// Sets the model that answers.
+    ///
+    /// Required. One `Arc<dyn Model>` is built at the edge of the program and
+    /// everything above the port stays independent of the vendor.
     #[must_use]
     pub fn model(mut self, model: Arc<dyn Model>) -> Self {
         self.model = Some(model);
         self
     }
 
+    /// Sets the tool registry the turn draws declarations from.
+    ///
+    /// Empty by default: a turn that registers no tool is a plain chat.
     #[must_use]
     pub fn tools(mut self, tools: ToolRegistry) -> Self {
         self.tools = tools;
         self
     }
 
+    /// Sets the policy set evaluated for every tool call, in order.
+    ///
+    /// Empty by default, which lets every call that reaches it run.
     #[must_use]
     pub fn policies(mut self, policies: PolicySet) -> Self {
         self.policies = policies;
         self
     }
 
+    /// Sets the layer stack that wraps each model call.
+    ///
+    /// Empty by default.
     #[must_use]
     pub fn layers(mut self, layers: LayerStack) -> Self {
         self.layers = layers;
         self
     }
 
+    /// Sets the observers that see every [`EngineEvent`].
+    ///
+    /// Empty by default. A slow observer never stalls a turn: the set buffers
+    /// events and drops what does not fit, and
+    /// [`ObserverSet::dropped`](crate::ObserverSet::dropped) counts the drops.
     #[must_use]
     pub fn observers(mut self, observers: Vec<Arc<dyn Observer>>) -> Self {
         self.observers = observers;
@@ -2048,6 +2202,8 @@ impl EngineBuilder {
         self
     }
 
+    /// Sets the engine-level configuration. Fields left at their default keep
+    /// their default behaviour.
     #[must_use]
     pub fn config(mut self, config: EngineConfig) -> Self {
         self.config = config;
@@ -2070,11 +2226,16 @@ impl EngineBuilder {
         self
     }
 
-    /// Builds the engine, requiring a store, blob store and model.
+    /// Validates the three required ports and returns the engine.
+    ///
+    /// Everything optional is folded in here: the registry, the policy set and
+    /// the layer stack are shared behind an `Arc`, and the observers and
+    /// transforms become one [`ObserverSet`] bounded by
+    /// [`EngineConfig::limits`](crate::EngineConfig::limits).
     ///
     /// # Errors
     ///
-    /// Returns [`Error::InvalidInput`] when a required port is missing.
+    /// Returns [`Error::InvalidInput`] naming the port that is missing.
     pub fn build(self) -> Result<Engine> {
         let store = self
             .store

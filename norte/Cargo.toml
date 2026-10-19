@@ -1,6 +1,6 @@
 [package]
 name = "norte"
-description = "One entrypoint for the whole Norte stack: the core, the provider adapters, the tool suite, media and MCP, re-exported behind features"
+description = "Build AI agents in Rust: durable sessions, streaming, tools and adapters for OpenAI, Anthropic and Gemini"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,7 +9,7 @@ repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
 readme = "../README.md"
-keywords = ["llm", "agents", "openai", "anthropic", "gemini"]
+keywords = ["llm", "ai-agents", "openai", "anthropic", "gemini"]
 categories = ["api-bindings", "asynchronous"]
 
 # Every provider and helper on the docs page, not just the default feature.

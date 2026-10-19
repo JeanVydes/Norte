@@ -1,6 +1,6 @@
 [package]
 name = "norte-core"
-description = "Domain model, engine, streaming pipeline, capabilities and contracts for Norte"
+description = "Durable sessions, history reconstruction and a provider-agnostic streaming engine for AI agents"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,8 +9,8 @@ repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
 readme = "../README.md"
-keywords = ["llm", "agents", "streaming", "durable"]
-categories = ["api-bindings", "asynchronous", "concurrency"]
+keywords = ["llm", "ai-agents", "streaming", "sessions", "tool-calling"]
+categories = ["asynchronous", "concurrency"]
 
 [dependencies]
 norte-macros = { workspace = true }

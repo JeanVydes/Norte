@@ -1,6 +1,6 @@
 [package]
 name = "norte-tools"
-description = "Default Norte tool suite: the host tools built on the core tool foundation"
+description = "The host tools an agent needs on disk: read, write, edit and run commands, bounded and audited"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,7 +9,7 @@ repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
 readme = "../README.md"
-keywords = ["llm", "agent", "tools", "filesystem"]
+keywords = ["ai-agents", "tools", "llm", "filesystem", "shell"]
 categories = ["development-tools", "filesystem"]
 
 [dependencies]

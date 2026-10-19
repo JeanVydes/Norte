@@ -14,7 +14,9 @@ pub enum ContinuityScope {
     Exact(ModelRef),
     /// Bound to a model family within one provider.
     ModelFamily {
+        /// The provider the family belongs to.
         provider: ProviderId,
+        /// The family name, as the wire spells it.
         family: String,
     },
     /// Bound to one provider, across models.
@@ -31,14 +33,18 @@ pub enum ContinuityScope {
 /// never carry it.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContinuityToken {
+    /// The wire family that produced it.
     pub family: WireFamily,
+    /// How widely it may be replayed.
     pub scope: ContinuityScope,
+    /// The version of the payload's format.
     pub schema_version: u16,
     #[serde(with = "crate::codec::bytes_base64")]
     payload: Vec<u8>,
 }
 
 impl ContinuityToken {
+    /// A token for `family`, scoped and versioned, wrapping the payload.
     #[must_use]
     pub fn new(
         family: WireFamily,
@@ -60,11 +66,13 @@ impl ContinuityToken {
         &self.payload
     }
 
+    /// How many bytes the payload has.
     #[must_use]
     pub fn len(&self) -> usize {
         self.payload.len()
     }
 
+    /// Whether the payload is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.payload.is_empty()
@@ -87,21 +95,30 @@ impl Debug for ContinuityToken {
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ContinuitySemantics {
+    /// The bytes follow what the token already holds.
     Append,
+    /// The bytes replace what the token already holds.
     Replace,
 }
 
+/// One streamed contribution to a continuity token.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContinuityFragment {
+    /// The wire family that produced it.
     pub family: WireFamily,
+    /// How widely the token it belongs to may be replayed.
     pub scope: ContinuityScope,
+    /// The version of the payload's format.
     pub schema_version: u16,
+    /// How the bytes combine with the token.
     pub semantics: ContinuitySemantics,
+    /// The fragment's payload.
     #[serde(with = "crate::codec::bytes_base64")]
     pub bytes: Vec<u8>,
 }
 
 impl ContinuityFragment {
+    /// A fragment with its scope, versioning and semantics.
     #[must_use]
     pub fn new(
         family: WireFamily,
@@ -119,11 +136,13 @@ impl ContinuityFragment {
         }
     }
 
+    /// How many bytes the fragment has.
     #[must_use]
     pub fn len(&self) -> usize {
         self.bytes.len()
     }
 
+    /// Whether the fragment is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.bytes.is_empty()
@@ -135,7 +154,9 @@ impl ContinuityFragment {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ReplayDecision {
+    /// Send the token back unchanged.
     Replay,
+    /// Leave the token out of the request.
     Drop,
     /// Replace the part the token is attached to with a downgraded form.
     Downgrade(Box<Part>),

@@ -1,5 +1,4 @@
-use std::collections::BTreeSet;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -14,6 +13,7 @@ use crate::id::{NodeId, SessionId};
 /// One atomic transition. A store applies all of it or none of it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Commit {
+    /// The session the commit belongs to.
     pub session_id: SessionId,
     /// `None` creates the session. `Some(version)` must match the stored
     /// version or the store reports a conflict.
@@ -21,14 +21,20 @@ pub struct Commit {
     pub expected_version: Option<u64>,
     /// Parent first.
     pub nodes: Vec<Node>,
+    /// The branch head after the commit; `None` keeps the current one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub head: Option<NodeId>,
+    /// The phase the session moves to.
     pub phase: Phase,
+    /// The turn counter after the commit.
     pub turn: u64,
+    /// The steering messages queued for the next turn.
     #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
     pub queue: VecDeque<Message>,
+    /// The grants in force after the commit.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub grants: Vec<Grant>,
+    /// Replaces the session metadata when set; `None` keeps it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<BTreeMap<String, Value>>,
 }

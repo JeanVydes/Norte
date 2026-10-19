@@ -5,7 +5,9 @@ use tokio::sync::mpsc;
 
 use crate::event::{EngineEvent, StreamDelta};
 
+/// A read-only watcher of the engine's events.
 pub trait Observer: Send + Sync {
+    /// The observer's name, as it appears in session metadata.
     fn name(&self) -> &str;
 
     /// Read-only, may not block the critical path.
@@ -18,8 +20,10 @@ pub trait Observer: Send + Sync {
 /// events the engine relies on for durability, so it can only affect the
 /// observer side-channel.
 pub trait StreamTransform: Send + Sync {
+    /// The transform's name, as it appears in session metadata.
     fn name(&self) -> &str;
 
+    /// Projects one delta into zero or more deltas.
     fn transform(&self, delta: StreamDelta) -> Vec<StreamDelta>;
 }
 
@@ -40,11 +44,15 @@ pub struct ObserverSet {
 }
 
 impl ObserverSet {
+    /// A set of `observers`, each with a channel holding `buffer` events (at
+    /// least one) before it starts dropping.
     #[must_use]
     pub fn new(observers: Vec<Arc<dyn Observer>>, buffer: usize) -> Self {
         Self::with_transforms(observers, Vec::new(), buffer)
     }
 
+    /// A set of `observers` and `transforms`, each observer with a
+    /// `buffer`-sized channel (at least one).
     #[must_use]
     pub fn with_transforms(
         observers: Vec<Arc<dyn Observer>>,
@@ -71,6 +79,7 @@ impl ObserverSet {
         }
     }
 
+    /// Whether no observer is registered.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.registrations.is_empty()
@@ -112,6 +121,8 @@ impl ObserverSet {
         current
     }
 
+    /// Offers `event` to every observer without blocking; an observer whose
+    /// buffer is full counts as a drop.
     pub fn emit(&self, event: &EngineEvent) {
         for registration in &self.registrations {
             if registration.sender.try_send(event.clone()).is_err() {
@@ -120,6 +131,7 @@ impl ObserverSet {
         }
     }
 
+    /// How many events were dropped because an observer was not keeping up.
     #[must_use]
     pub fn dropped(&self) -> u64 {
         self.dropped.load(Ordering::Relaxed)

@@ -1,6 +1,6 @@
 [package]
 name = "norte-anthropic"
-description = "Anthropic adapter for Norte: the Messages wire, streaming, tool use, citations and prompt caching"
+description = "Anthropic client: the Messages API with streaming, tool use, citations and prompt caching"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,7 +9,7 @@ repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
 readme = "../README.md"
-keywords = ["anthropic", "claude", "llm", "messages"]
+keywords = ["anthropic", "claude", "llm", "messages", "prompt-caching"]
 categories = ["api-bindings", "web-programming::http-client", "asynchronous"]
 
 [dependencies]

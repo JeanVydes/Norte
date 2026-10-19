@@ -4,12 +4,16 @@ use crate::error::Result;
 /// Inline media bytes plus their type: the unit a preprocessor transforms.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MediaPayload {
+    /// The kind of media.
     pub kind: MediaKind,
+    /// The media type of `bytes`.
     pub mime: MimeType,
+    /// The bytes themselves.
     pub bytes: Vec<u8>,
 }
 
 impl MediaPayload {
+    /// Bytes of `kind` and `mime`.
     #[must_use]
     pub fn new(kind: MediaKind, mime: MimeType, bytes: Vec<u8>) -> Self {
         Self { kind, mime, bytes }

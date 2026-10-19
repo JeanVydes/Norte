@@ -50,12 +50,14 @@ impl OpenAiResponses {
         })
     }
 
+    /// Reuses an existing HTTP client instead of building one.
     #[must_use]
     pub fn with_client(mut self, client: HttpClient) -> Self {
         self.client = client;
         self
     }
 
+    /// The vendor profile this adapter sends to.
     #[must_use]
     pub fn profile(&self) -> &VendorProfile {
         &self.profile

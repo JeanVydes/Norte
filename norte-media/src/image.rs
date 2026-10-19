@@ -10,11 +10,14 @@ use norte_core::{Error, MediaKind, MediaPayload, MediaPreprocessor, MimeType, Re
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ImageOutput {
+    /// PNG, lossless.
     Png,
+    /// JPEG, lossy and controlled by `quality`.
     Jpeg,
 }
 
 impl ImageOutput {
+    /// The media type of this format.
     #[must_use]
     pub fn mime(self) -> &'static str {
         match self {
@@ -31,9 +34,13 @@ impl ImageOutput {
 /// bounds are returned untouched, which makes the step idempotent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ImagePreprocessor {
+    /// Longest side, in pixels, an image is allowed to keep.
     pub max_dimension: u32,
+    /// Largest re-encoded size, in bytes, an image is allowed to keep.
     pub max_bytes: usize,
+    /// The format images are re-encoded to.
     pub output: ImageOutput,
+    /// JPEG quality, from 1 to 100; ignored for PNG.
     pub quality: u8,
 }
 
@@ -49,6 +56,7 @@ impl Default for ImagePreprocessor {
 }
 
 impl ImagePreprocessor {
+    /// A preprocessor with the given bounds and output format.
     #[must_use]
     pub fn new(max_dimension: u32, max_bytes: usize, output: ImageOutput, quality: u8) -> Self {
         Self {

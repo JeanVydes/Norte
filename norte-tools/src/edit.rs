@@ -96,6 +96,7 @@ impl EditRequest {
     }
 }
 
+/// The outcome code of an edit request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -131,6 +132,7 @@ pub enum MatchKind {
 pub struct EditMatch {
     /// Index of the edit in the request.
     pub edit: usize,
+    /// How the block was matched.
     pub kind: MatchKind,
     /// 1-based first line of the replaced block, in the file as the edits
     /// before this one would have left it.
@@ -158,6 +160,7 @@ pub struct Snippet {
     pub skipped: usize,
 }
 
+/// Why an edit failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -174,6 +177,7 @@ pub enum EditFailureReason {
 pub struct EditFailure {
     /// Index of the edit that failed.
     pub edit: usize,
+    /// The reason the edit failed.
     pub reason: EditFailureReason,
     /// How many lines the searched block has, blank lines excluded.
     pub search_lines: usize,
@@ -193,10 +197,13 @@ pub struct EditFailure {
 /// What one edit request did.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct EditOutcome {
+    /// The outcome code.
     pub code: EditCode,
+    /// The file the request named.
     pub path: PathBuf,
     /// The edits that matched, in order. On a failure, the ones before it.
     pub matches: Vec<EditMatch>,
+    /// The evidence for a retry, on a failure.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure: Option<EditFailure>,
     /// Whether the file on disk was rewritten: false on a failure, and false
@@ -206,12 +213,14 @@ pub struct EditOutcome {
     pub written: bool,
     /// Lines and bytes of the file after the call, written or not.
     pub total_lines: usize,
+    /// Bytes in the file after the call.
     pub bytes: usize,
     /// Digest of the content the call worked from, whatever the outcome, so a
     /// host correlating its own records can tell which version an edit replaced.
     pub before_digest: Digest,
     /// Digest of the file the call left, written or not.
     pub content_digest: Digest,
+    /// Digest of the request as the executor judged it.
     pub request_digest: Digest,
 }
 
@@ -267,6 +276,7 @@ pub struct EditTool {
 }
 
 impl EditTool {
+    /// An edit tool with the default limits.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -274,6 +284,7 @@ impl EditTool {
         }
     }
 
+    /// Sets the bounds on what may be edited.
     #[must_use]
     pub fn with_limits(mut self, limits: EditLimits) -> Self {
         self.limits = limits;

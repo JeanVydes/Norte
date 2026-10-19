@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="https://github.com/JeanVydes/Norte/actions/workflows/rust.yml"><img src="https://github.com/JeanVydes/Norte/actions/workflows/rust.yml/badge.svg?branch=dev" alt="CI"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
+  <a href="https://github.com/JeanVydes/Norte/blob/dev/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/MSRV-1.85-blue.svg" alt="MSRV: 1.85">
   <img src="https://img.shields.io/badge/edition-2024-blue.svg" alt="Edition: 2024">
 </p>
@@ -107,25 +107,28 @@ database and object storage. Nothing else in the engine touches infrastructure.
 
 ## Examples
 
-Runnable, end-to-end programs live in [`examples/`](examples/):
+Runnable, end-to-end programs live in
+[`examples/`](https://github.com/JeanVydes/Norte/tree/dev/examples):
 
-- [`cookbook`](examples/cookbook) — one small, self-contained recipe per topic:
-  events, streaming, approval, policies, declaring tools, observers.
+- [`cookbook`](https://github.com/JeanVydes/Norte/tree/dev/examples/cookbook) —
+  one small, self-contained recipe per topic: events, streaming, approval,
+  policies, declaring tools, observers.
 
-Measurements live in [`benchmarks/`](benchmarks/): each one is a folder with the
-program, how to run it, and the reports it writes.
+Measurements live in
+[`benchmarks/`](https://github.com/JeanVydes/Norte/tree/dev/benchmarks): each one
+is a folder with the program, how to run it, and the reports it writes.
 
 ## Documentation
 
-- **The guide** — [`guide/`](guide) explains what the library offers, the
-  concepts behind it, and how to do specific things. It is written in Markdown
-  and built with [mdBook](https://rust-lang.github.io/mdBook/); run
-  `mdbook serve guide` to read it locally, and CI publishes it to GitHub Pages
-  from `dev`.
-- **Requirements** — [`guide/src/reference/requirements.md`](guide/src/reference/requirements.md)
-  is the ledger: every requirement with its id, the code that enforces it, and
-  the test or CI job that checks it. The ids in source comments and workflow
-  names resolve there.
+- **The guide** — [the hosted guide](https://jeanvydes.github.io/Norte/)
+  explains what the library offers, the concepts behind it, and how to do
+  specific things. It is written in Markdown and built with
+  [mdBook](https://rust-lang.github.io/mdBook/); run `mdbook serve guide` to read
+  it locally, and CI publishes it to GitHub Pages from `dev`.
+- **Requirements** — [the requirements ledger][ledger] is the normative contract:
+  every requirement with its id, the code that enforces it, and the test or CI
+  job that checks it. The ids in source comments and workflow names resolve
+  there; the source lives in `guide/src/reference/requirements.md`.
 - **Rustdoc** — every crate documents its public surface; the reference is
   generated, not written twice:
 
@@ -133,12 +136,16 @@ program, how to run it, and the reports it writes.
   cargo doc --workspace --no-deps --open
   ```
 
-- **Examples** — [`examples/cookbook`](examples/cookbook) is one small recipe per
-  topic, each runnable on its own.
-- **Contributing** — [`CONTRIBUTING.md`](CONTRIBUTING.md) covers the layout, the
+- **Examples** — [the cookbook][cookbook] is one small recipe per topic, each
+  runnable on its own.
+- **Contributing** — [`CONTRIBUTING.md`][contributing] covers the layout, the
   build and the lint policies.
-- **Changelog** — [`CHANGELOG.md`](CHANGELOG.md) records what each version
-  changed.
+- **Changelog** — [`CHANGELOG.md`][changelog] records what each version changed.
+
+[ledger]: https://jeanvydes.github.io/Norte/reference/requirements.html
+[cookbook]: https://github.com/JeanVydes/Norte/tree/dev/examples/cookbook
+[contributing]: https://github.com/JeanVydes/Norte/blob/dev/CONTRIBUTING.md
+[changelog]: https://github.com/JeanVydes/Norte/blob/dev/CHANGELOG.md
 
 ## Development
 

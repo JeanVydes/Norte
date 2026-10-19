@@ -77,6 +77,7 @@ pub struct StrictContinuity {
 }
 
 impl StrictContinuity {
+    /// An adapter bound to `model`.
     #[must_use]
     pub fn new(model: ModelRef) -> Self {
         Self { model }
@@ -154,6 +155,7 @@ pub struct ScriptedModel {
 }
 
 impl ScriptedModel {
+    /// A model for `reference` with text capabilities and no queued turns.
     #[must_use]
     pub fn new(reference: ModelRef) -> Self {
         Self {
@@ -173,6 +175,7 @@ impl ScriptedModel {
         self
     }
 
+    /// Declares different capabilities.
     #[must_use]
     pub fn with_capabilities(mut self, capabilities: Capabilities) -> Self {
         self.capabilities = capabilities;
@@ -247,16 +250,19 @@ impl ScriptedModel {
         self.turn(events)
     }
 
+    /// The requests received so far, in order.
     #[must_use]
     pub fn requests(&self) -> Vec<ModelRequest> {
         guard(&self.requests).clone()
     }
 
+    /// How many requests have been received.
     #[must_use]
     pub fn request_count(&self) -> usize {
         guard(&self.requests).len()
     }
 
+    /// How many scripted turns are still queued.
     #[must_use]
     pub fn remaining_turns(&self) -> usize {
         guard(&self.turns).len()
@@ -336,6 +342,7 @@ pub struct FailingModel {
 }
 
 impl FailingModel {
+    /// A model for `reference` whose every stream call fails with `message`.
     #[must_use]
     pub fn new(reference: ModelRef, message: impl Into<String>) -> Self {
         Self {

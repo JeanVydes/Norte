@@ -15,15 +15,24 @@ use crate::quirk::{Quirk, Quirks};
 /// configuration and hand it to an adapter.
 #[derive(Clone, Debug)]
 pub struct VendorProfile {
+    /// The provider this profile reaches.
     pub provider: ProviderId,
+    /// The wire family the provider speaks.
     pub wire: WireFamily,
+    /// Where requests are sent.
     pub base_url: Url,
+    /// How requests are authenticated.
     pub auth: AuthScheme,
+    /// Extra headers attached to every request.
     pub headers: BTreeMap<String, String>,
+    /// The deviations this vendor has from the reference wire.
     pub quirks: Quirks,
 }
 
 impl VendorProfile {
+    /// A profile for `provider` on `wire`, with `base_url` and no auth, extra
+    /// headers or quirks.
+    ///
     /// # Errors
     ///
     /// Returns [`Error::InvalidInput`] when `base_url` is not a valid absolute
@@ -41,12 +50,14 @@ impl VendorProfile {
         })
     }
 
+    /// Sets the authentication scheme.
     #[must_use]
     pub fn with_auth(mut self, auth: AuthScheme) -> Self {
         self.auth = auth;
         self
     }
 
+    /// Adds one header attached to every request.
     #[must_use]
     pub fn with_header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
         self.headers.insert(name.into(), value.into());
@@ -60,6 +71,7 @@ impl VendorProfile {
         self
     }
 
+    /// The deviations this profile declares.
     #[must_use]
     pub fn quirks(&self) -> &Quirks {
         &self.quirks

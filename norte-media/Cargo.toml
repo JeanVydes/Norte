@@ -1,6 +1,6 @@
 [package]
 name = "norte-media"
-description = "Media pipeline for Norte: kind detection, byte decoding and provider-agnostic attachments"
+description = "Image preprocessing and media handling for model inputs: limits, formats and attachments"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,7 +9,7 @@ repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
 readme = "../README.md"
-keywords = ["llm", "media", "images", "multimodal"]
+keywords = ["llm", "multimodal", "images", "vision", "media"]
 categories = ["multimedia", "asynchronous"]
 
 [dependencies]

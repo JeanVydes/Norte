@@ -1,6 +1,6 @@
 [package]
 name = "norte-macros"
-description = "Attribute macros for Norte tool declarations"
+description = "Attribute macros that turn plain Rust functions into typed, schema-described tools"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,7 +9,7 @@ repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
 readme = "../README.md"
-keywords = ["llm", "macros", "proc-macro"]
+keywords = ["llm", "proc-macro", "tools", "schema", "function-calling"]
 categories = ["development-tools", "rust-patterns"]
 
 [lib]

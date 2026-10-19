@@ -13,21 +13,32 @@ use crate::id::{Digest, GenerationId, ModelRef};
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum FinishReason {
+    /// The model finished its answer.
     Stop,
+    /// The model asked for tool calls.
     ToolCalls,
+    /// The output hit the token limit.
     Length,
+    /// The provider's content filter stopped it.
     ContentFilter,
+    /// The model refused.
     Refusal,
+    /// The caller cancelled.
     Cancelled,
+    /// A reason with no neutral name.
     Other(String),
 }
 
+/// Whether a message is whole.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum MessageStatus {
+    /// Whole.
     Complete,
+    /// Cut short by a cancellation or a failure.
     Interrupted,
+    /// Cut short by a limit.
     Truncated,
 }
 
@@ -41,17 +52,21 @@ pub enum MessageStatus {
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum CacheClass {
+    /// Part of the cached prefix.
     #[default]
     Critical,
+    /// Materialized after the cached prefix.
     Ephemeral,
 }
 
 impl CacheClass {
+    /// Whether the message is part of the cached prefix.
     #[must_use]
     pub fn is_critical(&self) -> bool {
         matches!(self, CacheClass::Critical)
     }
 
+    /// Whether the message is materialized after the cached prefix.
     #[must_use]
     pub fn is_ephemeral(&self) -> bool {
         matches!(self, CacheClass::Ephemeral)
@@ -63,20 +78,28 @@ impl CacheClass {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct Usage {
+    /// Prompt tokens, cache reads included on OpenAI-compatible wires.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_tokens: Option<u64>,
+    /// Tokens the model produced.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_tokens: Option<u64>,
+    /// Reasoning tokens, where the provider separates them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_tokens: Option<u64>,
+    /// Tokens served from the provider's cache.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_read_tokens: Option<u64>,
+    /// Tokens written into the provider's cache.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_write_tokens: Option<u64>,
+    /// Audio input tokens, where the provider counts them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio_input_tokens: Option<u64>,
+    /// Audio output tokens, where the provider counts them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio_output_tokens: Option<u64>,
+    /// A counter with no neutral field, kept under its own key.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub extension: BTreeMap<String, u64>,
     /// What the vendor reported and this vocabulary does not model: the price a
@@ -92,6 +115,7 @@ pub struct Usage {
 }
 
 impl Usage {
+    /// Input plus output tokens, as far as the provider reported them.
     #[must_use]
     pub fn total_tokens(&self) -> u64 {
         self.input_tokens.unwrap_or(0) + self.output_tokens.unwrap_or(0)
@@ -167,11 +191,17 @@ fn prune(value: Value) -> BTreeMap<String, Value> {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct MessageOrigin {
+    /// The model that produced the message.
     pub model: ModelRef,
+    /// The generation this message came from.
     pub generation: GenerationId,
+    /// Why the model stopped.
     pub finish_reason: FinishReason,
+    /// What the request cost in tokens, as the provider reported it.
     pub usage: Usage,
+    /// Whether the message is whole.
     pub status: MessageStatus,
+    /// A content hash of the request that produced it, when one was recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_digest: Option<Digest>,
 }
@@ -180,16 +210,21 @@ pub struct MessageOrigin {
 /// for assistant messages, the model-side origin.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Message {
+    /// Who spoke.
     pub role: Role,
+    /// The ordered content.
     #[serde(default)]
     pub parts: Vec<Part>,
+    /// The model-side provenance, for assistant messages.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<MessageOrigin>,
+    /// Whether the message participates in the cached prefix.
     #[serde(default, skip_serializing_if = "CacheClass::is_critical")]
     pub cache: CacheClass,
 }
 
 impl Message {
+    /// A message with the given role and parts.
     #[must_use]
     pub fn new(role: Role, parts: Vec<Part>) -> Self {
         Self {
@@ -200,21 +235,25 @@ impl Message {
         }
     }
 
+    /// A user message carrying one text part.
     #[must_use]
     pub fn user(text: impl Into<String>) -> Self {
         Self::new(Role::User, vec![Part::Text(TextPart::new(text))])
     }
 
+    /// An assistant message carrying one text part.
     #[must_use]
     pub fn assistant(text: impl Into<String>) -> Self {
         Self::new(Role::Assistant, vec![Part::Text(TextPart::new(text))])
     }
 
+    /// A system message carrying one text part.
     #[must_use]
     pub fn system(text: impl Into<String>) -> Self {
         Self::new(Role::System, vec![Part::Text(TextPart::new(text))])
     }
 
+    /// A developer message carrying one text part.
     #[must_use]
     pub fn developer(text: impl Into<String>) -> Self {
         Self::new(Role::Developer, vec![Part::Text(TextPart::new(text))])
@@ -230,6 +269,7 @@ impl Message {
         )
     }
 
+    /// Attaches the model-side provenance.
     #[must_use]
     pub fn with_origin(mut self, origin: MessageOrigin) -> Self {
         self.origin = Some(origin);
@@ -244,11 +284,13 @@ impl Message {
         self
     }
 
+    /// Whether the message is materialized after the cached prefix.
     #[must_use]
     pub fn is_ephemeral(&self) -> bool {
         self.cache.is_ephemeral()
     }
 
+    /// Appends one part.
     #[must_use]
     pub fn push(mut self, part: Part) -> Self {
         self.parts.push(part);
@@ -267,6 +309,7 @@ impl Message {
             .collect()
     }
 
+    /// Every reasoning part, in order.
     #[must_use]
     pub fn reasoning(&self) -> Vec<&ReasoningPart> {
         self.parts
@@ -278,26 +321,31 @@ impl Message {
             .collect()
     }
 
+    /// Every tool call, in order.
     #[must_use]
     pub fn tool_calls(&self) -> Vec<&ToolCallPart> {
         self.parts.iter().filter_map(Part::as_tool_call).collect()
     }
 
+    /// Every tool result, in order.
     #[must_use]
     pub fn tool_results(&self) -> Vec<&ToolResultPart> {
         self.parts.iter().filter_map(Part::as_tool_result).collect()
     }
 
+    /// Every media part, in order.
     #[must_use]
     pub fn media(&self) -> Vec<&MediaPart> {
         self.parts.iter().filter_map(Part::as_media).collect()
     }
 
+    /// Whether the message asks for at least one tool call.
     #[must_use]
     pub fn has_tool_calls(&self) -> bool {
         self.parts.iter().any(|part| part.as_tool_call().is_some())
     }
 
+    /// Why the model stopped, when the message has an origin.
     #[must_use]
     pub fn finish_reason(&self) -> Option<&FinishReason> {
         self.origin.as_ref().map(|origin| &origin.finish_reason)

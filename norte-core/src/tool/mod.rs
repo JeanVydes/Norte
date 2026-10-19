@@ -1,3 +1,4 @@
+/// Where declarations are collected and looked up by name.
 pub mod registry;
 
 use std::collections::BTreeMap;
@@ -26,6 +27,7 @@ use crate::id::{CallId, ModelRef, SessionId, ToolName};
 pub struct Cancellation(CancellationToken);
 
 impl Cancellation {
+    /// A token that starts uncancelled.
     #[must_use]
     pub fn new() -> Self {
         Self(CancellationToken::new())
@@ -36,6 +38,7 @@ impl Cancellation {
         self.0.cancel();
     }
 
+    /// Whether cancellation has been signalled.
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
         self.0.is_cancelled()
@@ -78,14 +81,18 @@ impl ProgressSink for mpsc::Sender<ToolProgress> {
 /// signature keeps compiling unchanged.
 #[derive(Clone)]
 pub struct ToolContext {
+    /// The session the call belongs to, when the engine runs it.
     pub session: Option<SessionId>,
+    /// The call.
     pub call_id: Option<CallId>,
+    /// Free-form data the host attached to the call.
     pub metadata: BTreeMap<String, Value>,
     cancellation: Cancellation,
     progress: Option<Arc<dyn ProgressSink>>,
 }
 
 impl ToolContext {
+    /// A context with no session, call, metadata or progress sink.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -97,45 +104,53 @@ impl ToolContext {
         }
     }
 
+    /// Sets the session the call belongs to.
     #[must_use]
     pub fn with_session(mut self, session: SessionId) -> Self {
         self.session = Some(session);
         self
     }
 
+    /// Sets the call.
     #[must_use]
     pub fn with_call(mut self, call_id: CallId) -> Self {
         self.call_id = Some(call_id);
         self
     }
 
+    /// Binds the context to a cancellation token.
     #[must_use]
     pub fn with_cancellation(mut self, cancellation: impl Into<Cancellation>) -> Self {
         self.cancellation = cancellation.into();
         self
     }
 
+    /// Delivers progress to the given sink.
     #[must_use]
     pub fn with_progress(mut self, progress: Arc<dyn ProgressSink>) -> Self {
         self.progress = Some(progress);
         self
     }
 
+    /// Keeps one more host value under its own key.
     #[must_use]
     pub fn with_metadata(mut self, key: impl Into<String>, value: Value) -> Self {
         self.metadata.insert(key.into(), value);
         self
     }
 
+    /// The cancellation token the turn shares with the tool.
     #[must_use]
     pub fn cancellation(&self) -> Cancellation {
         self.cancellation.clone()
     }
 
+    /// Resolves when the turn cancels (or immediately if it already did).
     pub async fn cancelled(&self) {
         self.cancellation.cancelled().await;
     }
 
+    /// Whether the turn was cancelled.
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
         self.cancellation.is_cancelled()
@@ -166,19 +181,26 @@ impl Debug for ToolContext {
     }
 }
 
+/// Which output stream a progress chunk came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ToolStream {
+    /// Standard output.
     Stdout,
+    /// Standard error.
     Stderr,
 }
 
+/// One progress chunk from a running tool.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ToolProgress {
+    /// The stream the bytes came from.
     pub stream: ToolStream,
+    /// The bytes themselves.
     #[serde(with = "crate::codec::bytes_base64")]
     pub bytes: Vec<u8>,
+    /// Whether the chunk ends that stream.
     pub last: bool,
 }
 
@@ -186,15 +208,19 @@ pub struct ToolProgress {
 /// next model turn sees.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ToolOutput {
+    /// The result's content.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parts: Vec<Part>,
+    /// The result's structured value, where it has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub structured: Option<Value>,
+    /// Whether the tool reported an error.
     #[serde(default)]
     pub is_error: bool,
 }
 
 impl ToolOutput {
+    /// A result carrying one text part.
     #[must_use]
     pub fn text(text: impl Into<String>) -> Self {
         Self {
@@ -204,6 +230,7 @@ impl ToolOutput {
         }
     }
 
+    /// A result carrying a structured value.
     #[must_use]
     pub fn json(value: Value) -> Self {
         Self {
@@ -213,6 +240,7 @@ impl ToolOutput {
         }
     }
 
+    /// An error result carrying one text part.
     #[must_use]
     pub fn error(text: impl Into<String>) -> Self {
         Self {
@@ -221,6 +249,7 @@ impl ToolOutput {
         }
     }
 
+    /// Adds a media part to the result.
     #[must_use]
     pub fn with_media(mut self, media: MediaPart) -> Self {
         self.parts.push(Part::Media(media));
@@ -241,6 +270,7 @@ where
     A: ToolArgs,
     R: Serialize + Send + Sync + 'static,
 {
+    /// Runs the tool with parsed arguments.
     async fn call(&self, args: A) -> Result<R>;
 
     /// Context-aware entry point. The default keeps existing tools untouched.
@@ -268,11 +298,13 @@ pub trait ToolMetadata {
     const DESCRIPTION: &'static str;
 }
 
+/// Declares a plain tool from its metadata and executor.
 pub trait FnDeclarator<A, R>: Send + Sync
 where
     A: ToolArgs,
     R: Serialize + Send + Sync + 'static,
 {
+    /// The declaration: name, description and the schema generated from `A`.
     fn declare(&self) -> FunctionDeclaration<A, R>;
 }
 
@@ -294,6 +326,7 @@ pub trait ToolDeclarator<A>: Send + Sync
 where
     A: ToolArgs,
 {
+    /// The declaration: name, description and the schema generated from `A`.
     fn declare_tool(&self) -> ToolDeclaration<A>;
 }
 
@@ -400,8 +433,11 @@ fn has_ref(value: &Value) -> bool {
 /// Everything the engine and adapters need to know about one tool.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ToolSpec {
+    /// The tool's name.
     pub name: ToolName,
+    /// The text the model reads.
     pub description: String,
+    /// How the tool reaches the model.
     pub kind: ToolKind,
     /// The argument schema, self-contained: local references are already
     /// resolved, so a model that does not follow `$ref` sees the whole shape.
@@ -411,6 +447,7 @@ pub struct ToolSpec {
     /// 12). [`Option::None`] for a host-executed function tool.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub declaration: Option<Value>,
+    /// The approval prompt the host attaches to the call, where it attaches one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval: Option<String>,
 }
@@ -458,10 +495,15 @@ where
     A: ToolArgs,
     R: Serialize + Send + Sync,
 {
+    /// The name the model calls.
     pub name: &'static str,
+    /// The text the model reads.
     pub description: &'static str,
+    /// The schema generated from the argument type.
     pub parameters: Schema,
+    /// The code that runs.
     pub executor: Arc<dyn FnExecutor<A, R>>,
+    /// The approval prompt the host attaches to a call, where it attaches one.
     pub approval: Option<String>,
 }
 
@@ -470,6 +512,8 @@ where
     A: ToolArgs + DeserializeOwned + Debug + 'static,
     R: Serialize + Send + Sync + 'static,
 {
+    /// A declaration for `name`, described by `description`, running
+    /// `executor`.
     #[must_use]
     pub fn new(
         name: &'static str,
@@ -485,6 +529,7 @@ where
         }
     }
 
+    /// Attaches an approval prompt to the tool.
     #[must_use]
     pub fn with_approval(mut self, approval: impl Into<String>) -> Self {
         self.approval = Some(approval.into());
@@ -516,10 +561,15 @@ pub struct ToolDeclaration<A>
 where
     A: ToolArgs,
 {
+    /// The name the model calls.
     pub name: &'static str,
+    /// The text the model reads.
     pub description: &'static str,
+    /// The schema generated from the argument type.
     pub parameters: Schema,
+    /// The code that runs.
     pub executor: Arc<dyn FnExecutor<A, ToolOutput>>,
+    /// The approval prompt the host attaches to a call, where it attaches one.
     pub approval: Option<String>,
 }
 
@@ -527,6 +577,8 @@ impl<A> ToolDeclaration<A>
 where
     A: ToolArgs + DeserializeOwned + Debug + 'static,
 {
+    /// A declaration for `name`, described by `description`, running
+    /// `executor`.
     #[must_use]
     pub fn new(
         name: &'static str,
@@ -542,6 +594,7 @@ where
         }
     }
 
+    /// Attaches an approval prompt to the tool.
     #[must_use]
     pub fn with_approval(mut self, approval: impl Into<String>) -> Self {
         self.approval = Some(approval.into());
@@ -566,16 +619,21 @@ where
 /// implement this: a [`FunctionDeclaration`] or [`ToolDeclaration`] does.
 #[async_trait::async_trait]
 pub trait AnyFunction: Send + Sync + Debug {
+    /// The name the model calls.
     fn name(&self) -> &str;
 
+    /// The text the model reads.
     fn description(&self) -> &str;
 
+    /// The schema generated from the argument type.
     fn parameters_schema(&self) -> &Schema;
 
+    /// How the tool reaches the model.
     fn kind(&self) -> ToolKind {
         ToolKind::Function
     }
 
+    /// The approval prompt the host attaches to a call, where it attaches one.
     fn approval(&self) -> Option<&str> {
         None
     }
@@ -700,6 +758,7 @@ where
     }
 }
 
+/// Declares a typed tool as a `FunctionDeclaration`.
 #[macro_export]
 macro_rules! declare_function {
     ($name:expr, $description:expr, $args:ty, $result:ty, $executor:expr) => {
@@ -707,6 +766,7 @@ macro_rules! declare_function {
     };
 }
 
+/// Declares a rich tool as a `ToolDeclaration`.
 #[macro_export]
 macro_rules! declare_tool {
     ($name:expr, $description:expr, $args:ty, $executor:expr) => {

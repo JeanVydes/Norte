@@ -10,16 +10,19 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 pub struct Secret<T>(T);
 
 impl<T> Secret<T> {
+    /// Wraps `value`.
     #[must_use]
     pub fn new(value: T) -> Self {
         Self(value)
     }
 
+    /// The wrapped value.
     #[must_use]
     pub fn expose(&self) -> &T {
         &self.0
     }
 
+    /// Unwraps the value.
     #[must_use]
     pub fn into_inner(self) -> T {
         self.0

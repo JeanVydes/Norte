@@ -7,38 +7,54 @@ use serde_json::Value;
 use crate::error::{Error, Result};
 use crate::id::{ApprovalId, CallId, Digest, GrantId, SessionId, ToolName};
 
+/// Where an approval record stands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ApprovalStatus {
+    /// Waiting for a decision.
     Pending,
+    /// A grant was issued.
     Granted,
+    /// A human denied the call.
     Denied,
+    /// The record's time to live elapsed before a decision.
     Expired,
 }
 
+/// How wide a grant reaches.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "scope")]
 #[non_exhaustive]
 pub enum GrantScope {
+    /// The one call.
     Call(CallId),
+    /// Any call to that tool.
     Tool(ToolName),
+    /// Any tool in that session.
     Session(SessionId),
+    /// Anything the engine asks this record about.
     Global,
 }
 
 /// A durable authorization. Revocation is recorded, never erased.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Grant {
+    /// The grant's id.
     pub id: GrantId,
+    /// How far the grant reaches.
     pub scope: GrantScope,
+    /// When it was issued.
     pub issued_at: DateTime<Utc>,
+    /// Who issued it.
     pub issued_by: String,
+    /// When it was revoked, if it was.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revoked_at: Option<DateTime<Utc>>,
 }
 
 impl Grant {
+    /// A grant for `scope`, issued by `issued_by`.
     pub fn new(scope: GrantScope, issued_by: impl Into<String>) -> Self {
         Self {
             id: GrantId::new(),
@@ -49,11 +65,13 @@ impl Grant {
         }
     }
 
+    /// Whether the grant has not been revoked.
     #[must_use]
     pub fn is_active(&self) -> bool {
         self.revoked_at.is_none()
     }
 
+    /// Whether the grant authorizes this call.
     #[must_use]
     pub fn applies_to(&self, session: SessionId, call: CallId, tool: &ToolName) -> bool {
         if !self.is_active() {
@@ -68,24 +86,37 @@ impl Grant {
     }
 }
 
+/// What happened to an approval record.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum AuditAction {
+    /// The engine parked the call.
     Requested,
+    /// A grant was issued.
     Granted,
+    /// A human denied the call.
     Denied,
+    /// A grant was revoked.
     Revoked,
+    /// The arguments were edited.
     Edited,
+    /// The record expired.
     Expired,
+    /// A stored decision was replayed.
     Replayed,
 }
 
+/// One entry of a record's audit trail.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuditEntry {
+    /// When it happened.
     pub at: DateTime<Utc>,
+    /// Who did it.
     pub actor: String,
+    /// What happened.
     pub action: AuditAction,
+    /// Anything else worth keeping.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
 }
@@ -94,9 +125,13 @@ pub struct AuditEntry {
 /// grant issued for the original call cannot be reused.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ApprovalEdit {
+    /// When the edit was made.
     pub at: DateTime<Utc>,
+    /// Who made it.
     pub actor: String,
+    /// The arguments after the edit.
     pub arguments: Value,
+    /// The digest of the edited arguments.
     pub digest: Digest,
 }
 
@@ -104,25 +139,38 @@ pub struct ApprovalEdit {
 /// host is authorizing.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ApprovalRecord {
+    /// The record's id.
     pub id: ApprovalId,
+    /// The session the call belongs to.
     pub session: SessionId,
+    /// The call awaiting a decision.
     pub call_id: CallId,
+    /// The tool that wants to run.
     pub tool: ToolName,
+    /// The digest of the exact arguments being authorized.
     pub argument_digest: Digest,
+    /// When the decision was requested.
     pub requested_at: DateTime<Utc>,
+    /// When the request stops being decidable.
     pub expires_at: DateTime<Utc>,
+    /// Where the record stands.
     pub status: ApprovalStatus,
+    /// The edits made to the arguments, in order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub edits: Vec<ApprovalEdit>,
+    /// The grants issued from this record.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub grants: Vec<Grant>,
+    /// The audit trail, in order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub audit: Vec<AuditEntry>,
+    /// Free-form data the host attached to the record.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub metadata: BTreeMap<String, Value>,
 }
 
 impl ApprovalRecord {
+    /// A pending record for a call, alive for `lifetime`.
     #[must_use]
     pub fn new(
         session: SessionId,
@@ -153,6 +201,7 @@ impl ApprovalRecord {
         }
     }
 
+    /// Whether the record is expired at `now`.
     #[must_use]
     pub fn is_expired_at(&self, now: DateTime<Utc>) -> bool {
         now >= self.expires_at
@@ -174,6 +223,7 @@ impl ApprovalRecord {
         }
     }
 
+    /// Issues a grant for `scope` and records it.
     pub fn grant(&mut self, scope: GrantScope, actor: impl Into<String>) {
         let actor = actor.into();
         self.grants.push(Grant::new(scope, actor.clone()));
@@ -186,6 +236,7 @@ impl ApprovalRecord {
         });
     }
 
+    /// Denies the call with a reason.
     pub fn deny(&mut self, actor: impl Into<String>, reason: impl Into<String>) {
         let actor = actor.into();
         self.status = ApprovalStatus::Denied;
@@ -197,6 +248,7 @@ impl ApprovalRecord {
         });
     }
 
+    /// Replaces the approved arguments, recording who did it.
     pub fn edit(&mut self, actor: impl Into<String>, arguments: Value) {
         let actor = actor.into();
         let digest = Digest::of_json(&arguments);
@@ -215,6 +267,7 @@ impl ApprovalRecord {
         });
     }
 
+    /// Revokes the grant with that id, recording who did it.
     pub fn revoke(&mut self, grant: GrantId, actor: impl Into<String>) {
         let actor = actor.into();
         let now = Utc::now();

@@ -9,6 +9,7 @@ use crate::error::{Error, Result};
 
 macro_rules! entity_id {
     ($name:ident) => {
+        /// An opaque, randomly generated identifier.
         #[derive(
             Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
         )]
@@ -16,11 +17,13 @@ macro_rules! entity_id {
         pub struct $name(Uuid);
 
         impl $name {
+            /// A fresh, random identifier.
             #[must_use]
             pub fn new() -> Self {
                 Self(Uuid::new_v4())
             }
 
+            /// The identifier as a UUID.
             #[must_use]
             pub fn into_uuid(self) -> Uuid {
                 self.0
@@ -96,20 +99,24 @@ fn decode_hex(value: &str) -> Option<[u8; 32]> {
 
 macro_rules! content_hash {
     ($name:ident) => {
+        /// A content hash: 32 bytes of SHA-256, lowercase hex on the wire.
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
         pub struct $name([u8; 32]);
 
         impl $name {
+            /// The hash of `bytes`.
             #[must_use]
             pub fn of(bytes: &[u8]) -> Self {
                 Self(Sha256::digest(bytes).into())
             }
 
+            /// The 32 raw bytes.
             #[must_use]
             pub fn as_bytes(&self) -> &[u8; 32] {
                 &self.0
             }
 
+            /// The hash in lowercase hex.
             #[must_use]
             pub fn to_hex(self) -> String {
                 encode_hex(&self.0)
@@ -179,6 +186,7 @@ impl schemars::JsonSchema for BlobId {
 content_hash!(Digest);
 
 impl Digest {
+    /// The hash of `value`'s canonical JSON text.
     #[must_use]
     pub fn of_json(value: &serde_json::Value) -> Self {
         Self::of(value.to_string().as_bytes())
@@ -187,6 +195,7 @@ impl Digest {
 
 macro_rules! name_id {
     ($name:ident, $label:literal, $check:expr) => {
+        /// A validated name identifier, stored as written.
         #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
         pub struct $name(String);
 
@@ -207,6 +216,7 @@ macro_rules! name_id {
                 }
             }
 
+            /// The identifier as a string.
             #[must_use]
             pub fn as_str(&self) -> &str {
                 &self.0
@@ -283,11 +293,14 @@ name_id!(WireFamily, "wire family", |value: &str| value.chars().all(
 /// A provider and model pair. The only way to name a model across the API.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ModelRef {
+    /// The provider that owns the model.
     pub provider: ProviderId,
+    /// The model's id within the provider.
     pub model: ModelId,
 }
 
 impl ModelRef {
+    /// A reference to `model` on `provider`.
     #[must_use]
     pub fn new(provider: ProviderId, model: ModelId) -> Self {
         Self { provider, model }

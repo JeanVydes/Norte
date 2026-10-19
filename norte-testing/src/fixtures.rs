@@ -15,11 +15,13 @@ pub fn model(reference: &str) -> ModelRef {
     }
 }
 
+/// A user message carrying `text`.
 #[must_use]
 pub fn user(text: impl Into<String>) -> Message {
     Message::user(text)
 }
 
+/// A system message carrying `text`.
 #[must_use]
 pub fn system(text: impl Into<String>) -> Message {
     Message::system(text)

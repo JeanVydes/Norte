@@ -182,6 +182,8 @@ The release checklist:
 
 Every published crate carries `license`, `description`, `homepage`, `repository`,
 `readme`, `keywords` and `categories`; `cargo publish` warns when one is missing.
+A copy of the workspace `LICENSE` sits next to each published crate's
+`Cargo.toml`, so the license text travels inside the published tarball.
 
 ## Reporting issues
 

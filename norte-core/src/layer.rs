@@ -6,9 +6,13 @@ use crate::id::SessionId;
 use crate::model::{ModelRequest, ModelStream};
 use crate::stream::StreamEvent;
 
+/// What a layer may rely on while wrapping a request.
 pub struct LayerContext<'a> {
+    /// The session the turn belongs to.
     pub session: SessionId,
+    /// The turn number.
     pub turn: u64,
+    /// The sink a layer uses to emit engine events.
     pub events: &'a dyn EventSink,
 }
 
@@ -69,8 +73,15 @@ pub fn synthetic_stream(events: Vec<StreamEvent>) -> ModelStream {
 /// the reason it does so is recorded in the audit trail.
 #[async_trait::async_trait]
 pub trait Layer: Send + Sync {
+    /// The layer's name, as it appears in the audit trail.
     fn name(&self) -> &str;
 
+    /// Wraps `request`, either forwarding to `next` or answering with a
+    /// synthetic stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever the layer or the call below it fails with.
     async fn wrap(
         &self,
         context: &LayerContext<'_>,
@@ -82,6 +93,11 @@ pub trait Layer: Send + Sync {
 /// The inner call a layer forwards to.
 #[async_trait::async_trait]
 pub trait Continuation: Send + Sync {
+    /// Runs the continuation with `request`.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever the next layer or the model call fails with.
     async fn call(&self, context: &LayerContext<'_>, request: ModelRequest) -> Result<ModelStream>;
 }
 
@@ -92,11 +108,13 @@ pub struct LayerStack {
 }
 
 impl LayerStack {
+    /// A stack of `layers`, outermost first.
     #[must_use]
     pub fn new(layers: Vec<Arc<dyn Layer>>) -> Self {
         Self { layers }
     }
 
+    /// The layers, outermost first.
     #[must_use]
     pub fn layers(&self) -> &[Arc<dyn Layer>] {
         &self.layers
@@ -149,6 +167,7 @@ impl Continuation for Step<'_> {
 
 /// Adapter call as a continuation, so the stack's innermost step can reach it.
 pub struct ModelContinuation<'a> {
+    /// The model port the stack's innermost step calls.
     pub model: &'a dyn crate::model::Model,
 }
 

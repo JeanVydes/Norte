@@ -1,8 +1,11 @@
 #![forbid(unsafe_code)]
 #![doc = "The `Anthropic` Messages wire family.\n\nThe crate ships no model catalog and no vendor table: the host supplies a\n[`Capabilities`], a [`VendorProfile`] naming the endpoint and credentials, and a\n[`ModelRef`]. The adapter maps the neutral core onto the Messages API in both\ndirections.\n\nPrompt caching is expressed with `cache_control` breakpoints on content blocks,\nplaced from the deterministic cache boundaries reconstruction computes, so the\ncached prefix is byte-stable across turns (FR-CACHE).\n\nStructured output has no native field on this wire, so `output_schema` is\ndropped rather than emulated; hosts that need it gate that request on a model\nwhose capability set advertises `StructuredOutputMode`.\n\n[`Capabilities`]: norte_core::Capabilities\n[`VendorProfile`]: norte_http::VendorProfile\n[`ModelRef`]: norte_core::ModelRef\n\nThe `Anthropic` vendor ships as a preset in [`presets::anthropic`], which fixes the base `URL`, the `x-api-key` credential and the required `anthropic-version`."]
 
+/// Continuity interpreted by the Anthropic adapter.
 pub mod continuity;
+/// Helpers for reading and writing the wire bodies.
 pub mod json;
+/// The Messages API surface.
 pub mod messages;
 pub mod presets;
 

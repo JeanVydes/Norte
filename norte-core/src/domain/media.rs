@@ -15,9 +15,13 @@ use crate::id::{BlobId, ProviderId};
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum MediaKind {
+    /// An image.
     Image,
+    /// Audio.
     Audio,
+    /// Video.
     Video,
+    /// A document, such as a PDF.
     Document,
 }
 
@@ -51,6 +55,7 @@ impl MimeType {
         }
     }
 
+    /// The media type as written, `type/subtype`.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
@@ -94,8 +99,11 @@ impl<'de> Deserialize<'de> for MimeType {
 /// blob store by the engine when the blob is still available (FR-PART-4).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderFileRef {
+    /// The provider that holds the file.
     pub provider: ProviderId,
+    /// The provider's id for the file.
     pub file_id: String,
+    /// When the reference stops being usable, where the provider says.
     pub expires_at: Option<DateTime<Utc>>,
     /// Durable fallback for the file's bytes, so an expired reference can be
     /// revived without the vendor (FR-PART-4). Absent means the bytes are gone.
@@ -104,6 +112,7 @@ pub struct ProviderFileRef {
 }
 
 impl ProviderFileRef {
+    /// Whether the reference has expired at the current time.
     #[must_use]
     pub fn is_expired(&self) -> bool {
         self.expires_at
@@ -116,38 +125,55 @@ impl ProviderFileRef {
 #[serde(rename_all = "snake_case", tag = "source")]
 #[non_exhaustive]
 pub enum MediaSource {
+    /// Bytes held in the blob store.
     Blob(BlobId),
+    /// A URL the provider fetches itself.
     Url(String),
+    /// A file the provider already holds.
     ProviderFile(ProviderFileRef),
+    /// The bytes themselves, base64 in JSON.
     #[serde(with = "codec::bytes_base64")]
     Inline(Vec<u8>),
 }
 
+/// Descriptive fields a media part may carry. Every one is optional: a source
+/// that reports none is still a valid part.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct MediaMetadata {
+    /// Length in milliseconds, for audio and video.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+    /// Pixel width, for images and video.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub width: Option<u32>,
+    /// Pixel height, for images and video.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub height: Option<u32>,
+    /// A transcript the provider produced for audio.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transcript: Option<String>,
+    /// Anything else the provider sent, under its own key.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub extension: std::collections::BTreeMap<String, Value>,
 }
 
+/// One piece of media in a message.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MediaPart {
+    /// The kind of media.
     pub kind: MediaKind,
+    /// Where the bytes live.
     pub source: MediaSource,
+    /// The media type.
     pub mime: MimeType,
+    /// The descriptive fields.
     #[serde(default)]
     pub metadata: MediaMetadata,
 }
 
 impl MediaPart {
+    /// A media part with no metadata.
     #[must_use]
     pub fn new(kind: MediaKind, source: MediaSource, mime: MimeType) -> Self {
         Self {

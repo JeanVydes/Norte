@@ -1,3 +1,5 @@
+//! `OpenRouter` as an `OpenAI` Chat Completions profile.
+
 use norte_core::{
     Capabilities, Modality, Model, ModelRef, ProviderId, StreamingGranularity, ToolKind, WireFamily,
 };

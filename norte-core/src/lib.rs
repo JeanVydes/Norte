@@ -3,23 +3,41 @@
 
 extern crate self as norte_core;
 
+/// Tool-call approval: records, grants and the audit trail.
 pub mod approval;
+/// What a model declares it can do, and the typed features the engine checks.
 pub mod capability;
+/// Canonical byte encodings shared by persistence and the wire.
 pub mod codec;
+/// The value types a conversation is made of.
 pub mod domain;
+/// The engine: the state machine that turns a session into requests.
 pub mod engine;
+/// The error type and its variants.
 pub mod error;
+/// Events the engine emits while a turn runs.
 pub mod event;
+/// Typed identifiers, digests and wire families.
 pub mod id;
+/// The layer trait that wraps one model call.
 pub mod layer;
+/// The provider-file seam for media parts.
 pub mod media_adapter;
+/// In-memory reference implementations of the store ports.
 pub mod memory;
+/// The model port and the request it receives.
 pub mod model;
+/// Observers and stream transforms that watch a turn.
 pub mod observer;
+/// Tool-call policy evaluation.
 pub mod policy;
+/// Media preprocessing before a request is built.
 pub mod preprocess;
+/// The durable ports: sessions and blobs.
 pub mod store;
+/// Stream events and the accumulator that folds them into parts.
 pub mod stream;
+/// Tool declarations, the registry and execution.
 pub mod tool;
 
 pub use approval::{ApprovalRecord, ApprovalStatus, AuditAction, AuditEntry, Grant, GrantScope};

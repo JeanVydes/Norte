@@ -10,6 +10,7 @@ pub struct RecordingObserver {
 }
 
 impl RecordingObserver {
+    /// An observer named `name` that has seen nothing yet.
     #[must_use]
     pub fn new(name: impl Into<String>) -> Self {
         Self {
@@ -18,6 +19,7 @@ impl RecordingObserver {
         }
     }
 
+    /// The events seen so far, in order.
     #[must_use]
     pub fn events(&self) -> Vec<EngineEvent> {
         self.events
@@ -26,6 +28,7 @@ impl RecordingObserver {
             .clone()
     }
 
+    /// How many events have been seen.
     #[must_use]
     pub fn count(&self) -> usize {
         self.events

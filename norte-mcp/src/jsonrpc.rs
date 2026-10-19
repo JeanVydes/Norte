@@ -53,9 +53,13 @@ impl Display for RequestId {
 /// A request: it carries an id and expects exactly one response.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Request {
+    /// The protocol version, always [`JSONRPC_VERSION`].
     pub jsonrpc: String,
+    /// The request's identifier.
     pub id: RequestId,
+    /// The method to invoke.
     pub method: String,
+    /// The method's parameters, when it takes any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub params: Option<Value>,
 }
@@ -76,8 +80,11 @@ impl Request {
 /// A notification: a method invocation with no id and no response.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Notification {
+    /// The protocol version, always [`JSONRPC_VERSION`].
     pub jsonrpc: String,
+    /// The method to invoke.
     pub method: String,
+    /// The method's parameters, when it takes any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub params: Option<Value>,
 }
@@ -142,10 +149,14 @@ impl From<McpError> for RpcError {
 /// A response to a [`Request`]: exactly one of the two payloads is present.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Response {
+    /// The protocol version, always [`JSONRPC_VERSION`].
     pub jsonrpc: String,
+    /// The identifier of the request being answered.
     pub id: RequestId,
+    /// The result, when the request succeeded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
+    /// The error, when the request failed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<RpcError>,
 }

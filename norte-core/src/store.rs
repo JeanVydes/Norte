@@ -16,17 +16,22 @@ pub trait Store: Send + Sync {
     /// [`crate::Error::StoreConflict`] when the version does not match.
     async fn commit(&self, commit: Commit) -> Result<Session>;
 
+    /// Loads a session, including its head, phase and queue.
     async fn load(&self, session: SessionId) -> Result<Session>;
 
+    /// Loads one node by id.
     async fn node(&self, id: NodeId) -> Result<Node>;
 
     /// Ancestor chain from the root down to `id`, inclusive.
     async fn ancestors(&self, id: NodeId) -> Result<Vec<NodeId>>;
 
+    /// The direct children of `id`, in creation order.
     async fn children(&self, id: NodeId) -> Result<Vec<NodeId>>;
 
+    /// Writes one approval record, whether newly parked or decided.
     async fn save_approval(&self, record: ApprovalRecord) -> Result<()>;
 
+    /// The approval record with this id, if it exists.
     async fn approval(&self, id: ApprovalId) -> Result<Option<ApprovalRecord>>;
 
     /// Every approval record recorded for the session, decided or not, oldest
@@ -53,7 +58,9 @@ pub trait BlobStore: Send + Sync {
     /// Idempotent: the same bytes always produce the same id.
     async fn put(&self, bytes: &[u8]) -> Result<BlobId>;
 
+    /// The bytes stored under `id`, or a typed error when it is absent.
     async fn get(&self, id: BlobId) -> Result<Vec<u8>>;
 
+    /// Whether `id` is present, without reading its bytes.
     async fn contains(&self, id: BlobId) -> Result<bool>;
 }

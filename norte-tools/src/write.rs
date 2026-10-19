@@ -60,6 +60,7 @@ impl WriteRequest {
     }
 }
 
+/// The outcome code of a write request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -76,13 +77,21 @@ pub enum WriteCode {
 /// replace an existing file, because then nothing on disk changed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WriteOutput {
+    /// The outcome code.
     pub code: WriteCode,
+    /// The file the request named.
     pub path: PathBuf,
+    /// Whether the file existed before the call.
     pub existed: bool,
+    /// Whether parent directories were created.
     pub created_directories: bool,
+    /// Bytes written, when the file was written.
     pub bytes: Option<usize>,
+    /// Lines written, when the file was written.
     pub lines: Option<usize>,
+    /// Digest of the content after the call, when the file was written.
     pub content_digest: Option<Digest>,
+    /// Digest of the request as the executor judged it.
     pub request_digest: Digest,
 }
 
@@ -114,6 +123,7 @@ pub struct WriteTool {
 }
 
 impl WriteTool {
+    /// A write tool with the default limits.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -121,6 +131,7 @@ impl WriteTool {
         }
     }
 
+    /// Sets the bounds on what may be written.
     #[must_use]
     pub fn with_limits(mut self, limits: WriteLimits) -> Self {
         self.limits = limits;

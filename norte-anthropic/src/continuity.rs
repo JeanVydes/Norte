@@ -20,11 +20,13 @@ pub struct AnthropicContinuity {
 }
 
 impl AnthropicContinuity {
+    /// An adapter for `family`, whose exact-scope tokens are bound to `model`.
     #[must_use]
     pub fn new(family: WireFamily, model: ModelRef) -> Self {
         Self { family, model }
     }
 
+    /// The wire family whose state this adapter interprets.
     #[must_use]
     pub fn family(&self) -> &WireFamily {
         &self.family

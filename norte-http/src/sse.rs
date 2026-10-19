@@ -3,9 +3,13 @@ use std::time::Duration;
 /// One server-sent event, already decoded from the wire.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SseEvent {
+    /// The event's name, when the stream named one.
     pub event: Option<String>,
+    /// The event's data lines, joined by newlines.
     pub data: String,
+    /// The stream's last event id, when it set one.
     pub id: Option<String>,
+    /// A reconnection delay the stream asked for, when it asked.
     pub retry: Option<Duration>,
 }
 
@@ -20,6 +24,7 @@ pub struct SseDecoder {
 }
 
 impl SseDecoder {
+    /// A decoder with an empty buffer.
     #[must_use]
     pub fn new() -> Self {
         Self::default()

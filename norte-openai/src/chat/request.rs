@@ -36,7 +36,7 @@ pub(crate) fn build(
     let calls = call_index(continuity, &request.messages);
     let mut messages = Vec::new();
     for message in &request.messages {
-        push_message(&calls, message, &mut messages)?;
+        push_message(&calls, model, message, &mut messages)?;
     }
 
     let mut body = serde_json::Map::new();
@@ -198,23 +198,33 @@ fn vendor_call(calls: &CallIndex, id: CallId) -> String {
     calls.get(&id).map_or_else(|| id.to_string(), Clone::clone)
 }
 
-fn push_message(calls: &CallIndex, message: &Message, out: &mut Vec<Value>) -> Result<()> {
+fn push_message(
+    calls: &CallIndex,
+    model: &ModelRef,
+    message: &Message,
+    out: &mut Vec<Value>,
+) -> Result<()> {
     match message.role {
         Role::Assistant => push_assistant(calls, message, out),
-        Role::Tool => push_tool_results(calls, message, out),
-        role => push_user(calls, role, message, out)?,
+        Role::Tool => push_tool_results(calls, model, message, out)?,
+        role => push_user(calls, model, role, message, out)?,
     }
     Ok(())
 }
 
-fn push_user(calls: &CallIndex, role: Role, message: &Message, out: &mut Vec<Value>) -> Result<()> {
+fn push_user(
+    calls: &CallIndex,
+    model: &ModelRef,
+    role: Role,
+    message: &Message,
+    out: &mut Vec<Value>,
+) -> Result<()> {
     let content = user_content(message)?;
     out.push(json!({
         "role": chat_role(role),
         "content": content,
     }));
-    push_tool_results(calls, message, out);
-    Ok(())
+    push_tool_results(calls, model, message, out)
 }
 
 /// The Chat Completions role policy (FR-ROLE-2).
@@ -289,28 +299,43 @@ fn assistant_tool_calls(calls: &CallIndex, message: &Message) -> Vec<Value> {
         .collect()
 }
 
-fn push_tool_results(calls: &CallIndex, message: &Message, out: &mut Vec<Value>) {
+fn push_tool_results(
+    calls: &CallIndex,
+    model: &ModelRef,
+    message: &Message,
+    out: &mut Vec<Value>,
+) -> Result<()> {
     for result in message.tool_results() {
         out.push(json!({
             "role": "tool",
             "tool_call_id": vendor_call(calls, result.call_id),
-            "content": tool_content(result),
+            "content": tool_content(model, result)?,
         }));
     }
+    Ok(())
 }
 
-fn tool_content(result: &ToolResultPart) -> Value {
+fn tool_content(model: &ModelRef, result: &ToolResultPart) -> Result<Value> {
+    if result.parts.iter().any(|part| part.as_media().is_some()) {
+        // A tool message on this wire carries text only. Refusing is the
+        // Section 12 rule: a feature the wire cannot express is a typed error,
+        // never a silent omission.
+        return Err(Error::Capability {
+            model: model.clone(),
+            feature: "media in a tool result on the chat completions wire".to_owned(),
+        });
+    }
     let carries_text = result.parts.iter().any(|part| part.as_text().is_some());
     // Text is authoritative (FR-TOOL-BASH-3): the host renders the text the
     // model reads, so structured data only answers for a result that carries no
     // text at all.
     if !carries_text {
         if let Some(structured) = &result.structured {
-            return Value::String(structured.to_string());
+            return Ok(Value::String(structured.to_string()));
         }
     }
     let text: String = result.parts.iter().filter_map(Part::as_text).collect();
-    Value::String(text)
+    Ok(Value::String(text))
 }
 
 fn user_content(message: &Message) -> Result<Value> {
@@ -530,6 +555,30 @@ mod tests {
         let request = ModelRequest::new(model(), vec![Message::tool(vec![structured_only])]);
         let body = build(&model(), &continuity(), &Quirks::new(), &request).expect("build");
         assert_eq!(body["messages"][0]["content"], "{\"answer\":42}");
+    }
+
+    #[test]
+    fn media_in_a_tool_result_is_a_typed_error() {
+        let call_id = CallId::new();
+        let result = ToolResultPart {
+            call_id,
+            parts: vec![
+                Part::text("here is the chart"),
+                Part::Media(MediaPart::new(
+                    MediaKind::Image,
+                    MediaSource::Inline(vec![1, 2, 3]),
+                    MimeType::new("image/png").expect("mime"),
+                )),
+            ],
+            structured: None,
+            is_error: false,
+        };
+        let request = ModelRequest::new(model(), vec![Message::tool(vec![result])]);
+        let error = build(&model(), &continuity(), &Quirks::new(), &request).expect_err("refused");
+        assert!(
+            matches!(error, Error::Capability { ref feature, .. } if feature.contains("tool result")),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

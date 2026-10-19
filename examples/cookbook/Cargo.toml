@@ -13,6 +13,8 @@ norte-http = { workspace = true }
 norte-openai = { workspace = true }
 norte-tools = { workspace = true }
 async-trait = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true }
 futures-util = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true }

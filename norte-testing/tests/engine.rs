@@ -1,5 +1,6 @@
 //! Engine integration tests driven by the scripted model.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -64,6 +65,30 @@ struct Guarded {
 impl FnExecutor<EchoArgs, EchoResult> for Guarded {
     async fn call(&self, args: EchoArgs) -> Result<EchoResult> {
         self.hits.fetch_add(1, Ordering::SeqCst);
+        Ok(EchoResult { echoed: args.text })
+    }
+}
+
+#[derive(Debug)]
+#[norte_core::tool(
+    name = "contextual",
+    description = "Records the host context it ran with"
+)]
+struct Contextual {
+    seen: Arc<Mutex<Vec<BTreeMap<String, serde_json::Value>>>>,
+}
+
+#[async_trait::async_trait]
+impl FnExecutor<EchoArgs, EchoResult> for Contextual {
+    async fn call(&self, args: EchoArgs) -> Result<EchoResult> {
+        Ok(EchoResult { echoed: args.text })
+    }
+
+    async fn call_with_context(&self, context: &ToolContext, args: EchoArgs) -> Result<EchoResult> {
+        self.seen
+            .lock()
+            .expect("lock")
+            .push(context.metadata.clone());
         Ok(EchoResult { echoed: args.text })
     }
 }
@@ -603,6 +628,74 @@ async fn a_required_approval_blocks_then_resumes() {
         !outcome.session.grants.is_empty(),
         "the approval leaves a grant"
     );
+}
+
+#[tokio::test]
+async fn the_host_context_reaches_a_tool_that_resumes_after_approval() {
+    let call_id = CallId::new();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let scripted = Arc::new(
+        ScriptedModel::new(model("test/echo"))
+            .turn_tool_call(call_id, "contextual", &json!({ "text": "hello" }))
+            .turn_text("done"),
+    );
+    let mut tools = ToolRegistry::new();
+    tools
+        .register_declarator(&Contextual {
+            seen: Arc::clone(&seen),
+        })
+        .expect("register contextual");
+    let policies = PolicySet::new(vec![Arc::new(ToolApprovalPolicy::new(
+        "guard",
+        vec![ToolName::new("contextual").expect("tool")],
+        "contextual touches the world",
+    ))]);
+
+    let engine = EngineBuilder::new()
+        .store(Arc::new(InMemoryStore::new()))
+        .blobs(Arc::new(InMemoryBlobStore::new()))
+        .model(scripted)
+        .tools(tools)
+        .policies(policies)
+        .tool_metadata(|info| {
+            BTreeMap::from([
+                ("tenant".to_owned(), json!("acme")),
+                ("tool".to_owned(), json!(info.tool.as_str())),
+                ("turn".to_owned(), json!(info.turn)),
+                ("arguments".to_owned(), info.arguments.clone()),
+            ])
+        })
+        .build()
+        .expect("build engine");
+
+    let session = engine.create().await.expect("create");
+    let outcome = engine
+        .send(session.id, Message::user("go"))
+        .finish()
+        .await
+        .expect("turn");
+    assert_eq!(outcome.session.phase, Phase::AwaitingApproval);
+    assert!(
+        seen.lock().expect("lock").is_empty(),
+        "the parked call has not run yet"
+    );
+
+    let pending = engine.pending_approvals(session.id).await.expect("pending");
+    engine
+        .approve(
+            pending[0].id,
+            norte_core::GrantScope::Call(call_id),
+            "tester",
+        )
+        .await
+        .expect("approve");
+    engine.resume(session.id).finish().await.expect("resume");
+
+    let seen = seen.lock().expect("lock");
+    assert_eq!(seen.len(), 1, "the resumed call ran exactly once");
+    assert_eq!(seen[0]["tenant"], json!("acme"));
+    assert_eq!(seen[0]["tool"], json!("contextual"));
+    assert_eq!(seen[0]["arguments"], json!({ "text": "hello" }));
 }
 
 #[tokio::test]

@@ -16,6 +16,39 @@ use crate::vendor::VendorProfile;
 /// A stream of decoded `SSE` events.
 pub type SseStream = Pin<Box<dyn Stream<Item = Result<SseEvent>> + Send + 'static>>;
 
+/// One field of a `multipart/form-data` body.
+///
+/// The transport builds the body so an adapter that uploads a file — the
+/// `OpenAI` Files API, say — does not have to spell out boundaries or headers.
+#[derive(Clone, Debug)]
+pub enum MultipartField {
+    /// A plain text field.
+    Text {
+        /// The field name.
+        name: String,
+        /// The field value.
+        value: String,
+    },
+    /// A `JSON` field, sent with an `application/json` content type.
+    Json {
+        /// The field name.
+        name: String,
+        /// The field value, already serialized.
+        value: String,
+    },
+    /// A binary file field.
+    File {
+        /// The field name.
+        name: String,
+        /// The filename the vendor records.
+        filename: String,
+        /// The part's media type.
+        mime: String,
+        /// The bytes.
+        bytes: Vec<u8>,
+    },
+}
+
 /// Names the stage a transport failure happened in, so a retry can tell "never
 /// reached the provider" from "may already be running".
 const STAGE: &str = "transport";
@@ -125,6 +158,97 @@ impl HttpClient {
                 },
             }
         }
+    }
+
+    /// Sends a `multipart/form-data` `POST` and decodes the `JSON` response
+    /// body.
+    ///
+    /// One attempt, not a retry: a body cannot be rebuilt between tries, and an
+    /// upload the provider may already have received is not safe to repeat on a
+    /// guess. The call is bounded by the policy's `request_timeout`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a mapped [`Error::Provider`] for any non-success status or
+    /// transport failure, [`Error::InvalidInput`] when a part's media type is
+    /// not valid, and [`Error::Json`] when the body is not valid `JSON`.
+    pub async fn send_post_multipart(
+        &self,
+        profile: &VendorProfile,
+        path: &str,
+        fields: Vec<MultipartField>,
+    ) -> Result<Value> {
+        let mut form = reqwest::multipart::Form::new();
+        for field in fields {
+            form = match field {
+                MultipartField::Text { name, value } => form.text(name, value),
+                MultipartField::Json { name, value } => {
+                    let part = reqwest::multipart::Part::text(value)
+                        .mime_str("application/json")
+                        .map_err(|error| Error::InvalidInput(format!("multipart part: {error}")))?;
+                    form.part(name, part)
+                }
+                MultipartField::File {
+                    name,
+                    filename,
+                    mime,
+                    bytes,
+                } => {
+                    let part = reqwest::multipart::Part::bytes(bytes)
+                        .file_name(filename)
+                        .mime_str(&mime)
+                        .map_err(|error| Error::InvalidInput(format!("multipart part: {error}")))?;
+                    form.part(name, part)
+                }
+            };
+        }
+        let mut builder = self.request(profile, Method::POST, path)?.multipart(form);
+        if let Some(timeout) = self.policy.request_timeout {
+            builder = builder.timeout(timeout);
+        }
+        let response = builder.send().await.map_err(|error| transport(&error))?;
+        let status = response.status();
+        if !status.is_success() {
+            let retry_after = response
+                .headers()
+                .get(RETRY_AFTER)
+                .and_then(|value| value.to_str().ok())
+                .and_then(parse_retry_after);
+            let text = response.text().await.unwrap_or_default();
+            return Err(status_error(status, &text, retry_after));
+        }
+        read_json(response).await
+    }
+
+    /// Sends a `GET` and returns the raw response body.
+    ///
+    /// One attempt, like [`send_post_multipart`](Self::send_post_multipart): a
+    /// download can be retried by the host, and the transport does not guess.
+    ///
+    /// # Errors
+    ///
+    /// Returns a mapped [`Error::Provider`] for any non-success status or
+    /// transport failure.
+    pub async fn send_get_bytes(&self, profile: &VendorProfile, path: &str) -> Result<Vec<u8>> {
+        let mut builder = self
+            .request(profile, Method::GET, path)?
+            .header(ACCEPT, "application/octet-stream");
+        if let Some(timeout) = self.policy.request_timeout {
+            builder = builder.timeout(timeout);
+        }
+        let response = builder.send().await.map_err(|error| transport(&error))?;
+        let status = response.status();
+        if !status.is_success() {
+            let retry_after = response
+                .headers()
+                .get(RETRY_AFTER)
+                .and_then(|value| value.to_str().ok())
+                .and_then(parse_retry_after);
+            let text = response.text().await.unwrap_or_default();
+            return Err(status_error(status, &text, retry_after));
+        }
+        let bytes = response.bytes().await.map_err(|error| transport(&error))?;
+        Ok(bytes.to_vec())
     }
 
     /// Opens an `SSE` stream, retrying a connection that never reached the

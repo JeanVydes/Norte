@@ -35,7 +35,7 @@
 //!
 //! And whether a hit is *reported* is the provider's: the model here is whatever
 //! `COOKBOOK_MODEL` names, and a free model's provider reports cache usage only
-//! when it keeps a cache and says so. `COOKBOOK_MODEL=openai/gpt-4o-mini` runs
+//! when it keeps a cache and says so. `COOKBOOK_MODEL=openai/gpt-6-luna` runs
 //! the identical recipe against a provider that reports it, so the two halves —
 //! the bytes, which the library controls, and the tokens, which it does not —
 //! can be watched next to each other.

@@ -99,6 +99,6 @@ pub use stream::{Accumulated, StreamAccumulator, StreamEvent};
 pub use tool::registry::{FnTool, ToolRegistry};
 pub use tool::{
     AnyFunction, Cancellation, FnDeclarator, FnExecutor, FunctionDeclaration, ProgressSink,
-    ToolArgs, ToolContext, ToolDeclaration, ToolDeclarator, ToolMetadata, ToolOutput, ToolProgress,
-    ToolSpec, ToolStream,
+    ToolArgs, ToolCallInfo, ToolContext, ToolDeclaration, ToolDeclarator, ToolMetadata,
+    ToolMetadataProvider, ToolOutput, ToolProgress, ToolSpec, ToolStream,
 };

@@ -96,6 +96,7 @@ fn build_body(
     body.insert(
         "contents".to_owned(),
         Value::Array(build_contents(
+            model,
             continuity,
             &names,
             &request.messages[instructions..],
@@ -132,6 +133,7 @@ fn instruction_count(messages: &[Message]) -> usize {
 /// `contents` only knows the `user` and `model` roles. This is how a mid-run
 /// instruction update reaches the model.
 fn build_contents(
+    model: &ModelRef,
     continuity: &GeminiContinuity,
     names: &CallNames,
     messages: &[Message],
@@ -145,7 +147,7 @@ fn build_contents(
         };
         let mut parts = Vec::new();
         for part in &message.parts {
-            push_part(continuity, names, part, &mut parts)?;
+            push_part(model, continuity, names, part, &mut parts)?;
         }
         push_content(role, parts, &mut out);
     }
@@ -168,6 +170,7 @@ fn push_content(role: &str, parts: Vec<Value>, out: &mut Vec<Value>) {
 }
 
 fn push_part(
+    model: &ModelRef,
     continuity: &GeminiContinuity,
     names: &CallNames,
     part: &Part,
@@ -191,7 +194,7 @@ fn push_part(
                 }));
             }
         }
-        Part::ToolResult(result) => out.push(tool_response(names, result)),
+        Part::ToolResult(result) => out.push(tool_response(model, names, result)?),
         Part::ProviderToolCall(call) => {
             replay(continuity, call.continuity.as_ref(), out)?;
         }
@@ -254,7 +257,7 @@ fn call_names(continuity: &GeminiContinuity, messages: &[Message]) -> CallNames 
     names
 }
 
-fn tool_response(names: &CallNames, result: &ToolResultPart) -> Value {
+fn tool_response(model: &ModelRef, names: &CallNames, result: &ToolResultPart) -> Result<Value> {
     let name = names
         .get(&result.call_id)
         .cloned()
@@ -268,7 +271,42 @@ fn tool_response(names: &CallNames, result: &ToolResultPart) -> Value {
         (false, Some(structured)) => json!({ "result": structured }),
         _ => json!({ "result": text }),
     };
-    json!({ "functionResponse": { "name": name, "response": response } })
+    let mut media = Vec::new();
+    for part in &result.parts {
+        let Part::Media(media_part) = part else {
+            continue;
+        };
+        match &media_part.source {
+            MediaSource::Inline(bytes) => media.push(json!({
+                "inlineData": {
+                    "mimeType": media_part.mime.as_str(),
+                    "data": base64_encode(bytes),
+                }
+            })),
+            MediaSource::Blob(_) => {
+                return Err(Error::InvalidInput(
+                    "gemini: a media part is still stored as a blob; configure a MediaAdapter"
+                        .to_owned(),
+                ));
+            }
+            _ => {
+                // A function response part only carries inline bytes on this
+                // wire; a URL or a vendor file is a typed capability error
+                // rather than a silent omission.
+                return Err(Error::Capability {
+                    model: model.clone(),
+                    feature: "media from a URL or provider file in a tool result on the \
+                              generateContent wire"
+                        .to_owned(),
+                });
+            }
+        }
+    }
+    let mut function_response = json!({ "name": name, "response": response });
+    if !media.is_empty() {
+        function_response["parts"] = Value::Array(media);
+    }
+    Ok(json!({ "functionResponse": function_response }))
 }
 
 fn media_part(media: &MediaPart) -> Result<Value> {
@@ -398,9 +436,9 @@ fn effort_name(effort: ReasoningEffort) -> &'static str {
 mod tests {
     use super::*;
     use norte_core::{
-        ContinuityAdapter, MediaKind, ModelId, ProviderId, ProviderTool, ProviderToolCallPart,
-        ProviderToolResultPart, ReasoningPart, ReasoningVisibility, ToolCallPart, ToolName,
-        WireFamily,
+        ContinuityAdapter, MediaKind, MimeType, ModelId, ProviderId, ProviderTool,
+        ProviderToolCallPart, ProviderToolResultPart, ReasoningPart, ReasoningVisibility,
+        ToolCallPart, ToolName, WireFamily,
     };
 
     use crate::WIRE_GENERATE;
@@ -578,6 +616,77 @@ mod tests {
         assert_eq!(
             body["contents"][0]["parts"][0]["functionResponse"]["response"]["result"],
             serde_json::json!({ "answer": 42 })
+        );
+    }
+
+    #[test]
+    fn a_tool_result_carries_inline_media_in_its_parts() {
+        let call_id = CallId::new();
+        let result = ToolResultPart {
+            call_id,
+            parts: vec![
+                Part::text("the chart"),
+                Part::Media(MediaPart::new(
+                    MediaKind::Image,
+                    MediaSource::Inline(vec![1, 2, 3]),
+                    MimeType::new("image/png").expect("mime"),
+                )),
+            ],
+            structured: Some(serde_json::json!({ "rows": 12 })),
+            is_error: false,
+        };
+        let tool = Message::new(Role::Tool, vec![Part::ToolResult(result)]);
+        let request = ModelRequest::new(model(), vec![tool]);
+        let body = build(&model(), &continuity(), &request).expect("build");
+        let response = &body["contents"][0]["parts"][0]["functionResponse"];
+        assert_eq!(response["response"]["result"], "the chart");
+        assert_eq!(response["parts"][0]["inlineData"]["mimeType"], "image/png");
+        assert_eq!(response["parts"][0]["inlineData"]["data"], "AQID");
+    }
+
+    #[test]
+    fn a_structured_only_tool_result_with_media_keeps_the_json() {
+        let call_id = CallId::new();
+        let result = ToolResultPart {
+            call_id,
+            parts: vec![Part::Media(MediaPart::new(
+                MediaKind::Image,
+                MediaSource::Inline(vec![1, 2, 3]),
+                MimeType::new("image/png").expect("mime"),
+            ))],
+            structured: Some(serde_json::json!({ "rows": 12 })),
+            is_error: false,
+        };
+        let tool = Message::new(Role::Tool, vec![Part::ToolResult(result)]);
+        let request = ModelRequest::new(model(), vec![tool]);
+        let body = build(&model(), &continuity(), &request).expect("build");
+        let response = &body["contents"][0]["parts"][0]["functionResponse"];
+        assert_eq!(
+            response["response"]["result"],
+            serde_json::json!({ "rows": 12 })
+        );
+        assert_eq!(response["parts"][0]["inlineData"]["mimeType"], "image/png");
+    }
+
+    #[test]
+    fn media_from_a_url_in_a_tool_result_is_a_typed_error() {
+        let call_id = CallId::new();
+        let result = ToolResultPart {
+            call_id,
+            parts: vec![Part::Media(MediaPart::new(
+                MediaKind::Image,
+                MediaSource::Url("https://example.test/a.png".to_owned()),
+                MimeType::new("image/png").expect("mime"),
+            ))],
+            structured: None,
+            is_error: false,
+        };
+        let tool = Message::new(Role::Tool, vec![Part::ToolResult(result)]);
+        let request = ModelRequest::new(model(), vec![tool]);
+        let error = build(&model(), &continuity(), &request).expect_err("refused");
+        assert!(
+            matches!(error, Error::Capability { ref feature, .. } if feature.contains("tool result")),
+            "unexpected error: {error}"
         );
     }
 

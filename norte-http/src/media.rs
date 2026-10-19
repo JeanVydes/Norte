@@ -377,4 +377,19 @@ mod tests {
 
         assert!(matches!(error, Error::ProviderFileUnavailable { .. }));
     }
+
+    #[tokio::test]
+    async fn an_expired_provider_file_without_a_port_is_a_typed_error() {
+        let blobs = MemoryBlobs::default();
+        let blob = blobs.put(b"doc").await.expect("put");
+        // A vendor with no file API: the host wires no port at all.
+        let media = HttpMedia::new(&client());
+
+        let error = media
+            .resolve(provider_file("old", Some(expired()), Some(blob)), &blobs)
+            .await
+            .expect_err("typed error");
+
+        assert!(matches!(error, Error::ProviderFileUnavailable { .. }));
+    }
 }

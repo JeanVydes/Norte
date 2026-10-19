@@ -181,6 +181,61 @@ impl Debug for ToolContext {
     }
 }
 
+/// What the engine tells the host's metadata provider about one call.
+///
+/// The fields are the call the executor is about to receive: the session and
+/// turn it belongs to, the call id, the tool and the arguments after any policy
+/// transform. The provider is consulted immediately before execution, so a call
+/// that resumes after an approval park is filled exactly like one that ran
+/// inline (FR-TOOL-7).
+#[derive(Clone, Debug)]
+pub struct ToolCallInfo {
+    /// The session the call belongs to.
+    pub session: SessionId,
+    /// The turn the call belongs to.
+    pub turn: u64,
+    /// The call.
+    pub call_id: CallId,
+    /// The tool the call names.
+    pub tool: ToolName,
+    /// The arguments, after any policy transform.
+    pub arguments: Value,
+}
+
+/// The host callback behind a [`ToolMetadataProvider`].
+type MetadataFn = dyn Fn(&ToolCallInfo) -> BTreeMap<String, Value> + Send + Sync;
+
+/// Supplies [`ToolContext::metadata`] for each execution.
+///
+/// The engine calls it right before the executor runs, both on the first
+/// attempt and when a parked call resumes, so host data (tenant, actor, trace
+/// id, a short-lived credential) reaches the tool without being written to the
+/// session, the graph or the wire (FR-TOOL-7).
+#[derive(Clone)]
+pub struct ToolMetadataProvider(Arc<MetadataFn>);
+
+impl ToolMetadataProvider {
+    /// Wraps a host callback.
+    #[must_use]
+    pub fn new(
+        provider: impl Fn(&ToolCallInfo) -> BTreeMap<String, Value> + Send + Sync + 'static,
+    ) -> Self {
+        Self(Arc::new(provider))
+    }
+
+    /// The metadata for one call.
+    #[must_use]
+    pub fn metadata(&self, info: &ToolCallInfo) -> BTreeMap<String, Value> {
+        (self.0)(info)
+    }
+}
+
+impl Debug for ToolMetadataProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ToolMetadataProvider(..)")
+    }
+}
+
 /// Which output stream a progress chunk came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]

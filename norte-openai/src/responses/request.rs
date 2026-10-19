@@ -336,6 +336,9 @@ fn tool_result_item(calls: &CallIndex, result: &ToolResultPart) -> Result<Value>
 }
 
 fn tool_output(result: &ToolResultPart) -> Result<Value> {
+    if result.parts.iter().any(|part| part.as_media().is_some()) {
+        return Ok(Value::Array(tool_output_blocks(result)?));
+    }
     let carries_text = result.parts.iter().any(|part| part.as_text().is_some());
     // Text is authoritative (FR-TOOL-BASH-3): the host renders the text the
     // model reads, so structured data only answers for a result that carries no
@@ -344,9 +347,6 @@ fn tool_output(result: &ToolResultPart) -> Result<Value> {
         if let Some(structured) = &result.structured {
             return Ok(Value::String(structured.to_string()));
         }
-    }
-    if result.parts.iter().any(|part| part.as_media().is_some()) {
-        return Ok(Value::Array(content_blocks(&result.parts)?));
     }
     let text: String = result
         .parts
@@ -370,6 +370,22 @@ fn content_blocks(parts: &[Part]) -> Result<Vec<Value>> {
             })),
             Part::Media(media) => blocks.push(media_block(media)?),
             _ => {}
+        }
+    }
+    Ok(blocks)
+}
+
+/// The content blocks of a tool result, with structured data answering for a
+/// result that carries no text at all (FR-TOOL-BASH-3).
+fn tool_output_blocks(result: &ToolResultPart) -> Result<Vec<Value>> {
+    let mut blocks = content_blocks(&result.parts)?;
+    let carries_text = result.parts.iter().any(|part| part.as_text().is_some());
+    if !carries_text {
+        if let Some(structured) = &result.structured {
+            blocks.insert(
+                0,
+                json!({ "type": "input_text", "text": structured.to_string() }),
+            );
         }
     }
     Ok(blocks)
@@ -585,6 +601,63 @@ mod tests {
         );
         let body = build(&model(), &continuity(), &request).expect("build");
         assert_eq!(body["input"][0]["output"], "{\"answer\":42}");
+    }
+
+    #[test]
+    fn a_tool_result_carries_media_in_its_output_blocks() {
+        let call_id = CallId::new();
+        let result = ToolResultPart {
+            call_id,
+            parts: vec![
+                Part::text("the chart"),
+                Part::Media(MediaPart::new(
+                    MediaKind::Image,
+                    MediaSource::Inline(vec![1, 2, 3]),
+                    MimeType::new("image/png").expect("mime"),
+                )),
+            ],
+            structured: None,
+            is_error: false,
+        };
+        let request = ModelRequest::new(
+            model(),
+            vec![Message::new(Role::Tool, vec![Part::ToolResult(result)])],
+        );
+        let body = build(&model(), &continuity(), &request).expect("build");
+        let output = &body["input"][0]["output"];
+        assert_eq!(output[0]["type"], "input_text");
+        assert_eq!(output[0]["text"], "the chart");
+        assert_eq!(output[1]["type"], "input_image");
+        assert!(
+            output[1]["image_url"]
+                .as_str()
+                .expect("url")
+                .starts_with("data:image/png;base64,")
+        );
+    }
+
+    #[test]
+    fn a_structured_only_tool_result_with_media_keeps_the_json() {
+        let call_id = CallId::new();
+        let result = ToolResultPart {
+            call_id,
+            parts: vec![Part::Media(MediaPart::new(
+                MediaKind::Image,
+                MediaSource::Inline(vec![1, 2, 3]),
+                MimeType::new("image/png").expect("mime"),
+            ))],
+            structured: Some(serde_json::json!({ "answer": 42 })),
+            is_error: false,
+        };
+        let request = ModelRequest::new(
+            model(),
+            vec![Message::new(Role::Tool, vec![Part::ToolResult(result)])],
+        );
+        let body = build(&model(), &continuity(), &request).expect("build");
+        let output = &body["input"][0]["output"];
+        assert_eq!(output[0]["type"], "input_text");
+        assert_eq!(output[0]["text"], "{\"answer\":42}");
+        assert_eq!(output[1]["type"], "input_image");
     }
 
     #[test]

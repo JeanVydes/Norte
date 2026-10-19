@@ -6,13 +6,16 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use norte_core::{
-    BlobId, BlobStore, Capabilities, EngineBuilder, EngineConfig, FinishReason, InMemoryBlobStore,
-    InMemoryStore, MediaAdapter, MediaKind, MediaMetadata, MediaPart, MediaPayload,
-    MediaPreprocessor, MediaSource, Message, MimeType, Modality, Part, ProviderFileRef,
-    ProviderFiles, ProviderId, Result, Role, StreamEvent, StreamingGranularity, ToolRegistry,
+    BlobId, BlobStore, CallId, Capabilities, EngineBuilder, EngineConfig, FinishReason, FnExecutor,
+    InMemoryBlobStore, InMemoryStore, MediaAdapter, MediaKind, MediaMetadata, MediaPart,
+    MediaPayload, MediaPreprocessor, MediaSource, Message, MimeType, Modality, Part,
+    ProviderFileRef, ProviderFiles, ProviderId, Result, Role, StreamEvent, StreamingGranularity,
+    ToolKind, ToolOutput, ToolRegistry,
 };
 use norte_http::{HttpClient, HttpMedia};
 use norte_testing::{ScriptedModel, model};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 /// Marks inline bytes so a test can see the pass ran.
 struct Marker;
@@ -325,4 +328,91 @@ async fn an_expired_provider_file_is_revived_once_and_the_prefix_stays_stable() 
         panic!("the stored part is still a provider file");
     };
     assert_eq!(original.file_id, "stale");
+}
+
+/// The inline bytes nested inside tool results, in order.
+fn tool_result_sources(messages: &[Message]) -> Vec<Vec<u8>> {
+    messages
+        .iter()
+        .flat_map(|message| message.tool_results())
+        .flat_map(|result| result.parts.iter())
+        .filter_map(|part| match part {
+            Part::Media(media) => match &media.source {
+                MediaSource::Inline(bytes) => Some(bytes.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct DrawArgs {}
+
+#[norte_core::tool(name = "picture", description = "Return the chart the host drew")]
+#[derive(Clone)]
+struct Picture {
+    blob: BlobId,
+}
+
+#[async_trait::async_trait]
+impl FnExecutor<DrawArgs, ToolOutput> for Picture {
+    async fn call(&self, _args: DrawArgs) -> Result<ToolOutput> {
+        Ok(ToolOutput::text("the chart").with_media(MediaPart::new(
+            MediaKind::Image,
+            MediaSource::Blob(self.blob),
+            mime(),
+        )))
+    }
+}
+
+#[tokio::test]
+async fn media_in_a_tool_result_is_materialized_for_the_next_request() {
+    let blobs = Arc::new(InMemoryBlobStore::new());
+    let stored = blobs.put(b"chart bytes").await.expect("put");
+    let adapter = Arc::new(Adapter::default());
+    let call_id = CallId::new();
+    let scripted = Arc::new(
+        ScriptedModel::new(model("test/echo"))
+            .with_capabilities(
+                Capabilities::builder()
+                    .input(Modality::Text)
+                    .input(Modality::Image)
+                    .output(Modality::Text)
+                    .streaming(StreamingGranularity::Delta)
+                    .tool_kind(ToolKind::Function)
+                    .build(),
+            )
+            .turn_tool_call(call_id, "picture", &serde_json::json!({}))
+            .turn_text("seen"),
+    );
+    let mut tools = ToolRegistry::new();
+    tools
+        .register_tool(&Picture { blob: stored })
+        .expect("register picture");
+    let engine = EngineBuilder::new()
+        .store(Arc::new(InMemoryStore::new()))
+        .blobs(blobs)
+        .model(scripted.clone())
+        .tools(tools)
+        .media_adapter(adapter.clone())
+        .build()
+        .expect("build engine");
+
+    let session = engine.create().await.expect("create");
+    engine
+        .send(session.id, Message::user("draw"))
+        .finish()
+        .await
+        .expect("turn");
+
+    let requests = scripted.requests();
+    let last = requests.last().expect("a request");
+    assert_eq!(
+        tool_result_sources(&last.messages),
+        vec![b"chart bytes".to_vec()],
+        "a blob inside a tool result reaches the wire materialized"
+    );
+    assert_eq!(adapter.resolved.load(Ordering::Relaxed), 1);
 }

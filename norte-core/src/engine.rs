@@ -40,7 +40,7 @@ use crate::preprocess::{MediaPayload, MediaPreprocessor};
 use crate::store::{BlobStore, Store};
 use crate::stream::{Accumulated, StreamAccumulator, StreamEvent};
 use crate::tool::registry::ToolRegistry;
-use crate::tool::{ToolContext, ToolOutput, ToolSpec};
+use crate::tool::{ToolCallInfo, ToolContext, ToolMetadataProvider, ToolOutput, ToolSpec};
 
 /// The turn-level policy that is not a layer: what a turn inherits and the
 /// bounds the engine enforces.
@@ -98,6 +98,13 @@ pub struct EngineConfig {
     /// on the message tail. Calls that need approval, are denied or are rate
     /// limited are always deferred to the normal path. Defaults to `false`.
     pub early_tool_execution: bool,
+    /// The host's per-call tool metadata provider (FR-TOOL-7).
+    ///
+    /// The engine consults it immediately before every execution, including one
+    /// that resumes a parked call, and fills [`ToolContext::metadata`] with the
+    /// result. `None` leaves the map empty. The values are execution-scoped:
+    /// they are never written to the session, the graph or the wire.
+    pub tool_metadata: Option<ToolMetadataProvider>,
 }
 
 impl Default for EngineConfig {
@@ -111,6 +118,7 @@ impl Default for EngineConfig {
             max_iterations: 16,
             auto_execute_tools: true,
             early_tool_execution: false,
+            tool_metadata: None,
         }
     }
 }
@@ -132,8 +140,9 @@ struct Reconstructed {
     cache_boundaries: Vec<u32>,
 }
 
-/// Materializes every top-level media part through the adapter. Deterministic by
-/// contract so the cached prefix does not move (FR-RECON-4).
+/// Materializes every media part through the adapter, including media nested in
+/// a tool result. Deterministic by contract so the cached prefix does not move
+/// (FR-RECON-4).
 async fn materialize_message(
     adapter: &Arc<dyn MediaAdapter>,
     blobs: &dyn BlobStore,
@@ -145,6 +154,20 @@ async fn materialize_message(
             Part::Media(media) => {
                 let media = adapter.resolve(media, blobs).await?;
                 parts.push(Part::Media(media));
+            }
+            Part::ToolResult(mut result) => {
+                let mut inner = Vec::with_capacity(result.parts.len());
+                for part in result.parts {
+                    match part {
+                        Part::Media(media) => {
+                            let media = adapter.resolve(media, blobs).await?;
+                            inner.push(Part::Media(media));
+                        }
+                        other => inner.push(other),
+                    }
+                }
+                result.parts = inner;
+                parts.push(Part::ToolResult(result));
             }
             other => parts.push(other),
         }
@@ -1200,6 +1223,7 @@ impl Engine {
             | PolicyOutcome::RateLimit { .. }
             | PolicyOutcome::RequireApproval { .. } => return None,
         };
+        let metadata = self.call_metadata(session, call, &tool_name, &arguments);
         Some(tokio::spawn(execute_call(
             Arc::clone(&self.tools),
             Arc::clone(&self.observers),
@@ -1208,9 +1232,12 @@ impl Engine {
                 session: session.id,
                 turn: session.turn,
             },
-            call.clone(),
-            tool_name,
-            arguments,
+            PreparedCall {
+                call: call.clone(),
+                tool: tool_name,
+                arguments,
+                metadata,
+            },
         )))
     }
 
@@ -1411,6 +1438,29 @@ impl Engine {
         .await
     }
 
+    /// The host metadata for one execution, consulted immediately before the
+    /// executor runs so a resumed park is filled like an inline call (FR-TOOL-7).
+    fn call_metadata(
+        &self,
+        session: &Session,
+        call: &ToolCallPart,
+        tool: &ToolName,
+        arguments: &Value,
+    ) -> BTreeMap<String, Value> {
+        self.config
+            .tool_metadata
+            .as_ref()
+            .map_or_else(BTreeMap::new, |provider| {
+                provider.metadata(&ToolCallInfo {
+                    session: session.id,
+                    turn: session.turn,
+                    call_id: call.call_id,
+                    tool: tool.clone(),
+                    arguments: arguments.clone(),
+                })
+            })
+    }
+
     async fn run_one_tool(
         &self,
         turn: &ToolTurn<'_>,
@@ -1485,6 +1535,7 @@ impl Engine {
             PolicyOutcome::Allow => call.arguments.clone(),
         };
 
+        let metadata = self.call_metadata(session, call, &tool_name, &arguments);
         let result = execute_call(
             Arc::clone(&self.tools),
             Arc::clone(&self.observers),
@@ -1493,9 +1544,12 @@ impl Engine {
                 session: session.id,
                 turn: session.turn,
             },
-            call.clone(),
-            tool_name,
-            arguments,
+            PreparedCall {
+                call: call.clone(),
+                tool: tool_name,
+                arguments,
+                metadata,
+            },
         )
         .await;
         results.push(result);
@@ -1724,6 +1778,15 @@ struct CallSite {
     turn: u64,
 }
 
+/// One tool call, past policy: everything `execute_call` needs about it, so the
+/// free function keeps a short signature (FR-TOOL-1).
+struct PreparedCall {
+    call: ToolCallPart,
+    tool: ToolName,
+    arguments: Value,
+    metadata: BTreeMap<String, Value>,
+}
+
 /// Executes one prepared tool call and emits its lifecycle events (FR-TOOL-1).
 ///
 /// It is a free function so it can run inside a spawned task for early tool
@@ -1733,10 +1796,14 @@ async fn execute_call(
     observers: Arc<ObserverSet>,
     sender: mpsc::Sender<EngineEvent>,
     site: CallSite,
-    call: ToolCallPart,
-    tool: ToolName,
-    arguments: Value,
+    prepared: PreparedCall,
 ) -> ToolResultPart {
+    let PreparedCall {
+        call,
+        tool,
+        arguments,
+        metadata,
+    } = prepared;
     let started = EngineEvent::ToolCallStarted {
         session: site.session,
         turn: site.turn,
@@ -1746,9 +1813,12 @@ async fn execute_call(
     observers.emit(&started);
     let _ = sender.send(started).await;
 
-    let context = ToolContext::new()
+    let mut context = ToolContext::new()
         .with_session(site.session)
         .with_call(call.call_id);
+    for (key, value) in metadata {
+        context = context.with_metadata(key, value);
+    }
     let clock = Instant::now();
     let output = tools.execute(&context, &tool, arguments).await;
     let duration_ms = u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -2207,6 +2277,20 @@ impl EngineBuilder {
     #[must_use]
     pub fn config(mut self, config: EngineConfig) -> Self {
         self.config = config;
+        self
+    }
+
+    /// Installs the host's per-call tool metadata provider (FR-TOOL-7).
+    ///
+    /// The callback runs immediately before each tool execution, including one
+    /// that resumes a parked call, and its values land in
+    /// [`ToolContext::metadata`]. Nothing is persisted.
+    #[must_use]
+    pub fn tool_metadata(
+        mut self,
+        provider: impl Fn(&ToolCallInfo) -> BTreeMap<String, Value> + Send + Sync + 'static,
+    ) -> Self {
+        self.config.tool_metadata = Some(ToolMetadataProvider::new(provider));
         self
     }
 

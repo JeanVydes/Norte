@@ -326,6 +326,30 @@ fn tool_result_block(calls: &CallIndex, result: &ToolResultPart) -> Result<Value
 }
 
 fn tool_result_content(result: &ToolResultPart) -> Result<Value> {
+    if result.parts.iter().any(|part| part.as_media().is_some()) {
+        let mut blocks = Vec::new();
+        let mut carries_text = false;
+        for part in &result.parts {
+            match part {
+                Part::Text(text) => {
+                    blocks.push(json!({ "type": "text", "text": text.text }));
+                    carries_text = true;
+                }
+                Part::Refusal(refusal) => {
+                    blocks.push(json!({ "type": "text", "text": refusal.text }));
+                    carries_text = true;
+                }
+                Part::Media(media) => blocks.push(media_block(media)?),
+                _ => {}
+            }
+        }
+        if !carries_text {
+            if let Some(structured) = &result.structured {
+                blocks.insert(0, json!({ "type": "text", "text": structured.to_string() }));
+            }
+        }
+        return Ok(Value::Array(blocks));
+    }
     let carries_text = result.parts.iter().any(|part| part.as_text().is_some());
     // Text is authoritative (FR-TOOL-BASH-3): the host renders the text the
     // model reads, so structured data only answers for a result that carries no
@@ -334,17 +358,6 @@ fn tool_result_content(result: &ToolResultPart) -> Result<Value> {
         if let Some(structured) = &result.structured {
             return Ok(Value::String(structured.to_string()));
         }
-    }
-    if result.parts.iter().any(|part| part.as_media().is_some()) {
-        let mut blocks = Vec::new();
-        for part in &result.parts {
-            match part {
-                Part::Text(text) => blocks.push(json!({ "type": "text", "text": text.text })),
-                Part::Media(media) => blocks.push(media_block(media)?),
-                _ => {}
-            }
-        }
-        return Ok(Value::Array(blocks));
     }
     let text: String = result.parts.iter().filter_map(Part::as_text).collect();
     Ok(Value::String(text))
@@ -537,6 +550,59 @@ mod tests {
             body["messages"][0]["content"][0]["content"],
             "{\"answer\":42}"
         );
+    }
+
+    #[test]
+    fn a_tool_result_carries_media_in_its_content_blocks() {
+        let call_id = CallId::new();
+        let result = ToolResultPart {
+            call_id,
+            parts: vec![
+                Part::text("the chart"),
+                Part::Media(MediaPart::new(
+                    MediaKind::Image,
+                    MediaSource::Inline(vec![1, 2, 3]),
+                    MimeType::new("image/png").expect("mime"),
+                )),
+            ],
+            structured: None,
+            is_error: false,
+        };
+        let request = ModelRequest::new(
+            model(),
+            vec![Message::new(Role::Tool, vec![Part::ToolResult(result)])],
+        );
+        let body = build(&model(), &continuity(), &request).expect("build");
+        let content = &body["messages"][0]["content"][0]["content"];
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "the chart");
+        assert_eq!(content[1]["type"], "image");
+        assert_eq!(content[1]["source"]["media_type"], "image/png");
+        assert_eq!(content[1]["source"]["data"], "AQID");
+    }
+
+    #[test]
+    fn a_structured_only_tool_result_with_media_keeps_the_json() {
+        let call_id = CallId::new();
+        let result = ToolResultPart {
+            call_id,
+            parts: vec![Part::Media(MediaPart::new(
+                MediaKind::Image,
+                MediaSource::Inline(vec![1, 2, 3]),
+                MimeType::new("image/png").expect("mime"),
+            ))],
+            structured: Some(serde_json::json!({ "answer": 42 })),
+            is_error: false,
+        };
+        let request = ModelRequest::new(
+            model(),
+            vec![Message::new(Role::Tool, vec![Part::ToolResult(result)])],
+        );
+        let body = build(&model(), &continuity(), &request).expect("build");
+        let content = &body["messages"][0]["content"][0]["content"];
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "{\"answer\":42}");
+        assert_eq!(content[1]["type"], "image");
     }
 
     #[test]

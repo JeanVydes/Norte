@@ -18,7 +18,7 @@ pub mod transport;
 pub mod vendor;
 
 pub use auth::AuthScheme;
-pub use client::{HttpClient, SseStream, is_transient};
+pub use client::{HttpClient, MultipartField, SseStream, is_transient};
 pub use media::HttpMedia;
 pub use quirk::{Quirk, Quirks};
 pub use secret::Secret;

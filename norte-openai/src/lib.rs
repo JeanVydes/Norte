@@ -1,10 +1,12 @@
 #![forbid(unsafe_code)]
-#![doc = "The `OpenAI` wire family.\n\nThe crate ships no model catalog and no vendor table. The host supplies a\n[`Capabilities`] built from whatever source it trusts, a [`VendorProfile`] that\nnames the endpoint and credentials, and a [`ModelRef`] that names the model; any\n`OpenAI`-compatible endpoint is expressed by those three values alone. The\nadapter translates between the neutral core and the vendor wire in both\ndirections.\n\nTwo surfaces are implemented:\n\n- [`OpenAiResponses`]: the Responses API, the primary surface.\n- [`OpenAiChat`]: the `Chat Completions` API, for wire-compatible vendors.\n\n[`Capabilities`]: norte_core::Capabilities\n[`VendorProfile`]: norte_http::VendorProfile\n[`ModelRef`]: norte_core::ModelRef\n\nThe native `OpenAI` vendor ships as a preset in [`presets::openai`]. Compatible vendors such as `OpenRouter` need none: they are a [`VendorProfile`] with a different base `URL`."]
+#![doc = "The `OpenAI` wire family.\n\nThe crate ships no model catalog and no vendor table. The host supplies a\n[`Capabilities`] built from whatever source it trusts, a [`VendorProfile`] that\nnames the endpoint and credentials, and a [`ModelRef`] that names the model; any\n`OpenAI`-compatible endpoint is expressed by those three values alone. The\nadapter translates between the neutral core and the vendor wire in both\ndirections.\n\nTwo surfaces are implemented:\n\n- [`OpenAiResponses`]: the Responses API, the primary surface.\n- [`OpenAiChat`]: the `Chat Completions` API, for wire-compatible vendors. [`OpenAiFiles`] adds the Files API as an optional [`ProviderFiles`](norte_core::ProviderFiles) port for hosts that durable-ize media; it is not part of the request path.\n\n[`Capabilities`]: norte_core::Capabilities\n[`VendorProfile`]: norte_http::VendorProfile\n[`ModelRef`]: norte_core::ModelRef\n\nThe native `OpenAI` vendor ships as a preset in [`presets::openai`]. Compatible vendors such as `OpenRouter` need none: they are a [`VendorProfile`] with a different base `URL`."]
 
 /// The Chat Completions surface, for wire-compatible vendors.
 pub mod chat;
 /// Continuity interpreted by the `OpenAI` adapters.
 pub mod continuity;
+/// The Files API, as a [`ProviderFiles`](norte_core::ProviderFiles) port.
+pub mod files;
 /// Helpers for reading and writing the wire bodies.
 pub mod json;
 pub mod presets;
@@ -13,6 +15,7 @@ pub mod responses;
 
 pub use chat::OpenAiChat;
 pub use continuity::OpenAiContinuity;
+pub use files::OpenAiFiles;
 pub use responses::OpenAiResponses;
 
 /// The vendor-shared `HTTP` media port, re-exported for callers that wire the

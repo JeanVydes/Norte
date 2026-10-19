@@ -7,7 +7,10 @@ can be read — and copied — without the rest of the crate.
 ## Run
 
 ```sh
-OPENROUTER_API_KEY=sk-or-... cargo run -p rustychain-cookbook --example approval
+OPENROUTER_API_KEY=sk-or-... \
+COOKBOOK_MODEL=deepseek/deepseek-v4-flash-0731 \
+COOKBOOK_ENDPOINT=https://openrouter.ai/api/v1 \
+cargo run -p rustychain-cookbook --example approval
 ```
 
 The key comes from the environment; a local `.env` works with
@@ -37,8 +40,9 @@ the second calls the shipped executors directly.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `OPENROUTER_API_KEY` | — | Required by every recipe that calls a model (`tools` and `executors` need none). |
-| `COOKBOOK_MODEL` | `nvidia/nemotron-3.5-super-vl:free` | The model the recipes call. |
+| `OPENROUTER_API_KEY` | *required* | The key every recipe that calls a model uses (`tools` and `executors` need none). |
+| `COOKBOOK_MODEL` | *required* | The model the recipes call. |
+| `COOKBOOK_ENDPOINT` | *required* | The `OpenAI`-compatible base `URL` the recipes call. |
 | `COOKBOOK_PROVIDER` | OpenRouter decides | Pins the upstream provider for `cache`, `branching` and `agent_cost`, so two runs of the same recipe stay comparable. |
 
 Every recipe that calls a model talks to a real one, so the model decides what

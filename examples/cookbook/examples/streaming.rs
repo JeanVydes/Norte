@@ -86,17 +86,20 @@ fn engine() -> Result<Engine, Box<dyn Error>> {
         .build()?)
 }
 
-/// The model every recipe runs on unless `COOKBOOK_MODEL` says otherwise.
-const DEFAULT_MODEL: &str = "nvidia/nemotron-3.5-super-vl:free";
-/// `OpenRouter`, spoken over the `OpenAI`-compatible Chat Completions wire.
-const ENDPOINT: &str = "https://openrouter.ai/api/v1";
+/// A value the run has to be given: nothing external is defaulted in the
+/// source, because a model id or an endpoint written here is a pointer that
+/// rots, and a run that quietly picks one is a run nobody chose.
+fn required(name: &str, example: &str) -> Result<String, Box<dyn Error>> {
+    std::env::var(name).map_err(|_| format!("set {name}, for example {name}={example}").into())
+}
 
 /// Wires `OpenRouter`. An `OpenAI`-compatible vendor is a profile, not a preset.
 fn openrouter(capabilities: Capabilities) -> Result<OpenAiChat, Box<dyn Error>> {
     let provider = ProviderId::new("openrouter")?;
-    let profile = VendorProfile::new(provider.clone(), WireFamily::new(WIRE_CHAT)?, ENDPOINT)?
+    let endpoint = required("COOKBOOK_ENDPOINT", "https://openrouter.ai/api/v1")?;
+    let profile = VendorProfile::new(provider.clone(), WireFamily::new(WIRE_CHAT)?, &endpoint)?
         .with_auth(AuthScheme::bearer(std::env::var("OPENROUTER_API_KEY")?));
-    let id = std::env::var("COOKBOOK_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_owned());
+    let id = required("COOKBOOK_MODEL", "deepseek/deepseek-v4-flash-0731")?;
     Ok(OpenAiChat::new(
         ModelRef::new(provider, ModelId::new(&id)?),
         profile,

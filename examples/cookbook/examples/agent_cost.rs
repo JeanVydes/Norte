@@ -8,8 +8,11 @@
 //! function everywhere it is used or mentioned, change what a word is and fix
 //! the test that pinned the old rule, and thread a flag from the command line
 //! into the config. Nothing is written from scratch, so the agent has to read
-//! before it edits, and the run ends by printing the crate it left behind: the
-//! scratch directory is a real, dependency-free crate, so `cd` there and
+//! before it edits. It can also run the crate's own build — `cargo test
+//! --offline`, and `cargo run` when a task asks what the line prints — and what
+//! the compiler says comes back as a tool result, so a change that does not build
+//! is something the model reads and fixes inside the turn. The run ends by
+//! printing the crate it left behind, and the host then builds it on its own:
 //! `cargo test` checks the agent's work instead of taking its word for it.
 //!
 //! **Every model request the engine made is printed**, each with the usage that
@@ -51,6 +54,7 @@
 //!
 //! ```sh
 //! OPENROUTER_API_KEY=sk-or-... \
+//! COOKBOOK_ENDPOINT=https://openrouter.ai/api/v1 \
 //! COOKBOOK_MODEL=deepseek/deepseek-v4-flash-0731 \
 //! COOKBOOK_PROVIDER=DeepInfra \
 //! cargo run -p rustychain-cookbook --example agent_cost
@@ -60,18 +64,22 @@
 //! a routing hint and never a price. Without it the router picks, and the field
 //! the response carries says what that route charged.
 
+use std::collections::BTreeMap;
 use std::error::Error;
+use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
+use futures_util::StreamExt;
 use rustychain_core::{
-    Capabilities, Decision, Engine, EngineBuilder, EngineConfig, InMemoryBlobStore, InMemoryStore,
-    Message, Modality, ModelId, ModelRef, Policy, PolicySet, PolicyView, ProviderId,
-    StreamingGranularity, ToolKind, ToolRegistry, TurnOptions, Usage, WireFamily,
+    Capabilities, Decision, Engine, EngineBuilder, EngineConfig, EngineEvent, InMemoryBlobStore,
+    InMemoryStore, Message, Modality, ModelId, ModelRef, Part, Policy, PolicySet, PolicyView,
+    ProviderId, SessionId, StreamDelta, StreamingGranularity, ToolKind, ToolRegistry, TurnOptions,
+    Usage, WireFamily,
 };
 use rustychain_http::{AuthScheme, VendorProfile};
 use rustychain_openai::{OpenAiChat, WIRE_CHAT};
-use rustychain_tools::{EditTool, ReadTool, WriteTool};
+use rustychain_tools::{CommandTool, EditTool, ReadTool, WriteTool};
 use serde_json::{Value, json};
 
 /// The workflow every task follows: read what is on disk, change it in place,
@@ -82,9 +90,12 @@ You are a coding agent working in a scratch directory that already holds the \
 (1) `read` every file you are about to change, before you change it; (2) `edit` \
 the files in place — do not replace a whole file with `write` when the task is a \
 change; (3) update every call site, every test and every mention in the README, \
-so nothing in the crate still refers to the old shape; (4) answer in one short \
-line. Every path is relative to the scratch directory: `src/lib.rs`, \
-`tests/words.rs`, `README.md`.";
+so nothing in the crate still refers to the old shape; (4) before you answer, \
+build what you left: run `cargo test --offline` with the `command` tool, and \
+run the crate with it whenever the task asks what it prints — a compiler error \
+is a tool result you can read and fix, and an answer about code nothing has run \
+is a guess; (5) answer in one short line. Every path is relative to the scratch \
+directory: `src/lib.rs`, `tests/words.rs`, `README.md`.";
 
 /// Three requests of the kind a coding agent gets on someone else's code.
 const TASKS: [&str; 3] = [
@@ -253,33 +264,35 @@ async fn main() -> Result<(), Box<dyn Error>> {
         engine
             .append_history(session.id, vec![Message::system(SYSTEM)])
             .await?;
-        // A turn that runs out of budget is an `Err`, but the requests it made
-        // are already committed and already billed: the tally runs either way,
-        // and only the last line says whether the agent finished.
-        let outcome = engine
+
+        // The turn is a stream, and it is drained rather than finished: a turn
+        // that runs out of budget ends in an `Err`, but every request it made is
+        // already committed and already billed, so the events are read either
+        // way and only the last line says whether the agent got there.
+        let mut screen = Screen::default();
+        let mut stream = engine
             .turn(session.id)
             .input(Message::user(*task))
             .options(options.clone())
-            .start()
-            .finish()
-            .await;
-
-        let mut task = Task::default();
-        for request in engine.history(session.id).await? {
-            let Some(usage) = request.origin.as_ref().map(|origin| &origin.usage) else {
-                continue;
-            };
-            let line = task.count(usage);
-            println!("  request {}: {line}", task.requests);
+            .start();
+        while let Some(event) = stream.next().await {
+            let event = event?;
+            screen.event(&engine, session.id, &event).await?;
         }
+        let outcome = stream.finish().await;
+
+        // The last request has no successor to bill it, so the turn settles here.
+        screen.settle(&engine, session.id).await?;
+        let task = screen.task;
         match outcome {
             Ok(outcome) => println!(
-                "  answer:   {}",
+                "  turn:     {} part(s) committed, phase {:?}; the text above is what the model \
+                 said, in order, and not a summary of it",
                 outcome
                     .message
                     .as_ref()
-                    .map(Message::text)
-                    .unwrap_or_default()
+                    .map_or(0, |message| message.parts.len()),
+                outcome.session.phase
             ),
             Err(error) => {
                 println!("  failed:   {error} — the requests above are what it cost to find out");
@@ -298,13 +311,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// The host's check, and not the agent's claim.
+/// The host's independent audit, and not the agent's claim.
 ///
-/// No tool in this recipe runs a command, so a task's answer is a sentence about
-/// code that has never been built. The host builds it: the crate has to compile,
-/// its tests have to pass, and the command line the tasks named has to print what
-/// the task said it would. A toolchain that is not there is said out loud rather
-/// than passed off as a pass.
+/// The agent can run these same commands through the `command` tool, and should:
+/// the compiler's complaints are tool results it gets to fix. This is the second
+/// check, the one the agent does not control — the crate has to compile, its
+/// tests have to pass, and the command line the tasks named has to print what the
+/// task said it would, judged after the turn is over. A toolchain that is not
+/// there is said out loud rather than passed off as a pass.
 fn verify(root: &Path) {
     println!("\n--- the host checks the agent's claim");
     match cargo(root, &["test", "--quiet", "--offline"]) {
@@ -418,6 +432,199 @@ fn collect_files(dir: &Path, into: &mut Vec<PathBuf>) {
             into.push(path);
         }
     }
+}
+
+/// What the terminal shows while a turn runs.
+///
+/// The event stream carries what the model says as it says it: reasoning, text,
+/// and each call when it starts and when it finishes. A message can hold text and
+/// a call at once, so the text is shown where it lands — it is narration, and the
+/// turn is not over while a call is pending.
+///
+/// What the stream does not carry is the call itself once settled, the result the
+/// tool produced, or any usage. Those are read from history at the moment they
+/// commit: the next request is about to be built out of them, which is exactly
+/// when the reader should see the bytes the model is being handed and what they
+/// cost. A result is printed and not only the call because "the agent read the
+/// file" should be something the reader watched happen, not something the recipe
+/// asserts.
+#[derive(Default)]
+struct Screen {
+    /// Requests reconstructed so far in this turn, which is the iteration.
+    iteration: u64,
+    /// Whether a streamed line is open, so a marker starts on its own line.
+    open: bool,
+    /// Whether the reasoning prefix was written for the current request.
+    thinking: bool,
+    /// Messages of this session already billed.
+    billed: usize,
+    /// The task's tally, kept live.
+    task: Task,
+}
+
+impl Screen {
+    /// Renders one event, billing the previous iteration as the next one opens.
+    async fn event(
+        &mut self,
+        engine: &Engine,
+        session: SessionId,
+        event: &EngineEvent,
+    ) -> Result<(), Box<dyn Error>> {
+        match event {
+            EngineEvent::RequestReconstructed {
+                digest,
+                cache_boundaries,
+                tools,
+                ..
+            } => {
+                self.settle(engine, session).await?;
+                self.break_line();
+                self.iteration += 1;
+                self.thinking = false;
+                println!(
+                    "  ── iteration {} · {} exposed tool(s) · {} cache boundary(ies) · digest {}",
+                    self.iteration,
+                    tools.len(),
+                    cache_boundaries.len(),
+                    &digest.to_hex()[..8]
+                );
+            }
+            EngineEvent::StreamDelta { delta, .. } => self.delta(delta),
+            EngineEvent::ToolCallStarted { tool, .. } => {
+                self.break_line();
+                println!("  ▶ {tool} …");
+            }
+            EngineEvent::ToolCallFinished {
+                tool,
+                is_error,
+                duration_ms,
+                ..
+            } => {
+                self.break_line();
+                let status = if *is_error { "failed" } else { "ok" };
+                println!("  ✓ {tool} {status} in {duration_ms} ms");
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Bills every request committed since the last look, and prints it, along
+    /// with the calls and the results that came with it.
+    ///
+    /// The stream does not carry them: the wire closes a tool call at the end of
+    /// the message, so the accumulator hands it back from `finish()` instead of
+    /// emitting a completed part, and a tool result never goes through the
+    /// stream at all. History is where both land, and the moment they land is
+    /// the moment the next request is about to be built out of them — the moment
+    /// worth showing.
+    async fn settle(&mut self, engine: &Engine, session: SessionId) -> Result<(), Box<dyn Error>> {
+        let history = engine.history(session).await?;
+        for message in history.iter().skip(self.billed) {
+            if let Some(usage) = message.origin.as_ref().map(|origin| &origin.usage) {
+                let line = self.task.count(usage);
+                self.break_line();
+                println!("  $ request {}: {line}", self.task.requests);
+            }
+            for part in &message.parts {
+                match part {
+                    Part::ToolCall(call) => {
+                        self.break_line();
+                        println!(
+                            "  ⏺ {} ({})",
+                            call.name,
+                            preview(&call.arguments.to_string(), 160)
+                        );
+                    }
+                    Part::ToolResult(result) => {
+                        self.break_line();
+                        let text = result
+                            .parts
+                            .iter()
+                            .filter_map(Part::as_text)
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        let mark = if result.is_error { "!" } else { "↳" };
+                        println!("  {mark} {}", excerpt(&text, 8, 700));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        self.billed = history.len();
+        Ok(())
+    }
+
+    /// Streams a delta: what the model says, and what it is thinking, as it
+    /// arrives. The arguments of a call are not dumped here: they are JSON, they
+    /// can be whole blocks of source, and the settled call prints them once with
+    /// a bound. A message may carry text and a call at the same time, so the
+    /// words the model says before the call are narration, not the answer — they
+    /// are shown when they land and the line is closed before the call's marker.
+    fn delta(&mut self, delta: &StreamDelta) {
+        match delta {
+            StreamDelta::Text { text, .. } | StreamDelta::Refusal { text, .. } => {
+                print!("{text}");
+                self.open = true;
+            }
+            StreamDelta::Reasoning { text, .. } => {
+                if !self.thinking {
+                    self.break_line();
+                    print!("  … thinking: ");
+                    self.thinking = true;
+                }
+                print!("{text}");
+                self.open = true;
+            }
+            _ => {}
+        }
+        let _ = io::stdout().flush();
+    }
+
+    /// Ends a streamed line, so the next marker is not glued to a token.
+    fn break_line(&mut self) {
+        if self.open {
+            println!();
+            self.open = false;
+        }
+    }
+}
+
+/// A one-line preview, so a call's arguments never flood the screen.
+fn preview(text: &str, max: usize) -> String {
+    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.chars().count() <= max {
+        return compact;
+    }
+    let mut out = compact.chars().take(max).collect::<String>();
+    out.push('…');
+    out
+}
+
+/// The first lines of a tool result: enough to see the bytes the model was
+/// handed, and a count where the rest was left out.
+fn excerpt(text: &str, max_lines: usize, max_chars: usize) -> String {
+    use std::fmt::Write as _;
+
+    let mut out = String::new();
+    let mut shown = 0;
+    for (index, line) in text.lines().enumerate() {
+        if index >= max_lines || (index > 0 && shown >= max_chars) {
+            let _ = write!(
+                out,
+                "\n      … {} more line(s), {} byte(s) in total",
+                text.lines().count().saturating_sub(index),
+                text.len()
+            );
+            break;
+        }
+        let _ = write!(out, "\n      │ {line}");
+        shown += line.len();
+    }
+    if out.is_empty() {
+        out.push_str("(empty)");
+    }
+    out
 }
 
 /// One task's tally: the counters the provider reported, and the money it
@@ -661,6 +868,71 @@ impl Policy for StayInside {
     }
 }
 
+/// Narrows the command tool to what the recipe is for: the crate's own build.
+///
+/// A command request may name any program, and authorizing it is the host's job,
+/// not the executor's. So the host sets the working directory (the request cannot
+/// widen it), allows `cargo` and nothing else, and refuses the shell — and it
+/// refuses an argument that could reach outside the scratch directory. What comes
+/// back, compiler error included, is a tool result the model reads.
+struct CargoOnly {
+    root: PathBuf,
+}
+
+impl Policy for CargoOnly {
+    fn name(&self) -> &'static str {
+        "cargo-only"
+    }
+
+    fn decide(&self, view: &PolicyView<'_>) -> Decision {
+        if view.call.name != "command" {
+            return Decision::Allow;
+        }
+        let mut arguments = view.call.arguments.clone();
+        let Some(object) = arguments.as_object_mut() else {
+            return Decision::Deny("command: the arguments must be an object".to_owned());
+        };
+        let command = object.get("command").cloned().unwrap_or(Value::Null);
+        if command.get("kind").and_then(Value::as_str) != Some("program") {
+            return Decision::Deny(
+                "command: the request needs `command` as an object with `kind` and `program`, \
+                 for example {\"command\":{\"kind\":\"program\",\"program\":\"cargo\",\
+                 \"args\":[\"test\",\"--offline\"]}}; the shell is not available"
+                    .to_owned(),
+            );
+        }
+        let Some(program) = command.get("program").and_then(Value::as_str) else {
+            return Decision::Deny("command: the program variant needs a `program`".to_owned());
+        };
+        if program != "cargo" {
+            return Decision::Deny(format!(
+                "command: only `cargo` runs here, and that request asks for `{program}`"
+            ));
+        }
+        let args = command
+            .get("args")
+            .cloned()
+            .unwrap_or(Value::Array(Vec::new()));
+        if let Some(offender) = args
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .find(|arg| arg.starts_with('/') || arg.contains(".."))
+        {
+            return Decision::Deny(format!(
+                "command: `{offender}` could reach outside the scratch directory; \
+                 paths are relative to it"
+            ));
+        }
+        object.insert(
+            "cwd".to_owned(),
+            Value::String(self.root.to_string_lossy().into_owned()),
+        );
+        Decision::Transform(arguments)
+    }
+}
+
 /// The `path` argument of every file call, whatever else the call carries.
 fn path_of<'b>(view: &PolicyView<'b>) -> Option<&'b str> {
     view.call.arguments.get("path").and_then(Value::as_str)
@@ -682,19 +954,34 @@ fn scratch() -> Result<PathBuf, Box<dyn Error>> {
     Ok(root)
 }
 
-/// The wiring: the three file executors, the policy that decides their paths,
-/// the model, and the turn options that pin the route.
+/// The wiring: the four executors, the policies that decide their paths and the
+/// one program the command tool may run, the model, and the turn options that pin
+/// the route.
 fn engine(root: &Path) -> Result<(Engine, TurnOptions), Box<dyn Error>> {
     let mut tools = ToolRegistry::new();
     tools.register_tool_declaration(ReadTool::new().into_declaration())?;
     tools.register_tool_declaration(WriteTool::new().into_declaration())?;
     tools.register_tool_declaration(EditTool::new().into_declaration())?;
+    // The command executor clears the environment and keeps only what the host
+    // gives it, so the host gives it its own: `cargo` lives on `PATH`, and a
+    // process with no `PATH` cannot find it. The key is in the redaction list, so
+    // it cannot surface in a tool result even if a command prints it.
+    let mut env: BTreeMap<String, String> = std::env::vars().collect();
+    env.remove("CARGO_TARGET_DIR");
+    let mut command = CommandTool::new().with_env(env);
+    if let Ok(key) = std::env::var("OPENROUTER_API_KEY") {
+        command = command.with_secrets([key]);
+    }
+    tools.register_tool_declaration(command.into_declaration())?;
 
     let policies = PolicySet::new(vec![
         Arc::new(IntoSandbox {
             root: root.to_path_buf(),
         }),
         Arc::new(StayInside {
+            root: root.to_path_buf(),
+        }),
+        Arc::new(CargoOnly {
             root: root.to_path_buf(),
         }),
     ]);
@@ -722,17 +1009,19 @@ fn engine(root: &Path) -> Result<(Engine, TurnOptions), Box<dyn Error>> {
     Ok((engine, turn_options()))
 }
 
-/// The model every recipe runs on unless `COOKBOOK_MODEL` says otherwise.
-const DEFAULT_MODEL: &str = "nvidia/nemotron-3.5-super-vl:free";
-/// `OpenRouter`, spoken over the `OpenAI`-compatible Chat Completions wire.
-const ENDPOINT: &str = "https://openrouter.ai/api/v1";
+/// A variable the recipe cannot invent a value for: the model and the endpoint
+/// belong to the run, not to this file.
+fn required(name: &str, example: &str) -> Result<String, Box<dyn Error>> {
+    std::env::var(name).map_err(|_| format!("set {name}, for example {name}={example}").into())
+}
 
 /// Wires `OpenRouter`. An `OpenAI`-compatible vendor is a profile, not a preset.
 fn openrouter(capabilities: Capabilities) -> Result<OpenAiChat, Box<dyn Error>> {
     let provider = ProviderId::new("openrouter")?;
-    let profile = VendorProfile::new(provider.clone(), WireFamily::new(WIRE_CHAT)?, ENDPOINT)?
+    let endpoint = required("COOKBOOK_ENDPOINT", "https://openrouter.ai/api/v1")?;
+    let profile = VendorProfile::new(provider.clone(), WireFamily::new(WIRE_CHAT)?, &endpoint)?
         .with_auth(AuthScheme::bearer(std::env::var("OPENROUTER_API_KEY")?));
-    let id = std::env::var("COOKBOOK_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_owned());
+    let id = required("COOKBOOK_MODEL", "deepseek/deepseek-v4-flash-0731")?;
     Ok(OpenAiChat::new(
         ModelRef::new(provider, ModelId::new(&id)?),
         profile,

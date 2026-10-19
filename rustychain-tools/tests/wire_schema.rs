@@ -87,6 +87,16 @@ fn the_model_is_shown_the_nested_shapes() {
         .expect("the program variant carries an example")
         .to_string();
     assert!(program.contains("\"kind\":\"program\""), "{program}");
+    // And the tag is a property of the variant, not something the model has to
+    // infer from the example: a `oneOf` with no discriminator is an invitation to
+    // guess, and a guess costs a request.
+    let tag = spec(&specs, "command")
+        .parameters
+        .pointer("/properties/command/oneOf/0/properties/kind/const")
+        .expect("the program variant names its tag")
+        .as_str()
+        .expect("the tag is a string");
+    assert_eq!(tag, "program");
     // Two shapes that are objects, where the field name alone does not say so.
     assert!(
         spec(&specs, "read")

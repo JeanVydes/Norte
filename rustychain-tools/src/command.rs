@@ -49,6 +49,7 @@ const READ_BUFFER: usize = 8192;
 /// Program invocation. Exactly one of a direct program or a shell script.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", tag = "kind", deny_unknown_fields)]
+#[schemars(tag = "kind", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum CommandLine {
     /// Run a program with its arguments, with no shell in between.

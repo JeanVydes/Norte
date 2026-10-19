@@ -31,7 +31,7 @@ the second calls the shipped executors directly.
 | `cache` | What the provider really read: cache hits across a turn, a tool call, a park and an export |
 | `export_import` | A byte-identical restore: the same request before and after a round trip |
 | `branching` | Rewind to an ancestor and branch: the shared prefix stays cached |
-| `agent_cost` | What an agentic session costs: per request, per task, and what the provider itself billed |
+| `agent_cost` | What an agentic session costs, in the provider's own numbers: per request, per task, and what it billed |
 
 ## Configuration
 
@@ -39,8 +39,7 @@ the second calls the shipped executors directly.
 | --- | --- | --- |
 | `OPENROUTER_API_KEY` | — | Required by every recipe that calls a model (`tools` and `executors` need none). |
 | `COOKBOOK_MODEL` | `nvidia/nemotron-3.5-super-vl:free` | The model the recipes call. |
-| `COOKBOOK_PROVIDER` | OpenRouter decides | Pins the upstream provider for `cache`, `branching` and `agent_cost`, and picks the price table `agent_cost` uses. |
-| `COOKBOOK_PRICE_IN` / `_OUT` / `_CACHE_READ` | the table's | USD per million tokens, when the run has to be priced with a rate the table does not carry (`agent_cost`). |
+| `COOKBOOK_PROVIDER` | OpenRouter decides | Pins the upstream provider for `cache`, `branching` and `agent_cost`, so two runs of the same recipe stay comparable. |
 
 Every recipe that calls a model talks to a real one, so the model decides what
 it does with a prompt: the tool recipes say, in a system message, which tool to

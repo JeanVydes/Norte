@@ -1,94 +1,244 @@
-//! What an agentic session costs: the loop of `agent`, with the meter on.
+//! What an agentic session costs: a coding agent working on an existing project,
+//! with the meter on.
 //!
-//! Three small coding tasks go through the same engine, each in a session of its
-//! own, and **every model request the engine made is printed** — including the
-//! ones inside a tool loop, which a turn's outcome alone would hide: the outcome
-//! carries the last answer, while each iteration committed an assistant message
-//! of its own, with the usage that produced it.
+//! `seed` writes a small, real, dependency-free crate into the scratch directory
+//! — `Cargo.toml`, `src/lib.rs`, `src/config.rs`, `src/main.rs`,
+//! `tests/words.rs` and `README.md` — and the three tasks are the requests a
+//! coding agent actually gets on a codebase it did not write: rename a public
+//! function everywhere it is used or mentioned, change what a word is and fix
+//! the test that pinned the old rule, and thread a flag from the command line
+//! into the config. Nothing is written from scratch, so the agent has to read
+//! before it edits, and the run ends by printing the crate it left behind: the
+//! scratch directory is a real, dependency-free crate, so `cd` there and
+//! `cargo test` checks the agent's work instead of taking its word for it.
 //!
-//! The money is computed here, not read from the response. `Usage` carries token
-//! counters (input, output, reasoning, cache read, cache write, audio), an
-//! extension map for the counters with no neutral field, and `vendor`: whatever
-//! the payload reported and this vocabulary does not name, kept verbatim. An
-//! `OpenAI`-compatible response carries its own `usage.cost` in there, so the
-//! price table below is the arithmetic and the vendor's field is printed beside
-//! it — a price table is a list price, and the payload is what was billed.
+//! **Every model request the engine made is printed**, each with the usage that
+//! produced it — including the ones inside a tool loop, which a turn's outcome
+//! alone would hide: the outcome carries the last answer, while every iteration
+//! committed an assistant message of its own.
 //!
-//! Three things about that arithmetic are easy to get wrong:
+//! A task that runs out of budget is measured too: the loop gets 32 requests
+//! rather than a chat turn's 16, and a task that fails anyway prints the
+//! requests it burned, because the provider billed every one of them.
 //!
-//! 1. **Cached tokens are inside `input`.** An `OpenAI`-compatible provider
-//!    counts what it read from the cache as part of `prompt_tokens`, so the
-//!    billed input is `input - cache_read` and the hit rate is
-//!    `cache_read / input`; counting the whole input at the full rate
-//!    double-bills the hit. The recipe prints the counterfactual — the same
-//!    tokens with no cache at all — next to the bill.
-//! 2. **The published price is not always the billed price.** The table below is
-//!    a *list* price, and the closing shows the vendor's own field next to what
-//!    the table says, so the gap is visible instead of assumed.
-//!    `COOKBOOK_PRICE_IN`, `COOKBOOK_PRICE_OUT` and `COOKBOOK_PRICE_CACHE_READ`
-//!    override the table when a run has to be priced with a rate it does not
-//!    carry.
-//! 3. **A hit rate is not a bill reduction.** A cached token saves only the gap
-//!    between the input rate and the read rate, and the output side pays its own
-//!    rate either way, so the whole-bill share is below the input-side share —
-//!    slightly in an agentic session, where the input dominates (this run is
-//!    roughly 37 input tokens per output token), and heavily in a chatty one.
-//!    Both are printed, and neither is the raw hit rate.
+//! The money is the provider's own number, and not one this recipe works out.
+//! `Usage` carries the token counters (input, output, reasoning, cache read,
+//! cache write, audio), an extension map for the counters with no neutral field,
+//! and `vendor`: whatever the payload reported and that vocabulary does not
+//! name, kept verbatim. An `OpenAI`-compatible response reports what it billed in
+//! `usage.cost`, and the meter sums *that* field per request. No price table
+//! lives here on purpose: which upstream answers a request is the router's
+//! decision, one request to the next, so a rate written down here would be the
+//! list price of a route that may not be the one that served it.
+//!
+//! What the recipe adds is the tally: how many requests a session took, the
+//! tokens in and out, how much of the input came from the provider's cache — and
+//! the count of requests is the number that makes an agent cheap or expensive,
+//! because every one of them re-sends a transcript that grew by the last result.
+//!
+//! The cache counter is worth reading even so, and it is the one place token
+//! arithmetic still bites: an `OpenAI`-compatible provider counts what it read
+//! from the cache *inside* `prompt_tokens`, so the hit rate is
+//! `cache_read / input` and those tokens are already in the total. The counters
+//! are printed beside the bill, never instead of it, and what the hit was worth
+//! is in the provider's number rather than in a multiplication done here.
 //!
 //! ```sh
 //! OPENROUTER_API_KEY=sk-or-... \
 //! COOKBOOK_MODEL=deepseek/deepseek-v4-flash-0731 \
-//! COOKBOOK_PROVIDER=Relace \
+//! COOKBOOK_PROVIDER=DeepInfra \
 //! cargo run -p rustychain-cookbook --example agent_cost
 //! ```
+//!
+//! `COOKBOOK_PROVIDER` pins the upstream so that two runs stay comparable; it is
+//! a routing hint and never a price. Without it the router picks, and the field
+//! the response carries says what that route charged.
 
 use std::error::Error;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use rustychain_core::{
-    Capabilities, Decision, Engine, EngineBuilder, InMemoryBlobStore, InMemoryStore, Message,
-    Modality, ModelId, ModelRef, Policy, PolicySet, PolicyView, ProviderId, StreamingGranularity,
-    ToolKind, ToolRegistry, TurnOptions, Usage, WireFamily,
+    Capabilities, Decision, Engine, EngineBuilder, EngineConfig, InMemoryBlobStore, InMemoryStore,
+    Message, Modality, ModelId, ModelRef, Policy, PolicySet, PolicyView, ProviderId,
+    StreamingGranularity, ToolKind, ToolRegistry, TurnOptions, Usage, WireFamily,
 };
 use rustychain_http::{AuthScheme, VendorProfile};
 use rustychain_openai::{OpenAiChat, WIRE_CHAT};
 use rustychain_tools::{EditTool, ReadTool, WriteTool};
 use serde_json::{Value, json};
 
-/// The workflow every task follows, so the loop has something to iterate on.
+/// The workflow every task follows: read what is on disk, change it in place,
+/// and keep the crate consistent.
 const SYSTEM: &str = "\
-You are a coding agent in a scratch directory. Use the tools, never describe what \
-you would do. For each task: (1) `write` the file the task names; (2) `read` it \
-back to confirm what is on disk; (3) if the task asks for a change, `edit` the \
-file; (4) answer in one short line. Every path is relative and lands in the \
-scratch directory.";
+You are a coding agent working in a scratch directory that already holds the \
+`words` crate. Use the tools, never describe what you would do. For each task: \
+(1) `read` every file you are about to change, before you change it; (2) `edit` \
+the files in place — do not replace a whole file with `write` when the task is a \
+change; (3) update every call site, every test and every mention in the README, \
+so nothing in the crate still refers to the old shape; (4) answer in one short \
+line. Every path is relative to the scratch directory: `src/lib.rs`, \
+`tests/words.rs`, `README.md`.";
 
-/// Three sessions of the same shape: create, look, change, report.
+/// Three requests of the kind a coding agent gets on someone else's code.
 const TASKS: [&str; 3] = [
-    "Write `hello.rs` with a `main` that prints `hello` and nothing else. Read it back. Answer with the one line it prints.",
-    "Read `hello.rs`, change the printed text to `hello, harness`, and leave everything else identical. Answer with the final contents of the file.",
-    "Write `notes.md` with exactly two lines — `what: hello.rs` and `changed: yes` — then read it back and answer with its contents.",
+    "Rename the public function `head_words` to `words_up_to` everywhere: its definition in \
+     `src/lib.rs`, the call in `report`, the import and use in `tests/words.rs`, and the API list \
+     in `README.md`. Nothing in the crate may refer to the old name. Answer with the files you \
+     changed.",
+    "A word currently keeps the punctuation it was written with, so `--verbose \"the sky, is \
+     blue.\"` prints `sky,` and `blue.`. Make a word carry no leading or trailing punctuation, in \
+     both the count and the list, and fix the test in `tests/words.rs` that pinned the old rule — \
+     its name is wrong now too. Answer with the report that line prints.",
+    "Add a `--limit N` flag to `src/main.rs`: `Config` already carries a `limit` field that \
+     nothing sets from the command line, so `--verbose --limit 2` should report only the first \
+     two words. The `2` is the flag's value, not a word, so it must not reach the text. Answer \
+     with the code you added.",
+];
+
+/// The crate `seed` writes before the agent runs: real files, already written,
+/// which every task has to read before it can change anything. They are here
+/// verbatim so the code the model sees is the code a reader sees.
+#[allow(clippy::needless_raw_string_hashes)]
+const PROJECT: [(&str, &str); 6] = [
+    (
+        "Cargo.toml",
+        r#"[package]
+name = "words"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+"#,
+    ),
+    (
+        "src/lib.rs",
+        r#"//! Counting the words of a line of text.
+
+pub mod config;
+
+pub use config::Config;
+
+/// The number of words in `text`, separated by whitespace.
+pub fn count_words(text: &str) -> usize {
+    text.split_whitespace().count()
+}
+
+/// The first `limit` words of `text`, or all of them when `limit` is zero.
+pub fn head_words(text: &str, limit: usize) -> Vec<&str> {
+    let words = text.split_whitespace();
+    if limit == 0 {
+        words.collect()
+    } else {
+        words.take(limit).collect()
+    }
+}
+
+/// The one-line report `main` prints for `text` under `config`.
+pub fn report(text: &str, config: &Config) -> String {
+    let count = count_words(text);
+    if config.verbose {
+        format!("{count} words: {}", head_words(text, config.limit).join(", "))
+    } else {
+        format!("{count} words")
+    }
+}
+"#,
+    ),
+    (
+        "src/config.rs",
+        r#"/// How the command line reports a count.
+#[derive(Debug)]
+pub struct Config {
+    /// Print the words themselves, not only the count.
+    pub verbose: bool,
+    /// Report at most this many words; zero reports every word.
+    pub limit: usize,
+}
+"#,
+    ),
+    (
+        "src/main.rs",
+        r#"use std::env;
+
+use words::{report, Config};
+
+fn main() {
+    let args: Vec<String> = env::args().skip(1).collect();
+    let verbose = args.iter().any(|arg| arg == "--verbose");
+    let text = args
+        .iter()
+        .filter(|arg| !arg.starts_with("--"))
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(" ");
+    println!("{}", report(&text, &Config { verbose, limit: 0 }));
+}
+"#,
+    ),
+    (
+        "tests/words.rs",
+        r#"use words::{count_words, head_words, report, Config};
+
+#[test]
+fn counts_words_separated_by_spaces() {
+    assert_eq!(count_words("the sky is blue"), 4);
+}
+
+#[test]
+fn punctuation_belongs_to_the_word_it_is_written_on() {
+    assert_eq!(head_words("the sky, is blue.", 0), ["the", "sky,", "is", "blue."]);
+}
+
+#[test]
+fn reports_the_first_words_when_verbose() {
+    let config = Config { verbose: true, limit: 2 };
+    assert_eq!(report("the sky is blue", &config), "4 words: the, sky");
+}
+"#,
+    ),
+    (
+        "README.md",
+        r#"# words
+
+Counts the words of the line it is given.
+
+```sh
+cargo run -- "the sky is blue"             # 4 words
+cargo run -- --verbose "the sky is blue"   # 4 words: the, sky, is, blue
+```
+
+## API
+
+- `count_words(text) -> usize` — how many words the line holds.
+- `head_words(text, limit) -> Vec<&str>` — the first `limit` words, or all of them when `limit` is zero.
+- `report(text, config) -> String` — the one-line report `main` prints.
+"#,
+    ),
 ];
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let root = scratch()?;
+    seed(&root)?;
     let (engine, options) = engine(&root)?;
-    let (provider, price) = prices();
+    let provider = std::env::var("COOKBOOK_PROVIDER")
+        .unwrap_or_else(|_| "whoever the router picks".to_owned());
 
     println!("scratch:  {}", root.display());
+    println!(
+        "seeded:   {}",
+        PROJECT
+            .iter()
+            .map(|(path, _)| *path)
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
     println!("provider: {provider}");
-    match price {
-        Some(price) => println!(
-            "prices:   ${:.4}/M input · ${:.4}/M output · ${:.5}/M cache read\n",
-            price.input, price.output, price.cache_read
-        ),
-        None => println!(
-            "prices:   none published for a route this recipe does not know, so tokens are \
-             counted and money is not\n"
-        ),
-    }
+    println!(
+        "money:    the `usage.cost` every response reports, summed; the recipe applies no price \
+         of its own\n"
+    );
 
     let mut ledger = Ledger::default();
     for (index, task) in TASKS.iter().enumerate() {
@@ -97,60 +247,117 @@ async fn main() -> Result<(), Box<dyn Error>> {
         engine
             .append_history(session.id, vec![Message::system(SYSTEM)])
             .await?;
+        // A turn that runs out of budget is an `Err`, but the requests it made
+        // are already committed and already billed: the tally runs either way,
+        // and only the last line says whether the agent finished.
         let outcome = engine
             .turn(session.id)
             .input(Message::user(*task))
             .options(options.clone())
             .start()
             .finish()
-            .await?;
+            .await;
 
         let mut task = Task::default();
         for request in engine.history(session.id).await? {
             let Some(usage) = request.origin.as_ref().map(|origin| &origin.usage) else {
                 continue;
             };
-            let line = task.count(usage, price.as_ref());
+            let line = task.count(usage);
             println!("  request {}: {line}", task.requests);
         }
-        println!(
-            "  answer:   {}",
-            outcome
-                .message
-                .as_ref()
-                .map(Message::text)
-                .unwrap_or_default()
-        );
-        println!("  task:     {}\n", task.line(price.as_ref()));
+        match outcome {
+            Ok(outcome) => println!(
+                "  answer:   {}",
+                outcome
+                    .message
+                    .as_ref()
+                    .map(Message::text)
+                    .unwrap_or_default()
+            ),
+            Err(error) => {
+                println!("  failed:   {error} — the requests above are what it cost to find out");
+            }
+        }
+        println!("  task:     {}\n", task.line());
         ledger.add(&task);
     }
 
-    closing(&ledger, price.as_ref());
+    closing(&ledger);
+
+    // The evidence, not the model's word: the crate as the agent left it.
+    println!("\n--- the crate as the agent left it");
+    print_tree(&root);
     Ok(())
 }
 
-/// One request's usage, as the provider reported it, inside the task's tally.
+/// Writes the crate the agent is handed, so every run starts from the same
+/// files and the only thing that changes them is the agent.
+fn seed(root: &Path) -> Result<(), Box<dyn Error>> {
+    for (path, contents) in PROJECT {
+        let file = root.join(path);
+        if let Some(parent) = file.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&file, contents)?;
+    }
+    Ok(())
+}
+
+/// Prints every file under `root`, in path order.
+fn print_tree(root: &Path) {
+    let mut files = Vec::new();
+    collect_files(root, &mut files);
+    files.sort();
+    for file in files {
+        let relative = file.strip_prefix(root).unwrap_or(&file);
+        match std::fs::read_to_string(&file) {
+            Ok(text) => println!("--- {}\n{text}", relative.display()),
+            Err(_) => println!("--- {} (not text)", relative.display()),
+        }
+    }
+}
+
+fn collect_files(dir: &Path, into: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_files(&path, into);
+        } else {
+            into.push(path);
+        }
+    }
+}
+
+/// One task's tally: the counters the provider reported, and the money it
+/// reported for them.
 #[derive(Default)]
 struct Task {
     requests: u64,
     input: u64,
     cached: u64,
     output: u64,
-    cost: f64,
-    uncached: f64,
-    /// The vendor's own `usage.cost`, when a provider reported one. It is the
-    /// only exact price in the exchange and it survives the parse in `vendor`.
+    /// The requests whose payload carried no `cost` at all.
+    unpriced: u64,
+    /// The vendor's own `usage.cost`, summed over the requests that carried one.
     reported: Option<f64>,
 }
 
 impl Task {
     /// The price the payload itself carries, if it carries one.
+    ///
+    /// `cost` is `OpenAI`-compatible, and it reaches here untouched: it survives
+    /// the parse in `Usage::vendor`, because the vocabulary does not name it. The
+    /// recipe reads that field; it never writes a price of its own.
     fn reported_cost(usage: &Usage) -> Option<f64> {
         usage.vendor.get("cost").and_then(Value::as_f64)
     }
 
     /// Folds one request in and returns the line for it alone.
-    fn count(&mut self, usage: &Usage, price: Option<&Price>) -> String {
+    fn count(&mut self, usage: &Usage) -> String {
         let input = usage.input_tokens.unwrap_or(0);
         let cached = usage.cache_read_tokens.unwrap_or(0);
         let output = usage.output_tokens.unwrap_or(0);
@@ -159,45 +366,43 @@ impl Task {
         self.cached += cached;
         self.output += output;
         let reported = Self::reported_cost(usage);
-        if let Some(reported) = reported {
-            *self.reported.get_or_insert(0.0) += reported;
+        match reported {
+            Some(reported) => *self.reported.get_or_insert(0.0) += reported,
+            None => self.unpriced += 1,
         }
-        let reported = reported
-            .map(|reported| format!(" · vendor ${reported:.6}"))
-            .unwrap_or_default();
-        let line = format!(
-            "input {input} · output {output} · cache read {cached}{}{reported}",
-            hit_of(cached, input)
+        let money = reported.map_or_else(
+            || " · no `cost` in the payload".to_owned(),
+            |reported| format!(" · ${reported:.6}"),
         );
-        let Some(price) = price else {
-            return line;
-        };
-        let cost = price.billed(usage);
-        self.cost += cost;
-        self.uncached += price.uncached(usage);
-        format!("{line} · ${cost:.6}")
+        format!(
+            "input {input} · output {output} · cache read {cached}{}{money}",
+            hit_of(cached, input)
+        )
     }
 
-    fn line(&self, price: Option<&Price>) -> String {
-        let tokens = format!(
-            "{} request(s) · input {} · output {} · cache read {}{}",
+    /// What the provider billed for the task, and what it did not say.
+    fn money(&self) -> String {
+        match (self.reported, self.unpriced) {
+            (Some(reported), 0) => format!(" · ${reported:.6} billed"),
+            (Some(reported), unpriced) => format!(
+                " · ${reported:.6} billed over {} of {} request(s)",
+                self.requests - unpriced,
+                self.requests
+            ),
+            (None, _) => " · no request reported a `cost`".to_owned(),
+        }
+    }
+
+    fn line(&self) -> String {
+        format!(
+            "{} request(s) · input {} · output {} · cache read {}{}{}",
             self.requests,
             self.input,
             self.output,
             self.cached,
-            hit_of(self.cached, self.input)
-        );
-        let reported = self
-            .reported
-            .map(|reported| format!(" · vendor ${reported:.6}"))
-            .unwrap_or_default();
-        match price {
-            Some(_) => format!(
-                "{tokens} · ${:.6} (${:.6} with no cache at all){reported}",
-                self.cost, self.uncached
-            ),
-            None => format!("{tokens}{reported}"),
-        }
+            hit_of(self.cached, self.input),
+            self.money()
+        )
     }
 }
 
@@ -209,8 +414,7 @@ struct Ledger {
     input: u64,
     cached: u64,
     output: u64,
-    cost: f64,
-    uncached: f64,
+    unpriced: u64,
     reported: Option<f64>,
 }
 
@@ -221,75 +425,56 @@ impl Ledger {
         self.input += task.input;
         self.cached += task.cached;
         self.output += task.output;
-        self.cost += task.cost;
-        self.uncached += task.uncached;
+        self.unpriced += task.unpriced;
         if let Some(reported) = task.reported {
             *self.reported.get_or_insert(0.0) += reported;
         }
     }
 }
 
-/// The closing word: what one task costs, and what a day of them would.
-fn closing(ledger: &Ledger, price: Option<&Price>) {
+/// The closing word: what one task costs, and what a hundred of them would.
+fn closing(ledger: &Ledger) {
     println!("--- what this shows");
     println!(
         "{} task(s), {} model request(s): input {} · output {} · cache read {}",
         ledger.tasks, ledger.requests, ledger.input, ledger.output, ledger.cached
     );
     let tasks = as_f64(ledger.tasks.max(1));
-    if let Some(reported) = ledger.reported {
-        println!(
-            "the provider's own `usage.cost`, summed over every request: ${reported:.6} \
-             (${:.6} per task)",
-            reported / tasks
-        );
+    match ledger.reported {
+        Some(reported) => {
+            println!(
+                "the provider's own `usage.cost`, summed over {} of {} request(s): ${reported:.6}, \
+                 ${:.6} per task, ${:.4} for a hundred tasks",
+                ledger.requests - ledger.unpriced,
+                ledger.requests,
+                reported / tasks,
+                reported / tasks * 100.0
+            );
+            if ledger.unpriced > 0 {
+                println!(
+                    "{} request(s) reported no `cost`, so the bill above is short by whatever \
+                     they were charged",
+                    ledger.unpriced
+                );
+            }
+        }
+        None => println!(
+            "no response carried a `cost`, so the counters above are the whole statement: this \
+             wire reports usage without a price, and a recipe cannot invent one"
+        ),
     }
     if let Some(hit) = hit_rate(ledger.cached, ledger.input) {
         println!(
-            "cache hit: {hit:.1} % of the input ({} of {} tokens were read from the provider's \
-             cache)",
+            "cache hit: {hit:.1} % of the input ({} of {} tokens came from the provider's cache). \
+             A read is counted inside `input`, so it is already part of the bill above; what the \
+             hit was worth is in that number, not in a rate applied here.",
             ledger.cached, ledger.input
         );
     }
-    let Some(price) = price else {
-        println!(
-            "no price was applied, so the tokens above and the provider's own field are the \
-             whole statement. Name the provider with COOKBOOK_PROVIDER to price the run."
-        );
-        return;
-    };
-    let per_task = ledger.cost / tasks;
     println!(
-        "cost: ${:.6} for the session, ${:.6} per task, ${:.4} for a hundred tasks",
-        ledger.cost,
-        per_task,
-        per_task * 100.0
+        "every figure is the provider's, per request: a transcript that grows with each tool \
+         result is what an agent's bill is made of, and the request count is where it shows"
     );
-    let saved = ledger.uncached - ledger.cost;
-    // Why the whole-bill share is not the hit rate: a cached token saves the
-    // difference between the input rate and the read rate, and the output side
-    // pays its own rate either way, so it dilutes the share.
-    let input_side = 100.0 * as_f64(ledger.cached) * (price.input - price.cache_read)
-        / (as_f64(ledger.input) * price.input).max(f64::MIN_POSITIVE);
-    println!(
-        "the same tokens with no cache at all would have been ${:.6}: the cache saved ${:.6} — \
-         {input_side:.1} % of the input side (read at ${:.5}/M against ${:.4}/M input), {:.1} % \
-         of the whole bill, because output tokens get no cache rate",
-        ledger.uncached,
-        saved,
-        price.cache_read,
-        price.input,
-        100.0 * saved / ledger.uncached.max(f64::MIN_POSITIVE)
-    );
-    if let Some(reported) = ledger.reported {
-        if reported > 0.0 && (reported - ledger.cost).abs() > 1e-9 {
-            println!(
-                "the table is ${:.6} away from what the provider billed: a list price is not \
-                 always the billed price, and the payload's own field is the one that settles it",
-                reported - ledger.cost
-            );
-        }
-    }
 }
 
 /// `u64 as f64` loses precision as far as the lint policy is concerned, so the
@@ -314,86 +499,18 @@ fn hit_of(cached: u64, input: u64) -> String {
         .unwrap_or_default()
 }
 
-/// USD per million tokens, as the provider publishes them.
-#[derive(Clone, Copy)]
-struct Price {
-    input: f64,
-    output: f64,
-    cache_read: f64,
-}
-
-impl Price {
-    /// What the request cost. The provider counts the tokens it read from the
-    /// cache inside `input`, so only the uncached ones pay the input rate.
-    fn billed(&self, usage: &Usage) -> f64 {
-        let input = usage.input_tokens.unwrap_or(0);
-        let cached = usage.cache_read_tokens.unwrap_or(0).min(input);
-        let fresh = input - cached;
-        let output = usage.output_tokens.unwrap_or(0);
-        (as_f64(fresh) * self.input
-            + as_f64(cached) * self.cache_read
-            + as_f64(output) * self.output)
-            / 1_000_000.0
-    }
-
-    /// The same request with every input token at the input rate: the
-    /// counterfactual a cache is supposed to beat.
-    fn uncached(&self, usage: &Usage) -> f64 {
-        let input = usage.input_tokens.unwrap_or(0);
-        let output = usage.output_tokens.unwrap_or(0);
-        (as_f64(input) * self.input + as_f64(output) * self.output) / 1_000_000.0
-    }
-}
-
-/// The published price of the route, if the recipe knows it.
-fn prices() -> (String, Option<Price>) {
-    let provider =
-        std::env::var("COOKBOOK_PROVIDER").unwrap_or_else(|_| "OpenRouter decides".to_owned());
-    let published = match provider.as_str() {
-        "Relace" => Some(Price {
-            input: 0.0114,
-            output: 0.45,
-            cache_read: 0.0114,
-        }),
-        "OpenInference" => Some(Price {
-            input: 0.01208,
-            output: 0.12,
-            cache_read: 0.00224,
-        }),
-        "DeepInfra" => Some(Price {
-            input: 0.06,
-            output: 0.18,
-            cache_read: 0.015,
-        }),
-        _ => None,
-    };
-    let Some(table) = published else {
-        return (provider, None);
-    };
-    let over = |name: &str, fallback: f64| {
-        std::env::var(name)
-            .ok()
-            .and_then(|value| value.parse::<f64>().ok())
-            .unwrap_or(fallback)
-    };
-    (
-        provider,
-        Some(Price {
-            input: over("COOKBOOK_PRICE_IN", table.input),
-            output: over("COOKBOOK_PRICE_OUT", table.output),
-            cache_read: over("COOKBOOK_PRICE_CACHE_READ", table.cache_read),
-        }),
-    )
-}
-
 /// Pins the upstream provider when `COOKBOOK_PROVIDER` names one.
 ///
-/// A harness that measures money has to know who it paid: with `OpenRouter` free
-/// to route, "the model" is a different endpoint from one request to the next,
-/// with different prices.
+/// Not for the price — the response carries that. Pinning is what makes two runs
+/// comparable: with `OpenRouter` free to route, "the model" is a different
+/// endpoint from one request to the next, and the timings and the cache behaviour
+/// move with it.
 fn turn_options() -> TurnOptions {
     let mut options = TurnOptions::default();
-    options.params.max_output_tokens = Some(512);
+    // Larger than a one-line answer needs: an `edit` call carries the block it
+    // replaces and the block it writes, and a 512-token ceiling truncates the
+    // arguments of a multi-line change mid-JSON.
+    options.params.max_output_tokens = Some(1024);
     if let Ok(provider) = std::env::var("COOKBOOK_PROVIDER") {
         options.extensions.insert(
             "openai.chat:provider".to_owned(),
@@ -506,6 +623,13 @@ fn engine(root: &Path) -> Result<(Engine, TurnOptions), Box<dyn Error>> {
         .model(Arc::new(openrouter(capabilities)?))
         .tools(tools)
         .policies(policies)
+        // A real coding agent reads, edits and reads back over a dozen times; the
+        // default budget of 16 is a chat turn's, not a session's, and a request
+        // that runs out of budget is one the provider already billed.
+        .config(EngineConfig {
+            max_iterations: 32,
+            ..EngineConfig::default()
+        })
         .build()?;
     Ok((engine, turn_options()))
 }

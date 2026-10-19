@@ -18,6 +18,12 @@ and output tokens, cache reads and writes, the `usage.cost` it reported, and the
 wall-clock of each turn. The projection of every request is recorded, and the
 warm request's shared prefix is compared with the cold one byte for byte.
 
+This is a **cost comparison, not a quality comparison**: the host-written summary
+already names the version and the risk the questions ask for, so the compacted
+arm has an informational advantage by construction. The answers are quoted to
+show what the run produced, not to score it. The output budget is 1,024 tokens;
+a request that commits no text is shown as such, not silently omitted.
+
 ## Run
 
 ```sh
@@ -58,8 +64,8 @@ names it. `--report` and `--jsonl` write elsewhere than `results/`.
   digest, the provider's counters, the cost and the elapsed time.
 - **Prefix reuse** — whether the warm request really re-sent the cold request's
   messages unchanged, which is the condition a cache hit needs.
-- **Answers** — both replies, quoted. The benchmark does not grade them; it shows
-  them.
+- **Answers** — both replies, quoted per request. A request that committed no
+  text says so; the benchmark does not grade the answers.
 - **Reading** — what the saving does and does not include.
 
 Each run also writes `<stem>.jsonl`, `<stem>-arms.csv`, `<stem>-requests.csv` and
@@ -73,12 +79,16 @@ a manifest beside the markdown.
   size, so this run measures what compaction saves at request time, not what
   producing the summary costs.
 - **Only money, tokens and time are measured.** Whether the compacted answer is as
-  good is not a number this run produces; the two answers are quoted so a reader
-  can judge that part.
+  good is not a number this run produces, and the summary gives the compacted arm
+  the answers. The two answers are quoted so a reader can see what happened, not
+  as a quality score.
 - **Cache reads change the conclusion.** A long, stable prefix can be served from
   the provider's cache, so the whole arm may cost less than its input tokens
   suggest. Compare the two rows and the `cache read` column before choosing a
   policy.
+- **Two samples are not a latency benchmark.** The elapsed column is one
+  measurement per request; do not read the difference between the arms as a
+  latency result.
 - **Cold means first in the arm, not globally cold.** The notes are deterministic,
   so a previous run with the same prefix can leave a cache that this run's first
   request reads. The `cache read` column is the evidence; a zero beside a
@@ -89,15 +99,17 @@ a manifest beside the markdown.
 
 ## Results
 
-Canonical run: `results/2026-10-19T200009-baidu-deepseek-deepseek-v4-flash-0731.md`
+Canonical run: `results/2026-10-19T220225-baidu-deepseek-deepseek-v4-flash-0731.md`
 (`deepseek/deepseek-v4-flash-0731` at Baidu, 2 s pause).
 
 | arm | requests | input | cache read | output | cost |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| whole | 2 | 30,271 | 28,672 | 418 | $0.000489 |
-| compacted | 2 | 480 | 0 | 148 | $0.000120 |
+| whole | 2 | 30,256 | 14,336 | 1,403 | $0.002672 |
+| compacted | 2 | 483 | 0 | 120 | $0.000109 |
 
-The whole transcript cost 75.5% more than the summary on this run; the cold
-request still read 14,336 tokens from a cache left by an earlier deterministic
-run, so the saving is smaller than the 98.5% input reduction. The two answers are
-quoted in the report and are not graded.
+Compaction cut request cost by 95.9% on this run; the cold request still read
+14,336 tokens from a cache left by an earlier deterministic run, so the saving is
+smaller than the 98.5% input reduction. The whole arm's cold request spent its
+1,024-token output budget on reasoning and committed no text, which the report
+shows in place of an answer. The two answers that were committed are quoted in
+the report and are not graded.

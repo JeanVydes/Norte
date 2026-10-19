@@ -1,7 +1,10 @@
 {
-  "argv": [],
+  "argv": [
+    "--rounds",
+    "5"
+  ],
   "benchmark": "schema-friction",
-  "commit": "da2a4ce",
+  "commit": "71dba9c",
   "env": {
     "AGENT": "1",
     "AI_AGENT": "opencode",
@@ -27,10 +30,10 @@
     "CARGO_PKG_README": "README.md",
     "CARGO_PKG_REPOSITORY": "",
     "CARGO_PKG_RUST_VERSION": "1.85",
-    "CARGO_PKG_VERSION": "0.0.1",
+    "CARGO_PKG_VERSION": "0.0.2",
     "CARGO_PKG_VERSION_MAJOR": "0",
     "CARGO_PKG_VERSION_MINOR": "0",
-    "CARGO_PKG_VERSION_PATCH": "1",
+    "CARGO_PKG_VERSION_PATCH": "2",
     "CARGO_PKG_VERSION_PRE": "",
     "CLUTTER_BACKEND": "wayland",
     "COLORTERM": "truecolor",
@@ -143,7 +146,7 @@
     "_P9K_TTY": "/dev/pts/0",
     "_ZO_RESOLVE_SYMLINKS": "1"
   },
-  "finished": "2026-10-19T19:54:58.862802201Z",
+  "finished": "2026-10-19T21:54:54.627343763Z",
   "route": {
     "endpoint": "https://openrouter.ai/api/v1",
     "key_env": "OPENROUTER_API_KEY",
@@ -153,5 +156,5 @@
   },
   "rustc": "rustc 1.98.0-nightly (8954863c8 2026-06-05)",
   "schema": "norte.bench.manifest/1",
-  "started": "2026-10-19T19:53:57.202963151Z"
+  "started": "2026-10-19T21:51:54.292345202Z"
 }

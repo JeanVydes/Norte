@@ -234,7 +234,7 @@ struct ScenarioRecord {
     requests: u64,
     stable_requests: bool,
     min_micros: u64,
-    median_micros: u64,
+    simulated_micros: u64,
     max_micros: u64,
     trace: Vec<Attempt>,
     error: Option<String>,
@@ -434,7 +434,7 @@ async fn run_scenario(scenario: &Scenario, rounds: u64) -> ScenarioRecord {
         requests: round.requests,
         stable_requests: round.stable_requests,
         min_micros: sorted.first().copied().unwrap_or(0),
-        median_micros: sorted.get(sorted.len() / 2).copied().unwrap_or(0),
+        simulated_micros: sorted.get(sorted.len() / 2).copied().unwrap_or(0),
         max_micros: sorted.last().copied().unwrap_or(0),
         trace: round.trace,
         error: round.error,
@@ -578,7 +578,7 @@ const SUMMARY_HEADERS: [&str; 10] = [
     "modelled_wait_ms",
     "requests",
     "stable_requests",
-    "median_micros",
+    "simulated_micros",
     "error",
 ];
 
@@ -595,7 +595,7 @@ fn summary_rows(records: &[ScenarioRecord]) -> Vec<Vec<String>> {
                 record.modelled_wait_ms.to_string(),
                 record.requests.to_string(),
                 record.stable_requests.to_string(),
-                record.median_micros.to_string(),
+                record.simulated_micros.to_string(),
                 record.error.clone().unwrap_or_default(),
             ]
         })
@@ -658,6 +658,10 @@ fn render(records: &[ScenarioRecord], rounds: u64) -> Report {
             "simulated sleep",
             format!("{} ms per described wait", millis(SIMULATED_SLEEP)),
         ),
+        (
+            "timing",
+            "`simulated µs` is the wall-clock of the scripted run, not provider latency".to_owned(),
+        ),
     ]);
 
     report.section("Scenarios");
@@ -679,7 +683,7 @@ fn render(records: &[ScenarioRecord], rounds: u64) -> Report {
                 } else {
                     "MOVED".to_owned()
                 },
-                record.median_micros.to_string(),
+                record.simulated_micros.to_string(),
                 record.error.clone().unwrap_or_default(),
             ]
         })
@@ -692,7 +696,7 @@ fn render(records: &[ScenarioRecord], rounds: u64) -> Report {
             "ok",
             "modelled wait ms",
             "request bytes",
-            "median µs",
+            "simulated µs",
             "surfaced",
         ],
         &[
@@ -776,6 +780,12 @@ fn render(records: &[ScenarioRecord], rounds: u64) -> Report {
          attempts, so the provider's cache still applies and the host paid for time, not \
          for a fresh prefix. Where the policy stops, the error is surfaced with its kind \
          and status rather than flattened.",
+    );
+    report.paragraph(
+        "`simulated µs` is the wall-clock of this scripted run. It includes a one-millisecond \
+         sleep in place of each described wait, so it is not a provider latency measurement and \
+         must not be compared with one. The provider's ask is the `modelled wait ms` column; the \
+         timings are here to catch a policy that loops or stalls, not to price a retry.",
     );
     report
 }

@@ -1,0 +1,5 @@
+arm,step,index,messages,bytes,shared,byte_identical,shared_digest,input,cache_read,cache_write,output,cost,elapsed,answer
+whole,cold,1,66,72529,,,,15120,0,0,1024,0.002361,10.291,
+whole,warm,2,68,72644,66,true,8c50fac838cf…,15136,14336,0,379,0.000311,5.729,The notes name the risk that observations carry no decision of their own.
+compacted,cold,1,3,972,,,,226,0,0,51,0.000049,4.277,"The notes describe the Norte engine, version 0.1.0."
+compacted,warm,2,5,1138,3,true,ef0892c79e61…,257,0,0,69,0.000060,3.345,"The notes name the risk that a long prefix is re-sent on every request, causing the context—not the answer—to grow."

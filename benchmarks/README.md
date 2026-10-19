@@ -40,6 +40,23 @@ model, the provider, the endpoint, the pause, the budget and the commit. A
 different route is a different measurement, and run-to-run variance on the same
 route is normal — the model decides how many requests a task takes.
 
+## Limits
+
+These are case studies, not statistically strong measurements:
+
+- **One model, one route, one run.** The canonical results use
+  `deepseek/deepseek-v4-flash-0731` pinned to `baidu`; the route line in each
+  report is authoritative. They say what that model did on that route, not what
+  every model does.
+- **Small samples.** The report states its rounds; `schema-friction`, `latency`
+  and `tool-loop` repeat a small matrix, `long-context` measures two arms, and
+  `agent-cost` runs three tasks. None of them computes a confidence interval.
+- **Shared state.** Provider caches, routing and time of day move the numbers.
+  A cost column can be non-monotone when a wider prefix happens to be cached
+  better; read the token and byte columns beside it.
+- **Offline is modelled.** `transport-retry` uses scripted failures and
+  simulated sleeps. It measures the host policy, not provider latency.
+
 ## Pacing the provider cache
 
 A provider's prefix cache is written asynchronously. Two requests fired back to
@@ -73,9 +90,10 @@ effect of the pace is visible rather than assumed.
 | [`tool-loop`](tool-loop) | How requests and cost grow with declared tools and transcript size | runs |
 | [`transport-retry`](transport-retry) | What a rate limit or a timeout does under a host retry policy, and what the retries cost | runs |
 
-`latency`, `long-context`, `schema-friction`, `token-counting` and `tool-loop`
-call a live provider and need a key. `roundtrip-fidelity` and `transport-retry`
-are offline and deterministic, and run in CI.
+`agent-cost`, `cache-hit`, `latency`, `long-context`, `schema-friction`,
+`token-counting` and `tool-loop` call a live provider and need a key.
+`roundtrip-fidelity` and `transport-retry` are offline and deterministic, and
+run in CI.
 
 Every live benchmark now has a canonical run with the 2 s pause. Compare only
 runs that agree on route, model and `BENCH_PAUSE_MS`; the old unpinned results

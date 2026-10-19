@@ -74,6 +74,10 @@ Live: needs a key and a route in the environment.
 const SYSTEM: &str =
     "You are a concise assistant. Answer in one short sentence, in plain text, with no preamble.";
 
+/// Room for the reasoning a model may do before the one-sentence answer. At 256
+/// the whole arm could spend the budget thinking and commit no text at all.
+const OUTPUT_BUDGET: u64 = 1_024;
+
 /// The cold question: answerable from the notes and from the summary alike.
 const QUESTION: &str =
     "In one sentence: what project do these notes describe, and what version number do they name?";
@@ -115,12 +119,14 @@ struct RequestRow {
     cache_write: Option<u64>,
     /// The provider's own `usage.cost`, when the payload carried one.
     cost: Option<f64>,
+    /// The answer committed by this request, if it committed text.
+    answer: Option<String>,
     /// The wall-clock of the turn that made it.
     elapsed: Duration,
 }
 
-/// One arm: its context, its requests, the counters they summed to, and the
-/// answers the model gave.
+/// One arm: its context, its requests, and the counters they summed to. Each
+/// request carries the answer it committed, if any.
 #[derive(Serialize)]
 struct Arm {
     /// `whole` or `compacted`.
@@ -129,8 +135,6 @@ struct Arm {
     context_messages: usize,
     /// The requests the arm made, in order.
     requests: Vec<RequestRow>,
-    /// The answers, in order, quoted in the report.
-    answers: Vec<String>,
     /// The provider's counters, summed over the arm.
     counters: Counters,
     /// The wall-clock of the arm's turns.
@@ -208,7 +212,7 @@ async fn measure(route: &Route, turns: u64, lines: u64) -> Outcome {
 }
 
 async fn measure_inner(route: &Route, turns: u64, lines: u64) -> Result<Outcome, String> {
-    let options = route.turn_options(256);
+    let options = route.turn_options(OUTPUT_BUDGET);
     let whole = run_arm(route, "whole", transcript(turns, lines), &options).await?;
     let compacted = run_arm(
         route,
@@ -270,7 +274,6 @@ async fn run_arm(
         name,
         context_messages,
         requests: Vec::new(),
-        answers: Vec::new(),
         counters: Counters::default(),
         elapsed: Duration::ZERO,
     };
@@ -330,9 +333,7 @@ async fn run_arm(
             .as_ref()
             .map(Message::text)
             .unwrap_or_default();
-        if !answer.is_empty() {
-            arm.answers.push(answer);
-        }
+        let answer = (!answer.trim().is_empty()).then_some(answer);
         arm.requests.push(RequestRow {
             arm: name,
             step,
@@ -348,6 +349,7 @@ async fn run_arm(
             cache_read: usage.and_then(|usage| usage.cache_read_tokens),
             cache_write: usage.and_then(|usage| usage.cache_write_tokens),
             cost: usage.and_then(cost_of),
+            answer,
             elapsed,
         });
     }
@@ -485,6 +487,7 @@ const REQUEST_HEADERS: &[&str] = &[
     "output",
     "cost",
     "elapsed",
+    "answer",
 ];
 
 /// The arm named `name`, if the run produced it.
@@ -608,6 +611,7 @@ fn request_rows(outcome: &Outcome) -> Vec<Vec<String>> {
                     .cost
                     .map_or_else(String::new, |cost| format!("{cost:.6}")),
                 format!("{:.3}", request.elapsed.as_secs_f64()),
+                request.answer.clone().unwrap_or_default(),
             ]);
         }
     }
@@ -626,9 +630,11 @@ fn render(outcome: &Outcome) -> Report {
          question and the same follow-up.",
     );
     report.paragraph(
-        "Only what the provider reported is measured: input and output tokens, cache reads and \
-         writes, the bill and the wall-clock. Whether the compacted answer is as good is not a \
-         number this run produces, so both answers are quoted at the end for a reader to judge.",
+        "This is a cost comparison, not a quality comparison. The compacted arm is given a \
+         host-written summary that already names the version and the risk the questions ask for, \
+         so it has an informational advantage by construction. The answers are quoted only to \
+         show what this run produced; they are not a score. The elapsed column is one sample per \
+         request, not a latency measurement.",
     );
 
     report.section("Run");
@@ -640,6 +646,7 @@ fn render(outcome: &Outcome) -> Report {
         ),
         ("exchanges in the notes", outcome.turns.to_string()),
         ("lines per exchange", outcome.lines.to_string()),
+        ("output budget", OUTPUT_BUDGET.to_string()),
         ("system message", SYSTEM.to_owned()),
         ("cold question", QUESTION.to_owned()),
         ("warm follow-up", FOLLOW_UP.to_owned()),
@@ -812,11 +819,29 @@ fn render(outcome: &Outcome) -> Report {
     report.section("Answers");
     for arm in &outcome.arms {
         report.lines(&format!("**{}**", arm.name));
-        if arm.answers.is_empty() {
-            report.lines("- no answer was committed");
+        if arm.requests.is_empty() {
+            report.lines("- no request was made");
         }
-        for (index, answer) in arm.answers.iter().enumerate() {
-            report.lines(&format!("{}. {answer}", index + 1));
+        for request in &arm.requests {
+            match request
+                .answer
+                .as_deref()
+                .filter(|answer| !answer.trim().is_empty())
+            {
+                Some(answer) => report.lines(&format!(
+                    "{}. **{}**: {answer}",
+                    request.index, request.step
+                )),
+                None => report.lines(&format!(
+                    "{}. **{}**: no text answer was committed (output {}; the budget may have \
+                     gone to reasoning)",
+                    request.index,
+                    request.step,
+                    request
+                        .output
+                        .map_or_else(|| "—".to_owned(), |output| output.to_string())
+                )),
+            };
         }
         report.lines("");
     }
@@ -832,7 +857,9 @@ fn render(outcome: &Outcome) -> Report {
         "The summary is written by the host, not by the model, because Norte has no compaction \
          policy — how history is dropped or summarized is a host decision (the engine's job is to \
          commit what it is given, in order, and to re-send it unchanged). So this is the saving a \
-         host's policy could reach, measured against a transcript the host chose.",
+         host's policy could reach, measured against a transcript the host chose. The cost gap in \
+         this run is also affected by the whole arm's cache reads and by two samples of elapsed \
+         time; it is not a general compaction saving or a latency result.",
     );
     report
 }
@@ -887,6 +914,7 @@ mod tests {
             cache_read: Some(cache_read),
             cache_write: Some(0),
             cost: Some(0.000_1),
+            answer: (!(arm == "whole" && step == "warm")).then(|| "Norte 0.1.0".to_owned()),
             elapsed: Duration::from_millis(10),
         };
         let whole = Arm {
@@ -896,7 +924,6 @@ mod tests {
                 request("whole", "cold", 1, 900, 0, None),
                 request("whole", "warm", 2, 950, 900, Some(4)),
             ],
-            answers: vec!["Norte 0.1.0".to_owned()],
             counters: Counters {
                 requests: 2,
                 input: 1850,
@@ -914,7 +941,6 @@ mod tests {
                 request("compacted", "cold", 1, 100, 0, None),
                 request("compacted", "warm", 2, 140, 100, Some(4)),
             ],
-            answers: vec!["Norte 0.1.0".to_owned()],
             counters: Counters {
                 requests: 2,
                 input: 240,
@@ -961,6 +987,7 @@ mod tests {
         assert!(report.contains("Compaction"));
         assert!(report.contains("88.9%"));
         assert!(report.contains("byte-identical"));
+        assert!(report.contains("no text answer was committed"));
     }
 
     #[test]

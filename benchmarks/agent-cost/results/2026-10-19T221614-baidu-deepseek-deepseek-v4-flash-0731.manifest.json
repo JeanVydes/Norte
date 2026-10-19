@@ -1,7 +1,7 @@
 {
   "argv": [],
-  "benchmark": "long-context",
-  "commit": "da2a4ce",
+  "benchmark": "agent-cost",
+  "commit": "71dba9c",
   "env": {
     "AGENT": "1",
     "AI_AGENT": "opencode",
@@ -16,21 +16,21 @@
     "BUN_INSTALL": "/home/Jean/.bun",
     "CARGO": "/home/Jean/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/cargo",
     "CARGO_HOME": "/home/Jean/.cargo",
-    "CARGO_MANIFEST_DIR": "/home/Jean/rustychain/benchmarks/long-context",
-    "CARGO_MANIFEST_PATH": "/home/Jean/rustychain/benchmarks/long-context/Cargo.toml",
+    "CARGO_MANIFEST_DIR": "/home/Jean/rustychain/benchmarks/agent-cost",
+    "CARGO_MANIFEST_PATH": "/home/Jean/rustychain/benchmarks/agent-cost/Cargo.toml",
     "CARGO_PKG_AUTHORS": "",
-    "CARGO_PKG_DESCRIPTION": "A long session kept whole against the same session with its history compacted: what the context costs.",
+    "CARGO_PKG_DESCRIPTION": "What a coding agent costs on a real project, measured in the provider's own numbers.",
     "CARGO_PKG_HOMEPAGE": "",
     "CARGO_PKG_LICENSE": "MIT",
     "CARGO_PKG_LICENSE_FILE": "",
-    "CARGO_PKG_NAME": "norte-bench-long-context",
+    "CARGO_PKG_NAME": "norte-bench-agent-cost",
     "CARGO_PKG_README": "README.md",
     "CARGO_PKG_REPOSITORY": "",
     "CARGO_PKG_RUST_VERSION": "1.85",
-    "CARGO_PKG_VERSION": "0.0.1",
+    "CARGO_PKG_VERSION": "0.0.2",
     "CARGO_PKG_VERSION_MAJOR": "0",
     "CARGO_PKG_VERSION_MINOR": "0",
-    "CARGO_PKG_VERSION_PATCH": "1",
+    "CARGO_PKG_VERSION_PATCH": "2",
     "CARGO_PKG_VERSION_PRE": "",
     "CLUTTER_BACKEND": "wayland",
     "COLORTERM": "truecolor",
@@ -143,7 +143,7 @@
     "_P9K_TTY": "/dev/pts/0",
     "_ZO_RESOLVE_SYMLINKS": "1"
   },
-  "finished": "2026-10-19T20:00:47.789975287Z",
+  "finished": "2026-10-19T22:18:20.814975585Z",
   "route": {
     "endpoint": "https://openrouter.ai/api/v1",
     "key_env": "OPENROUTER_API_KEY",
@@ -153,5 +153,5 @@
   },
   "rustc": "rustc 1.98.0-nightly (8954863c8 2026-06-05)",
   "schema": "norte.bench.manifest/1",
-  "started": "2026-10-19T20:00:09.727225260Z"
+  "started": "2026-10-19T22:16:14.520913742Z"
 }

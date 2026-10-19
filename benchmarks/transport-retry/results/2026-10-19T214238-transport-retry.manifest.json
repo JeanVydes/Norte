@@ -1,7 +1,10 @@
 {
-  "argv": [],
-  "benchmark": "agent-cost",
-  "commit": "da2a4ce",
+  "argv": [
+    "--rounds",
+    "20"
+  ],
+  "benchmark": "transport-retry",
+  "commit": "71dba9c",
   "env": {
     "AGENT": "1",
     "AI_AGENT": "opencode",
@@ -9,28 +12,24 @@
     "ANDROID_AVD_HOME": "/home/Jean/.config/.android/avd",
     "ANDROID_HOME": "/home/Jean/Android/Sdk",
     "ANDROID_SDK_ROOT": "/home/Jean/Android/Sdk",
-    "BENCH_ENDPOINT": "https://openrouter.ai/api/v1",
-    "BENCH_MODEL": "deepseek/deepseek-v4-flash-0731",
-    "BENCH_PAUSE_MS": "2000",
-    "BENCH_PROVIDER": "baidu",
     "BUN_INSTALL": "/home/Jean/.bun",
     "CARGO": "/home/Jean/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/cargo",
     "CARGO_HOME": "/home/Jean/.cargo",
-    "CARGO_MANIFEST_DIR": "/home/Jean/rustychain/benchmarks/agent-cost",
-    "CARGO_MANIFEST_PATH": "/home/Jean/rustychain/benchmarks/agent-cost/Cargo.toml",
+    "CARGO_MANIFEST_DIR": "/home/Jean/rustychain/benchmarks/transport-retry",
+    "CARGO_MANIFEST_PATH": "/home/Jean/rustychain/benchmarks/transport-retry/Cargo.toml",
     "CARGO_PKG_AUTHORS": "",
-    "CARGO_PKG_DESCRIPTION": "What a coding agent costs on a real project, measured in the provider's own numbers.",
+    "CARGO_PKG_DESCRIPTION": "429/5xx/timeout under a host retry policy: what the library surfaces and what the host pays.",
     "CARGO_PKG_HOMEPAGE": "",
     "CARGO_PKG_LICENSE": "MIT",
     "CARGO_PKG_LICENSE_FILE": "",
-    "CARGO_PKG_NAME": "norte-bench-agent-cost",
+    "CARGO_PKG_NAME": "norte-bench-transport-retry",
     "CARGO_PKG_README": "README.md",
     "CARGO_PKG_REPOSITORY": "",
     "CARGO_PKG_RUST_VERSION": "1.85",
-    "CARGO_PKG_VERSION": "0.0.1",
+    "CARGO_PKG_VERSION": "0.0.2",
     "CARGO_PKG_VERSION_MAJOR": "0",
     "CARGO_PKG_VERSION_MINOR": "0",
-    "CARGO_PKG_VERSION_PATCH": "1",
+    "CARGO_PKG_VERSION_PATCH": "2",
     "CARGO_PKG_VERSION_PRE": "",
     "CLUTTER_BACKEND": "wayland",
     "COLORTERM": "truecolor",
@@ -143,15 +142,9 @@
     "_P9K_TTY": "/dev/pts/0",
     "_ZO_RESOLVE_SYMLINKS": "1"
   },
-  "finished": "2026-10-19T19:58:38.553814365Z",
-  "route": {
-    "endpoint": "https://openrouter.ai/api/v1",
-    "key_env": "OPENROUTER_API_KEY",
-    "model": "deepseek/deepseek-v4-flash-0731",
-    "pause_ms": 2000,
-    "provider": "baidu"
-  },
+  "finished": "2026-10-19T21:42:38.852658519Z",
+  "route": null,
   "rustc": "rustc 1.98.0-nightly (8954863c8 2026-06-05)",
   "schema": "norte.bench.manifest/1",
-  "started": "2026-10-19T19:56:28.434023456Z"
+  "started": "2026-10-19T21:42:38.069598279Z"
 }

@@ -94,8 +94,10 @@ Two rules apply (and are pinned by tests in the repository):
 - **Tags are written as discriminators.** An enum that serde tags
   (`#[serde(tag = "kind")]`) must also derive `#[schemars(tag = "kind")]`, so
   each variant names its tag as a `const` in the schema. Without it the model sees
-  a bare `oneOf` and guesses — the failure that cost the `command` tool two to
-  seven extra requests per task in the cost benchmark.
+  a bare `oneOf` and guesses at the discriminator. The `tagged` row of
+  `benchmarks/schema-friction` exercises exactly the shape the `command` tool
+  uses; read that run's rejected-call count rather than relying on a number
+  copied into this guide.
 
 `ToolSpec.description` is the text the model reads for the tool itself, and it is
 an explicit argument of the declaration — never inherited from a doc comment.

@@ -1,9 +1,0 @@
-config,round,index,messages,bytes,digest,input,output,cache_read,cost,note
-tools=1 prior=0,0,1,1,695,d6d47681281ecc78,414,79,256,0.000052,carries the declared tool schemas
-tools=1 prior=0,0,2,3,973,d3832cf4d36a357c,477,15,256,0.000036,carries the tool result
-tools=5 prior=0,0,1,1,2410,7c9992415e3b737e,858,73,256,0.000108,carries the declared tool schemas
-tools=5 prior=0,0,2,3,2688,572d2b02cd44617a,921,15,768,0.000029,carries the tool result
-tools=1 prior=3,0,1,7,1127,6f3bd33c777fff66,498,48,256,0.000051,carries the declared tool schemas
-tools=1 prior=3,0,2,9,1405,3d74d7e8f8859b45,561,9,256,0.000044,carries the tool result
-tools=5 prior=3,0,1,7,2842,891e9a210c9cf64c,942,51,768,0.000046,carries the declared tool schemas
-tools=5 prior=3,0,2,9,3120,3895068f3fdb5194,1005,9,768,0.000037,carries the tool result

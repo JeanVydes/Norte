@@ -1,0 +1,42 @@
+task,tool,is_error,reason,error
+1,read,false,,
+1,read,false,,
+1,read,false,,
+1,command,true,schema,"command: the request needs `command` as an object with `kind` and `program`, for example {""command"":{""kind"":""program"",""program"":""cargo"",""args"":[""test"",""--offline""]}}; the shell is not available"
+1,command,true,schema,"command: the request needs `command` as an object with `kind` and `program`, for example {""command"":{""kind"":""program"",""program"":""cargo"",""args"":[""test"",""--offline""]}}; the shell is not available"
+2,read,false,,
+2,read,false,,
+2,read,false,,
+2,command,true,schema,"command: the request needs `command` as an object with `kind` and `program`, for example {""command"":{""kind"":""program"",""program"":""cargo"",""args"":[""test"",""--offline""]}}; the shell is not available"
+2,read,false,,
+2,command,true,schema,"command: the request needs `command` as an object with `kind` and `program`, for example {""command"":{""kind"":""program"",""program"":""cargo"",""args"":[""test"",""--offline""]}}; the shell is not available"
+2,command,true,schema,"command: the request needs `command` as an object with `kind` and `program`, for example {""command"":{""kind"":""program"",""program"":""cargo"",""args"":[""test"",""--offline""]}}; the shell is not available"
+2,command,true,schema,"command: the request needs `command` as an object with `kind` and `program`, for example {""command"":{""kind"":""program"",""program"":""cargo"",""args"":[""test"",""--offline""]}}; the shell is not available"
+2,command,true,schema,"command: the request needs `command` as an object with `kind` and `program`, for example {""command"":{""kind"":""program"",""program"":""cargo"",""args"":[""test"",""--offline""]}}; the shell is not available"
+2,command,true,schema,"command: the request needs `command` as an object with `kind` and `program`, for example {""command"":{""kind"":""program"",""program"":""cargo"",""args"":[""test"",""--offline""]}}; the shell is not available"
+2,command,true,schema,"command: the request needs `command` as an object with `kind` and `program`, for example {""command"":{""kind"":""program"",""program"":""cargo"",""args"":[""test"",""--offline""]}}; the shell is not available"
+2,command,true,schema,"command: the request needs `command` as an object with `kind` and `program`, for example {""command"":{""kind"":""program"",""program"":""cargo"",""args"":[""test"",""--offline""]}}; the shell is not available"
+2,command,true,schema,"command: the request needs `command` as an object with `kind` and `program`, for example {""command"":{""kind"":""program"",""program"":""cargo"",""args"":[""test"",""--offline""]}}; the shell is not available"
+2,command,true,schema,"command: the request needs `command` as an object with `kind` and `program`, for example {""command"":{""kind"":""program"",""program"":""cargo"",""args"":[""test"",""--offline""]}}; the shell is not available"
+2,command,true,schema,"command: the request needs `command` as an object with `kind` and `program`, for example {""command"":{""kind"":""program"",""program"":""cargo"",""args"":[""test"",""--offline""]}}; the shell is not available"
+2,command,true,schema,"command: the request needs `command` as an object with `kind` and `program`, for example {""command"":{""kind"":""program"",""program"":""cargo"",""args"":[""test"",""--offline""]}}; the shell is not available"
+2,command,true,schema,"command: the request needs `command` as an object with `kind` and `program`, for example {""command"":{""kind"":""program"",""program"":""cargo"",""args"":[""test"",""--offline""]}}; the shell is not available"
+2,command,true,schema,"command: the request needs `command` as an object with `kind` and `program`, for example {""command"":{""kind"":""program"",""program"":""cargo"",""args"":[""test"",""--offline""]}}; the shell is not available"
+2,command,true,schema,"command: the request needs `command` as an object with `kind` and `program`, for example {""command"":{""kind"":""program"",""program"":""cargo"",""args"":[""test"",""--offline""]}}; the shell is not available"
+2,command,true,schema,"command: the request needs `command` as an object with `kind` and `program`, for example {""command"":{""kind"":""program"",""program"":""cargo"",""args"":[""test"",""--offline""]}}; the shell is not available"
+3,read,false,,
+3,read,false,,
+3,read,false,,
+3,read,false,,
+3,read,false,,
+3,edit,false,,
+3,edit,false,,
+3,edit,false,,
+3,command,true,schema,"command: the request needs `command` as an object with `kind` and `program`, for example {""command"":{""kind"":""program"",""program"":""cargo"",""args"":[""test"",""--offline""]}}; the shell is not available"
+3,command,true,schema,"command: the request needs `command` as an object with `kind` and `program`, for example {""command"":{""kind"":""program"",""program"":""cargo"",""args"":[""test"",""--offline""]}}; the shell is not available"
+3,command,true,schema,"command: the request needs `command` as an object with `kind` and `program`, for example {""command"":{""kind"":""program"",""program"":""cargo"",""args"":[""test"",""--offline""]}}; the shell is not available"
+3,command,true,schema,"command: the request needs `command` as an object with `kind` and `program`, for example {""command"":{""kind"":""program"",""program"":""cargo"",""args"":[""test"",""--offline""]}}; the shell is not available"
+3,command,false,,
+3,edit,false,,
+3,command,false,,
+3,command,false,,

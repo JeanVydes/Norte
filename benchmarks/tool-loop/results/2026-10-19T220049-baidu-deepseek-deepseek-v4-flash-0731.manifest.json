@@ -1,7 +1,10 @@
 {
-  "argv": [],
-  "benchmark": "transport-retry",
-  "commit": "da2a4ce",
+  "argv": [
+    "--rounds",
+    "3"
+  ],
+  "benchmark": "tool-loop",
+  "commit": "71dba9c",
   "env": {
     "AGENT": "1",
     "AI_AGENT": "opencode",
@@ -16,21 +19,21 @@
     "BUN_INSTALL": "/home/Jean/.bun",
     "CARGO": "/home/Jean/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/cargo",
     "CARGO_HOME": "/home/Jean/.cargo",
-    "CARGO_MANIFEST_DIR": "/home/Jean/rustychain/benchmarks/transport-retry",
-    "CARGO_MANIFEST_PATH": "/home/Jean/rustychain/benchmarks/transport-retry/Cargo.toml",
+    "CARGO_MANIFEST_DIR": "/home/Jean/rustychain/benchmarks/tool-loop",
+    "CARGO_MANIFEST_PATH": "/home/Jean/rustychain/benchmarks/tool-loop/Cargo.toml",
     "CARGO_PKG_AUTHORS": "",
-    "CARGO_PKG_DESCRIPTION": "429/5xx/timeout under a host retry policy: what the library surfaces and what the host pays.",
+    "CARGO_PKG_DESCRIPTION": "What a tool loop costs: requests, schema bytes, tokens and money against declared tools and transcript size.",
     "CARGO_PKG_HOMEPAGE": "",
     "CARGO_PKG_LICENSE": "MIT",
     "CARGO_PKG_LICENSE_FILE": "",
-    "CARGO_PKG_NAME": "norte-bench-transport-retry",
+    "CARGO_PKG_NAME": "norte-bench-tool-loop",
     "CARGO_PKG_README": "README.md",
     "CARGO_PKG_REPOSITORY": "",
     "CARGO_PKG_RUST_VERSION": "1.85",
-    "CARGO_PKG_VERSION": "0.0.1",
+    "CARGO_PKG_VERSION": "0.0.2",
     "CARGO_PKG_VERSION_MAJOR": "0",
     "CARGO_PKG_VERSION_MINOR": "0",
-    "CARGO_PKG_VERSION_PATCH": "1",
+    "CARGO_PKG_VERSION_PATCH": "2",
     "CARGO_PKG_VERSION_PRE": "",
     "CLUTTER_BACKEND": "wayland",
     "COLORTERM": "truecolor",
@@ -143,9 +146,15 @@
     "_P9K_TTY": "/dev/pts/0",
     "_ZO_RESOLVE_SYMLINKS": "1"
   },
-  "finished": "2026-10-19T19:58:45.320663516Z",
-  "route": null,
+  "finished": "2026-10-19T22:02:15.382486468Z",
+  "route": {
+    "endpoint": "https://openrouter.ai/api/v1",
+    "key_env": "OPENROUTER_API_KEY",
+    "model": "deepseek/deepseek-v4-flash-0731",
+    "pause_ms": 2000,
+    "provider": "baidu"
+  },
   "rustc": "rustc 1.98.0-nightly (8954863c8 2026-06-05)",
   "schema": "norte.bench.manifest/1",
-  "started": "2026-10-19T19:58:44.796321705Z"
+  "started": "2026-10-19T22:00:49.666682685Z"
 }

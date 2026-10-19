@@ -111,9 +111,10 @@ struct EditArgs {
 
 If the arguments contain an enum tagged with serde, tag the schema too
 (`#[schemars(tag = "kind")]`), or the model sees a bare `oneOf` and guesses at the
-discriminator. This is not hypothetical: the `command` tool cost an agent two to
-seven extra requests per task before it named its tag in the schema, and a
-benchmark in this repository measures exactly that.
+discriminator. This is not hypothetical: the `command` tool uses that shape, and
+`benchmarks/schema-friction` has a `tagged` row that exercises it against a live
+model. The report's rejected-call count is the measurement; the guide does not
+promise a fixed number of extra requests.
 
 ## 4. Gate it
 

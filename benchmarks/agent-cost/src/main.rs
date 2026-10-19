@@ -81,9 +81,9 @@ use futures_util::StreamExt;
 use norte_bench_support::report::{Align, Report};
 use norte_bench_support::{Mode, RecordingOpenAi, Route, Run, captured as new_capture};
 use norte_core::{
-    Capabilities, Decision, Engine, EngineBuilder, EngineConfig, EngineEvent, InMemoryBlobStore,
-    InMemoryStore, Message, Modality, Part, Policy, PolicySet, PolicyView, SessionId, StreamDelta,
-    StreamingGranularity, ToolKind, ToolRegistry, Usage,
+    CallId, Capabilities, Decision, Engine, EngineBuilder, EngineConfig, EngineEvent,
+    InMemoryBlobStore, InMemoryStore, Message, Modality, Part, Policy, PolicySet, PolicyView,
+    SessionId, StreamDelta, StreamingGranularity, ToolKind, ToolRegistry, Usage,
 };
 use norte_tools::{CommandTool, EditTool, ReadTool, WriteTool};
 use serde_json::{Value, json};
@@ -400,7 +400,13 @@ fn record(run: &mut Run, tasks: &[Task], verdict: &Verdict, ledger: &Ledger) {
         for call in &task.calls {
             run.record(
                 "call",
-                &json!({ "task": number, "tool": call.name, "is_error": call.is_error }),
+                &json!({
+                    "task": number,
+                    "tool": call.name,
+                    "is_error": call.is_error,
+                    "reason": call_reason(call),
+                    "error": call.error,
+                }),
             );
         }
     }
@@ -668,6 +674,7 @@ impl Screen {
                 println!("  ▶ {tool} …");
             }
             EngineEvent::ToolCallFinished {
+                call_id,
                 tool,
                 is_error,
                 duration_ms,
@@ -677,8 +684,10 @@ impl Screen {
                 let status = if *is_error { "failed" } else { "ok" };
                 println!("  ✓ {tool} {status} in {duration_ms} ms");
                 self.task.calls.push(Call {
+                    call_id: *call_id,
                     name: tool.to_string(),
                     is_error: *is_error,
+                    error: None,
                 });
             }
             _ => {}
@@ -721,6 +730,17 @@ impl Screen {
                             .filter_map(Part::as_text)
                             .collect::<Vec<_>>()
                             .join(" ");
+                        if result.is_error {
+                            if let Some(call) = self
+                                .task
+                                .calls
+                                .iter_mut()
+                                .rev()
+                                .find(|call| call.call_id == result.call_id)
+                            {
+                                call.error = Some(text.clone());
+                            }
+                        }
                         let mark = if result.is_error { "!" } else { "↳" };
                         println!("  {mark} {}", excerpt(&text, 8, 700));
                     }
@@ -831,9 +851,49 @@ struct Row {
 }
 
 /// One tool call, kept for the report.
+#[allow(clippy::struct_field_names)]
 struct Call {
+    call_id: CallId,
     name: String,
     is_error: bool,
+    /// The tool's error text, when it failed. Persisted because `is_error`
+    /// alone cannot tell a schema rejection from a policy denial or a compiler
+    /// error.
+    error: Option<String>,
+}
+
+/// A conservative, text-derived label for a failed call. The raw text is kept
+/// beside it; the label only makes the report sortable.
+fn call_reason(call: &Call) -> &'static str {
+    let Some(error) = call.error.as_deref() else {
+        return "";
+    };
+    let lower = error.to_ascii_lowercase();
+    if lower.contains("the request needs")
+        || lower.contains("invalid argument")
+        || lower.contains("failed to deserialize")
+        || lower.contains("does not match")
+        || lower.contains("schema")
+    {
+        "schema"
+    } else if lower.contains("denied")
+        || lower.contains("policy")
+        || lower.contains("approval")
+        || lower.contains("not permitted")
+        || lower.contains("runs here")
+        || lower.contains("only `cargo`")
+    {
+        "policy"
+    } else if call.name == "command"
+        && (lower.contains("error[")
+            || lower.contains("could not compile")
+            || lower.contains("test failed")
+            || lower.contains("panicked"))
+    {
+        "compile"
+    } else {
+        "tool"
+    }
 }
 
 impl Task {
@@ -1123,7 +1183,7 @@ const TASK_HEADERS: &[&str] = &[
     "cost",
 ];
 const REQUEST_HEADERS: &[&str] = &["task", "request", "input", "cache_read", "output", "cost"];
-const CALL_HEADERS: &[&str] = &["task", "tool", "is_error"];
+const CALL_HEADERS: &[&str] = &["task", "tool", "is_error", "reason", "error"];
 const CHECK_HEADERS: &[&str] = &["check", "verdict", "detail"];
 
 /// One row per task and the total, for the markdown report.
@@ -1227,6 +1287,8 @@ fn call_rows(tasks: &[Task]) -> Vec<Vec<String>> {
                 (index + 1).to_string(),
                 call.name.clone(),
                 call.is_error.to_string(),
+                call_reason(call).to_owned(),
+                call.error.clone().unwrap_or_default(),
             ]);
         }
     }
@@ -1270,6 +1332,31 @@ fn calls_lines(tasks: &[Task]) -> String {
          like any other request, because the round that carried it was paid for before the tool \
          ever ran, which is why it is counted here."
     );
+    let mut failures: BTreeMap<(String, &'static str, String), u64> = BTreeMap::new();
+    for task in tasks {
+        for call in &task.calls {
+            if call.is_error {
+                let reason = call_reason(call);
+                let error = call
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| "(no error text)".to_owned());
+                *failures
+                    .entry((call.name.clone(), reason, error))
+                    .or_insert(0) += 1;
+            }
+        }
+    }
+    if !failures.is_empty() {
+        out.push_str("\nFailed calls, by tool, reason and text:\n");
+        for ((tool, reason, error), count) in failures {
+            let _ = writeln!(
+                out,
+                "- `{tool}` ×{count} ({reason}): {}",
+                preview(&error, 240)
+            );
+        }
+    }
     out
 }
 
@@ -1632,12 +1719,16 @@ mod tests {
             ],
             calls: vec![
                 Call {
+                    call_id: CallId::new(),
                     name: "read".to_owned(),
                     is_error: false,
+                    error: None,
                 },
                 Call {
+                    call_id: CallId::new(),
                     name: "edit".to_owned(),
                     is_error: true,
+                    error: Some("the request needs `edit` as an object".to_owned()),
                 },
             ],
         }]
@@ -1651,6 +1742,42 @@ mod tests {
             key_env: "TEST_KEY".to_owned(),
             pause_ms: 0,
         }
+    }
+
+    #[test]
+    fn a_failed_call_keeps_its_text_and_reason() {
+        let call = |name: &str, error: &str| Call {
+            call_id: CallId::new(),
+            name: name.to_owned(),
+            is_error: true,
+            error: Some(error.to_owned()),
+        };
+        assert_eq!(
+            call_reason(&call(
+                "command",
+                "the request needs `command` as an object with kind and program",
+            )),
+            "schema"
+        );
+        assert_eq!(
+            call_reason(&call("command", "the command is denied by policy")),
+            "policy"
+        );
+        assert_eq!(
+            call_reason(&call(
+                "command",
+                "command: only `cargo` runs here, and that request asks for `grep`",
+            )),
+            "policy"
+        );
+        assert_eq!(
+            call_reason(&call("command", "error[E0425]: cannot find value")),
+            "compile"
+        );
+        assert_eq!(
+            call_reason(&call("read", "the path is outside the workspace")),
+            "tool"
+        );
     }
 
     #[test]

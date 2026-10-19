@@ -17,7 +17,7 @@
 //! OPENROUTER_API_KEY=sk-or-... \
 //! BENCH_ENDPOINT=https://openrouter.ai/api/v1 \
 //! BENCH_MODEL=deepseek/deepseek-v4.1-flash-1017 \
-//!   cargo run -p norte-bench-tool-loop -- --rounds 1
+//!   cargo run -p norte-bench-tool-loop -- --rounds 3
 //! ```
 
 use std::error::Error;
@@ -44,7 +44,7 @@ USAGE:
     norte-bench-tool-loop [OPTIONS]
 
 OPTIONS:
-    --rounds <n>    rounds per configuration (default 1)
+    --rounds <n>    rounds per configuration (default 3)
     --prior <n>     prior Q&A turns to seed (default 3)
     --report <p>    write the markdown report to <p>
     --jsonl <p>     write the JSONL trail to <p>
@@ -191,6 +191,7 @@ struct ConfigRecord {
     declared_tools: usize,
     prior_turns: usize,
     rounds: u64,
+    completed_rounds: u64,
     schema_bytes: usize,
     requests: u64,
     tool_calls: u64,
@@ -200,6 +201,7 @@ struct ConfigRecord {
     output_tokens: u64,
     cache_read_tokens: u64,
     cost: f64,
+    cost_per_round: f64,
     median_micros: u64,
     requests_detail: Vec<RequestRow>,
     error: Option<String>,
@@ -217,7 +219,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     };
 
-    let rounds = run.cli().option_u64("rounds")?.unwrap_or(1).max(1);
+    let rounds = run.cli().option_u64("rounds")?.unwrap_or(3).max(1);
     let prior = run.cli().option_u64("prior")?.unwrap_or(3);
     let route = run
         .route()
@@ -257,10 +259,12 @@ async fn run_config(
     let mut tool_calls = 0_u64;
     let mut tool_errors = 0_u64;
     let mut error = None;
+    let mut completed_rounds = 0_u64;
 
     for round in 0..rounds {
         match one_round(route, config, options.clone(), round).await {
             Ok(round_result) => {
+                completed_rounds += 1;
                 micros.push(round_result.micros);
                 if round == 0 {
                     schema_bytes = round_result.schema_bytes;
@@ -289,6 +293,7 @@ async fn run_config(
         declared_tools: if config.extras { 5 } else { 1 },
         prior_turns: config.prior,
         rounds,
+        completed_rounds,
         schema_bytes,
         requests,
         tool_calls,
@@ -298,6 +303,7 @@ async fn run_config(
         output_tokens,
         cache_read_tokens,
         cost,
+        cost_per_round: cost / norte_bench_support::as_f64(completed_rounds.max(1)),
         median_micros: micros.get(micros.len() / 2).copied().unwrap_or(0),
         requests_detail: detail,
         error,
@@ -465,10 +471,12 @@ fn text_capabilities() -> Capabilities {
         .build()
 }
 
-const SUMMARY_HEADERS: [&str; 13] = [
+const SUMMARY_HEADERS: [&str; 16] = [
     "config",
     "declared_tools",
     "prior_turns",
+    "rounds",
+    "completed_rounds",
     "schema_bytes",
     "first_request_bytes",
     "requests",
@@ -478,6 +486,7 @@ const SUMMARY_HEADERS: [&str; 13] = [
     "output_tokens",
     "cache_read_tokens",
     "cost",
+    "cost_per_round",
     "median_micros",
 ];
 
@@ -489,6 +498,8 @@ fn summary_rows(records: &[ConfigRecord]) -> Vec<Vec<String>> {
                 record.config.clone(),
                 record.declared_tools.to_string(),
                 record.prior_turns.to_string(),
+                record.rounds.to_string(),
+                record.completed_rounds.to_string(),
                 record.schema_bytes.to_string(),
                 record.first_request_bytes.to_string(),
                 record.requests.to_string(),
@@ -498,6 +509,7 @@ fn summary_rows(records: &[ConfigRecord]) -> Vec<Vec<String>> {
                 record.output_tokens.to_string(),
                 record.cache_read_tokens.to_string(),
                 format!("{:.6}", record.cost),
+                format!("{:.6}", record.cost_per_round),
                 record.median_micros.to_string(),
             ]
         })
@@ -590,6 +602,7 @@ fn render(route: &norte_bench_support::Route, records: &[ConfigRecord], rounds: 
                 record.output_tokens.to_string(),
                 record.cache_read_tokens.to_string(),
                 format!("{:.6}", record.cost),
+                format!("{:.6}", record.cost_per_round),
                 record.median_micros.to_string(),
                 record.error.clone().unwrap_or_default(),
             ]
@@ -607,11 +620,13 @@ fn render(route: &norte_bench_support::Route, records: &[ConfigRecord], rounds: 
             "output tokens",
             "cache read",
             "cost",
+            "cost/round",
             "median µs",
             "error",
         ],
         &[
             Align::Left,
+            Align::Right,
             Align::Right,
             Align::Right,
             Align::Right,
@@ -714,6 +729,13 @@ fn render(route: &norte_bench_support::Route, records: &[ConfigRecord], rounds: 
          turn. Read the `bytes` column per request beside `input tokens`: that is the schema \
          and the transcript being paid for again each time the model is asked."
     ));
+    report.paragraph(
+        "The `cost` column is not monotone across configurations: the provider's cache read \
+         differs by prefix and by round, so a wider configuration can be billed less than a \
+         narrower one. `cost/round` normalizes the number of rounds, but not the cache. The \
+         monotone evidence for the cost of widening the surface is `schema bytes` and `input \
+         tokens`; this run is a small sample, not a price model.",
+    );
     report
 }
 

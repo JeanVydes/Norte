@@ -22,7 +22,7 @@ called is still sent on every request.
 export OPENROUTER_API_KEY=sk-or-...
 export BENCH_ENDPOINT=https://openrouter.ai/api/v1
 export BENCH_MODEL=deepseek/deepseek-v4.1-flash-1017
-cargo run -p norte-bench-tool-loop -- --rounds 1 --prior 3
+cargo run -p norte-bench-tool-loop -- --rounds 3 --prior 3
 ```
 
 | Variable | Default | Purpose |
@@ -33,8 +33,9 @@ cargo run -p norte-bench-tool-loop -- --rounds 1 --prior 3
 | `BENCH_PROVIDER` | the router decides | Pins the upstream so two runs stay comparable. |
 | `BENCH_PAUSE_MS` | `2000` | Wait before each model request, so an asynchronous provider cache can publish the previous prefix. `0` disables it. |
 
-Options: `--rounds <n>`, `--prior <n>`, `--report <p>`, `--jsonl <p>`, `--help`.
-The matrix crosses declared tools (1 vs 5) with transcript size (0 vs `--prior`).
+Options: `--rounds <n>` (default 3), `--prior <n>`, `--report <p>`,
+`--jsonl <p>`, `--help`. The matrix crosses declared tools (1 vs 5) with
+transcript size (0 vs `--prior`).
 
 The pause is included in the median turn time. It matters most for the second
 request of a tool loop, which otherwise follows the first by no more than the
@@ -44,8 +45,8 @@ tool's local execution time.
 
 - **Run** — the route, the rounds, the ask.
 - **Configuration** — per matrix point: schema bytes, first-request bytes,
-  requests, tool calls, tool errors, input/output/cache tokens, cost and the
-  median turn time.
+  requests, tool calls, tool errors, input/output/cache tokens, total cost,
+  cost per round and the median turn time.
 - **Requests** — every provider request the loop made, with the usage the
   provider reported for it and a digest of its projection.
 - **Bars** — declared tools per configuration.
@@ -61,7 +62,10 @@ Each run also writes `<stem>.jsonl`, `<stem>-configs.csv`,
 - **The request count is the lever.** More loop iterations means the whole
   prefix is billed again.
 - **The bill is the provider's.** The benchmark sums the `usage.cost` field the
-  response carried; it never applies a rate.
+  response carried; it never applies a rate. Cost is not monotone across the
+  matrix: cache reads differ by prefix and round, so a wider configuration can
+  be billed less than a narrower one. Read `schema bytes` and `input tokens` for
+  the cost of widening the surface; `cost/round` only normalizes the rounds.
 - **The cache read column is also a routing measurement.** Pin `BENCH_PROVIDER`:
   with a free router, two requests of the same loop can land on different
   upstreams, each with its own cache. The pause gives a pinned cache the moment

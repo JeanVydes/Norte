@@ -1,0 +1,25 @@
+config,round,index,messages,bytes,digest,input,output,cache_read,cost,note
+tools=1 prior=0,0,1,1,694,802a4760a1cb3665,414,77,256,0.000052,carries the declared tool schemas
+tools=1 prior=0,0,2,3,972,b1098fd3ba863c5a,477,15,256,0.000036,carries the tool result
+tools=1 prior=0,1,1,1,694,3a3aff5bf9e5567a,414,76,256,0.000051,carries the declared tool schemas
+tools=1 prior=0,1,2,3,972,b671a1239cc4b97a,477,15,256,0.000036,carries the tool result
+tools=1 prior=0,2,1,1,694,2e91da48edeecbc2,414,76,256,0.000051,carries the declared tool schemas
+tools=1 prior=0,2,2,3,972,f866876a2948780a,477,15,0,0.000068,carries the tool result
+tools=5 prior=0,0,1,1,2409,404a4f97acb82a9a,858,69,768,0.000042,carries the declared tool schemas
+tools=5 prior=0,0,2,3,2687,39a8da4811beedd9,921,15,256,0.000093,carries the tool result
+tools=5 prior=0,1,1,1,2409,27c75b6cb3f25505,858,74,768,0.000044,carries the declared tool schemas
+tools=5 prior=0,1,2,3,2687,497b92479436ec0c,921,15,768,0.000029,carries the tool result
+tools=5 prior=0,2,1,1,2409,cbadc1efdc7f7c6d,858,72,768,0.000043,carries the declared tool schemas
+tools=5 prior=0,2,2,3,2687,eef7946995610568,921,15,768,0.000029,carries the tool result
+tools=1 prior=3,0,1,7,1126,142f7589e612b197,498,66,256,0.000058,carries the declared tool schemas
+tools=1 prior=3,0,2,9,1404,e274e61487be0058,561,18,512,0.000015,carries the tool result
+tools=1 prior=3,1,1,7,1126,1fc62c8ba9ca4741,498,73,256,0.000061,carries the declared tool schemas
+tools=1 prior=3,1,2,9,1404,48246b60146b0e50,561,15,512,0.000014,carries the tool result
+tools=1 prior=3,2,1,7,1126,ceb3683aa40751c1,498,71,256,0.000060,carries the declared tool schemas
+tools=1 prior=3,2,2,9,1404,e18d231777c03379,561,16,512,0.000015,carries the tool result
+tools=5 prior=3,0,1,7,2841,33cb98c9ad56532e,942,70,768,0.000053,carries the declared tool schemas
+tools=5 prior=3,0,2,9,3119,7c65cb212b955d4b,1005,15,768,0.000040,carries the tool result
+tools=5 prior=3,1,1,7,2841,91a329d1c87b0e05,942,72,768,0.000054,carries the declared tool schemas
+tools=5 prior=3,1,2,9,3119,fd2c66368a5506c2,1005,15,768,0.000040,carries the tool result
+tools=5 prior=3,2,1,7,2841,6973b39e42c61fb4,942,72,768,0.000054,carries the declared tool schemas
+tools=5 prior=3,2,2,9,3119,5f6f3c6529e9e2bc,1005,15,768,0.000040,carries the tool result

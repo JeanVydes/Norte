@@ -4,14 +4,17 @@
 //! When a tool's arguments do not satisfy its schema, the engine commits the
 //! failure as a tool error and asks the model again — so a schema that is hard
 //! to satisfy is paid for in requests, tokens and money, not just in an error
-//! message. This benchmark runs three shapes against a deliberately awkward ask
+//! message. This benchmark runs four shapes against a deliberately awkward ask
 //! and counts what happened: how many calls the model made, how many the schema
-//! rejected, and how many requests the loop took.
+//! rejected, and how many requests the loop took. The fourth shape is an
+//! internally tagged enum — the shape the `command` tool uses — because a bare
+//! enum field does not exercise the discriminator at all.
 //!
 //! The asks are traps on purpose — an enum value that is not in the enum, a
-//! field the schema does not declare. What the model does with a trap is the
-//! measurement; whether it always falls for it is not, and a schema that needs
-//! zero extra requests is reported as exactly that.
+//! field the schema does not declare, a tagged object asked for as a string.
+//! What the model does with a trap is the measurement; whether it always falls
+//! for it is not, and a schema that needs zero extra requests is reported as
+//! exactly that.
 //!
 //! ```sh
 //! OPENROUTER_API_KEY=sk-or-... \
@@ -20,6 +23,7 @@
 //!   cargo run -p norte-bench-schema-friction -- --rounds 3
 //! ```
 
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::path::Path;
 use std::sync::Arc;
@@ -41,13 +45,14 @@ USAGE:
     norte-bench-schema-friction [OPTIONS]
 
 OPTIONS:
-    --rounds <n>    rounds per schema (default 3)
+    --rounds <n>    rounds per schema (default 5)
     --report <p>    write the markdown report to <p>
     --jsonl <p>     write the JSONL trail to <p>
     --help, -h      print this help
 
-Three shapes are exercised with a trap ask: a flat string, an enum, and a nested
-object with `deny_unknown_fields`. Live: needs a key and a route.
+Four shapes are exercised with a trap ask: a flat string, a scalar enum, a nested
+object with `deny_unknown_fields`, and an internally tagged enum. Live: needs a
+key and a route.
   OPENROUTER_API_KEY (or BENCH_KEY_ENV), BENCH_ENDPOINT, BENCH_MODEL, BENCH_PROVIDER,
   BENCH_PAUSE_MS.
 ";
@@ -135,6 +140,47 @@ impl FnExecutor<BookingArgs, BookingResult> for BookRoom {
     }
 }
 
+#[norte_core::tool(
+    name = "run_command",
+    description = "Run one command, either as a program with arguments or as a shell script."
+)]
+struct RunCommand;
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct RunCommandArgs {
+    command: CommandLine,
+}
+
+/// The shape the `command` tool uses: the kind is the discriminator, and the
+/// variant fields live beside it.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case", tag = "kind", deny_unknown_fields)]
+#[schemars(tag = "kind", rename_all = "snake_case")]
+enum CommandLine {
+    Program {
+        program: String,
+        #[serde(default)]
+        args: Vec<String>,
+    },
+    Shell {
+        shell: String,
+        script: String,
+    },
+}
+
+#[derive(Debug, Serialize)]
+struct CommandResult {
+    ok: bool,
+}
+
+#[async_trait::async_trait]
+impl FnExecutor<RunCommandArgs, CommandResult> for RunCommand {
+    async fn call(&self, _args: RunCommandArgs) -> norte_core::Result<CommandResult> {
+        Ok(CommandResult { ok: true })
+    }
+}
+
 // ── the scenarios ───────────────────────────────────────────────────────────
 
 struct Scenario {
@@ -160,6 +206,15 @@ fn enum_tools() -> Result<ToolRegistry, Box<dyn Error>> {
 fn nested_tools() -> Result<ToolRegistry, Box<dyn Error>> {
     let mut tools = ToolRegistry::new();
     tools.register_declarator(&BookRoom)?;
+    Ok(tools)
+}
+
+/// Enough room for a reasoning model to choose the tool and produce its call.
+const OUTPUT_BUDGET: u64 = 1_024;
+
+fn tagged_tools() -> Result<ToolRegistry, Box<dyn Error>> {
+    let mut tools = ToolRegistry::new();
+    tools.register_declarator(&RunCommand)?;
     Ok(tools)
 }
 
@@ -189,6 +244,15 @@ fn scenarios() -> Vec<Scenario> {
                      asked. Call the tool now.",
             build: nested_tools,
         },
+        Scenario {
+            name: "tagged",
+            shape: "an internally tagged enum (`command: {kind: ...}`)",
+            trap: "the ask insists the command is a plain string, which the tagged enum cannot accept",
+            prompt: "Run `echo hi` with run_command. Put the command in the `command` field as \
+                     the plain string `echo hi`, exactly as asked; call the tool now, even if the \
+                     schema seems to disagree.",
+            build: tagged_tools,
+        },
     ]
 }
 
@@ -209,6 +273,8 @@ struct Round {
     cache_read: u64,
     cost: f64,
     micros: u64,
+    /// The text of each tool result the schema rejected, in order.
+    rejections: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -230,6 +296,8 @@ struct SchemaRecord {
     cost: f64,
     median_micros: u64,
     detail: Vec<Round>,
+    /// Distinct rejection texts across the rounds.
+    rejections: Vec<String>,
     error: Option<String>,
 }
 
@@ -245,12 +313,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     };
 
-    let rounds = run.cli().option_u64("rounds")?.unwrap_or(3).max(1);
+    let rounds = run.cli().option_u64("rounds")?.unwrap_or(5).max(1);
     let route = run
         .route()
         .ok_or("the schema-friction benchmark is live and needs a route")?
         .clone();
-    let options = route.turn_options(512);
+    let options = route.turn_options(OUTPUT_BUDGET);
 
     let mut records = Vec::new();
     for scenario in scenarios() {
@@ -282,6 +350,12 @@ async fn run_scenario(
     }
     let mut micros: Vec<u64> = detail.iter().map(|round| round.micros).collect();
     micros.sort_unstable();
+    let mut rejections: Vec<String> = detail
+        .iter()
+        .flat_map(|round| round.rejections.clone())
+        .collect();
+    rejections.sort();
+    rejections.dedup();
     SchemaRecord {
         schema: scenario.name.to_owned(),
         shape: scenario.shape.to_owned(),
@@ -299,6 +373,7 @@ async fn run_scenario(
         cost: detail.iter().map(|round| round.cost).sum(),
         median_micros: micros.get(micros.len() / 2).copied().unwrap_or(0),
         detail,
+        rejections,
         error,
     }
 }
@@ -339,6 +414,7 @@ async fn one_round(
         .await
         .map_err(|e| e.to_string())?;
     let (calls, rejected, accepted) = count_calls(&history);
+    let rejections = rejection_texts(&history);
     let answered = history
         .iter()
         .rev()
@@ -369,6 +445,7 @@ async fn one_round(
         cache_read: totals.cache_read,
         cost: totals.cost,
         micros,
+        rejections,
     })
 }
 
@@ -389,6 +466,27 @@ fn count_calls(history: &[Message]) -> (u64, u64, u64) {
     (calls, rejected, accepted)
 }
 
+fn rejection_texts(history: &[Message]) -> Vec<String> {
+    let mut texts = Vec::new();
+    for message in history {
+        for part in &message.parts {
+            if let Part::ToolResult(result) = part {
+                if result.is_error {
+                    texts.push(
+                        result
+                            .parts
+                            .iter()
+                            .filter_map(Part::as_text)
+                            .collect::<Vec<_>>()
+                            .join(" "),
+                    );
+                }
+            }
+        }
+    }
+    texts
+}
+
 fn has_text(message: &Message) -> bool {
     message.parts.iter().any(|part| match part {
         Part::Text(text) => !text.text.trim().is_empty(),
@@ -405,7 +503,7 @@ fn text_capabilities() -> Capabilities {
         .build()
 }
 
-const SUMMARY_HEADERS: [&str; 12] = [
+const SUMMARY_HEADERS: [&str; 13] = [
     "schema",
     "shape",
     "trap",
@@ -417,6 +515,7 @@ const SUMMARY_HEADERS: [&str; 12] = [
     "answered",
     "called",
     "median_micros",
+    "rejections",
     "error",
 ];
 
@@ -436,13 +535,14 @@ fn summary_rows(records: &[SchemaRecord]) -> Vec<Vec<String>> {
                 record.answered.to_string(),
                 record.called_rounds.to_string(),
                 record.median_micros.to_string(),
+                record.rejections.join(" | "),
                 record.error.clone().unwrap_or_default(),
             ]
         })
         .collect()
 }
 
-const ROUND_HEADERS: [&str; 11] = [
+const ROUND_HEADERS: [&str; 12] = [
     "schema",
     "round",
     "requests",
@@ -454,6 +554,7 @@ const ROUND_HEADERS: [&str; 11] = [
     "output_tokens",
     "cache_read",
     "cost",
+    "rejections",
 ];
 
 fn round_rows(records: &[SchemaRecord]) -> Vec<Vec<String>> {
@@ -472,10 +573,21 @@ fn round_rows(records: &[SchemaRecord]) -> Vec<Vec<String>> {
                 round.output_tokens.to_string(),
                 round.cache_read.to_string(),
                 format!("{:.6}", round.cost),
+                round.rejections.join(" | "),
             ]);
         }
     }
     rows
+}
+
+fn one_line(text: &str, max: usize) -> String {
+    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.chars().count() <= max {
+        return compact;
+    }
+    let mut out = compact.chars().take(max).collect::<String>();
+    out.push('…');
+    out
 }
 
 #[allow(clippy::too_many_lines)]
@@ -498,6 +610,7 @@ fn render(route: &norte_bench_support::Route, records: &[SchemaRecord], rounds: 
             ),
         ),
         ("rounds per schema", rounds.to_string()),
+        ("output budget", OUTPUT_BUDGET.to_string()),
         ("shapes", records.len().to_string()),
     ]);
 
@@ -565,6 +678,31 @@ fn render(route: &norte_bench_support::Route, records: &[SchemaRecord], rounds: 
             .collect::<Vec<_>>(),
         24,
     );
+
+    report.section("Rejected calls");
+    let mut any_rejection = false;
+    for record in records {
+        let mut counts: BTreeMap<&str, u64> = BTreeMap::new();
+        for round in &record.detail {
+            for text in &round.rejections {
+                *counts.entry(text.as_str()).or_insert(0) += 1;
+            }
+        }
+        if !counts.is_empty() {
+            any_rejection = true;
+            report.lines(&format!("**{}**", record.schema));
+            for (text, count) in counts {
+                report.lines(&format!("- ×{count}: {}", one_line(text, 280)));
+            }
+            report.lines("");
+        }
+    }
+    if !any_rejection {
+        report.paragraph(
+            "No call was rejected in this run. That is a result only for the rounds in which \
+             the tool was actually called; the `called` column above is the qualifier.",
+        );
+    }
 
     report.section("Per round");
     let rows: Vec<Vec<String>> = records
@@ -641,7 +779,8 @@ fn render(route: &norte_bench_support::Route, records: &[SchemaRecord], rounds: 
          a whole extra request — the transcript, the schemas and the failed arguments again — \
          so the count is a cost, not a footnote. The model called the tool in {called} of \
          {rounds} rounds: a shape with zero rejected calls is a schema success only when that \
-         count is nonzero.{uncalled}"
+         count is nonzero. The `tagged` row is the shape the `command` tool uses; the other enum \
+         row is a scalar enum and does not exercise a discriminator.{uncalled}"
     ));
     report
 }

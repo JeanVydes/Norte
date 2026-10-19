@@ -10,20 +10,21 @@ The transport never retries (FR-ERR-4): a `429`, a `5xx` or a dead connection re
 | scenarios | 8 |
 | rounds per scenario | 20 |
 | simulated sleep | 1 ms per described wait |
+| timing | `simulated µs` is the wall-clock of the scripted run, not provider latency |
 
 
 ## Scenarios
 
-| scenario | injected | attempts | ok | modelled wait ms | request bytes | median µs | surfaced |
+| scenario | injected | attempts | ok | modelled wait ms | request bytes | simulated µs | surfaced |
 | --- | --- | ---: | --- | ---: | --- | ---: | --- |
-| control |  | 1 | yes | 0 | identical | 513 |  |
-| one-429-with-retry-after | RateLimited 429 retry-after 2000 | 2 | yes | 2000 | identical | 3003 |  |
-| two-429s-second-silent | RateLimited 429 retry-after 300, RateLimited 429 | 3 | yes | 1300 | identical | 5258 |  |
-| three-500s | ServerError 500, ServerError 502, ServerError 503 | 4 | yes | 3500 | identical | 6000 |  |
-| overloaded-then-ok | ModelOverloaded 503 | 2 | yes | 500 | identical | 2986 |  |
-| transport-timeout | Transport | 2 | yes | 500 | identical | 3165 |  |
-| exhausts-max-attempts | RateLimited 429, RateLimited 429, RateLimited 429, RateLimited 429 | 3 | no | 1500 | identical | 5788 | Some(RateLimited): provider error: RateLimited: scripted failure (status 429) |
-| permanent-401 | Authentication 401 | 1 | no | 0 | identical | 270 | Some(Authentication): provider error: Authentication: scripted failure (status 401) |
+| control |  | 1 | yes | 0 | identical | 683 |  |
+| one-429-with-retry-after | RateLimited 429 retry-after 2000 | 2 | yes | 2000 | identical | 3904 |  |
+| two-429s-second-silent | RateLimited 429 retry-after 300, RateLimited 429 | 3 | yes | 1300 | identical | 7335 |  |
+| three-500s | ServerError 500, ServerError 502, ServerError 503 | 4 | yes | 3500 | identical | 9980 |  |
+| overloaded-then-ok | ModelOverloaded 503 | 2 | yes | 500 | identical | 4091 |  |
+| transport-timeout | Transport | 2 | yes | 500 | identical | 4413 |  |
+| exhausts-max-attempts | RateLimited 429, RateLimited 429, RateLimited 429, RateLimited 429 | 3 | no | 1500 | identical | 7064 | Some(RateLimited): provider error: RateLimited: scripted failure (status 429) |
+| permanent-401 | Authentication 401 | 1 | no | 0 | identical | 548 | Some(Authentication): provider error: Authentication: scripted failure (status 401) |
 
 control  ██████░░░░░░░░░░░░░░░░░░  1
 one-429-with-retry-after  ████████████░░░░░░░░░░░░  2
@@ -99,4 +100,6 @@ permanent-401  ██████░░░░░░░░░░░░░░░�
 ## What a retry costs
 
 A retry is not free and it is not a new conversation. `request bytes: identical` means the resumed turn re-sent a request whose `sha256` did not move across attempts, so the provider's cache still applies and the host paid for time, not for a fresh prefix. Where the policy stops, the error is surfaced with its kind and status rather than flattened.
+
+`simulated µs` is the wall-clock of this scripted run. It includes a one-millisecond sleep in place of each described wait, so it is not a provider latency measurement and must not be compared with one. The provider's ask is the `modelled wait ms` column; the timings are here to catch a policy that loops or stalls, not to price a retry.
 

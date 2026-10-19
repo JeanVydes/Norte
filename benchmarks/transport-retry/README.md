@@ -42,8 +42,8 @@ Offline: options are `--rounds <n>`, `--report <p>`, `--jsonl <p>`, `--help`.
 
 - **Run** — the scenarios, the rounds, the simulated sleep.
 - **Scenarios** — per scenario: what was injected, attempts, success, the
-  modelled wait, whether the request bytes stayed identical, the median time and
-  what was finally surfaced.
+  modelled wait, whether the request bytes stayed identical, the simulated
+  wall-clock and what was finally surfaced.
 - **Attempts** — every attempt, in order, with the error it saw and the wait the
   host chose. An attempt followed by another is `retry`; the last attempt of a
   policy that stops is `surfaced`, even when the error is transient.
@@ -56,5 +56,7 @@ Each run also writes `<stem>.jsonl`, `<stem>-scenarios.csv`,
 - **The transport's restraint is the finding.** The engine surfaces the error and
   the retry policy is visible, not hidden inside a client.
 - **The modelled wait is not slept.** The run trades a millisecond for the
-  provider's ask; the real ask is in the table.
+  provider's ask; the real ask is in the table. `simulated µs` is the wall-clock
+  of the scripted run, not provider latency; it exists to catch a policy that
+  loops or stalls.
 - **`identical` means the retry was the same request**, so a cache still applies.

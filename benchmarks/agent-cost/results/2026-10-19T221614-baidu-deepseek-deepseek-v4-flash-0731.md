@@ -8,12 +8,12 @@ Every figure is the provider's own: the `usage.cost` each response reported, sum
 
 |  |  |
 | --- | --- |
-| when | 2026-10-19 19:56:28 UTC |
+| when | 2026-10-19 22:16:14 UTC |
 | model | `deepseek/deepseek-v4-flash-0731` |
 | provider | baidu |
 | endpoint | `https://openrouter.ai/api/v1` |
 | pause | 2000 ms before each request |
-| norte | 0.0.1 |
+| norte | 0.0.2 |
 | budget | 32 request(s) per task, 3 task(s) |
 | scratch | `/tmp/norte-bench-agent-cost` |
 
@@ -34,10 +34,10 @@ cargo run -p norte-bench-agent-cost
 
 | # | requests | input | cache read | hit | output | cost (USD) |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 9 | 39395 | 32256 | 81.9 % | 1706 | 0.001724 |
-| 2 | 10 | 44473 | 38400 | 86.3 % | 2033 | 0.001739 |
-| 3 | 13 | 65717 | 56320 | 85.7 % | 2488 | 0.002421 |
-| all | 32 | 149585 | 126976 | 84.9 % | 6227 | 0.005884 |
+| 1 | 3 | 9937 | 8448 | 85.0 % | 352 | 0.000365 |
+| 2 | 16 | 73306 | 65792 | 89.7 % | 2556 | 0.002242 |
+| 3 | 12 | 60653 | 51968 | 85.7 % | 2242 | 0.002215 |
+| all | 31 | 143896 | 126208 | 87.7 % | 5150 | 0.004823 |
 
 ### What the tasks asked
 
@@ -47,18 +47,21 @@ cargo run -p norte-bench-agent-cost
 
 ## Tool calls
 
-- **task 1**: 13 call(s) — `command` ×5 (4 failed), `edit` ×3, `read` ×5
-- **task 2**: 13 call(s) — `command` ×6 (4 failed), `edit` ×2, `read` ×5
-- **task 3**: 15 call(s) — `command` ×8 (6 failed), `edit` ×2, `read` ×5
+- **task 1**: 5 call(s) — `command` ×2 (2 failed), `read` ×3
+- **task 2**: 20 call(s) — `command` ×16 (16 failed), `read` ×4
+- **task 3**: 16 call(s) — `command` ×7 (4 failed), `edit` ×4, `read` ×5
 
-41 call(s) in all, 14 refused or failed. A call that fails is billed like any other request, because the round that carried it was paid for before the tool ever ran, which is why it is counted here.
+41 call(s) in all, 22 refused or failed. A call that fails is billed like any other request, because the round that carried it was paid for before the tool ever ran, which is why it is counted here.
+
+Failed calls, by tool, reason and text:
+- `command` ×22 (schema): command: the request needs `command` as an object with `kind` and `program`, for example {"command":{"kind":"program","program":"cargo","args":["test","--offline"]}}; the shell is not available
 
 
 ## The bill
 
-- the provider's `usage.cost`, summed over 32 of 32 request(s): **$0.005884**
-- per task: $0.001961 · per request: $0.000184 · a hundred tasks: $0.1961
-- cache hit: 84.9 % of the input (126976 of 149585 tokens). A read is counted inside `input` on this wire, so it is already part of the total above; what the hit was worth is in that number, not in a rate applied here.
+- the provider's `usage.cost`, summed over 31 of 31 request(s): **$0.004823**
+- per task: $0.001608 · per request: $0.000156 · a hundred tasks: $0.1608
+- cache hit: 87.7 % of the input (126208 of 143896 tokens). A read is counted inside `input` on this wire, so it is already part of the total above; what the hit was worth is in that number, not in a rate applied here.
 
 
 ## The host's check
@@ -66,9 +69,9 @@ cargo run -p norte-bench-agent-cost
 - **cargo test**: the crate builds and every test passes
   - `test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s`
   - `test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s`
-  - `test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s`
+  - `test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s`
   - `test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s`
-- **cargo run -- --verbose --limit 2 "the sky, is blue."**: prints `4 words: the, sky`
+- **cargo run -- --verbose --limit 2 "the sky, is blue."**: prints `4 words: the, sky,` and not `4 words: the, sky`
 
 
 ## Requests
@@ -77,36 +80,35 @@ Every model request the engine made, in order, with the usage the provider repor
 
 | task | request | input | cache read | output | cost (USD) |
 | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 1 | 2661 | 0 | 108 | 0.000387 |
-| 1 | 2 | 3564 | 2048 | 465 | 0.000386 |
-| 1 | 3 | 4198 | 3328 | 73 | 0.000155 |
-| 1 | 4 | 4331 | 4096 | 107 | 0.000089 |
-| 1 | 5 | 4498 | 4096 | 66 | 0.000095 |
-| 1 | 6 | 4624 | 4352 | 95 | 0.000090 |
-| 1 | 7 | 4734 | 4608 | 602 | 0.000270 |
-| 1 | 8 | 5199 | 4608 | 110 | 0.000139 |
-| 1 | 9 | 5586 | 5120 | 80 | 0.000113 |
-| 2 | 1 | 2675 | 2560 | 121 | 0.000073 |
-| 2 | 2 | 3583 | 2560 | 123 | 0.000191 |
-| 2 | 3 | 3856 | 3072 | 104 | 0.000155 |
-| 2 | 4 | 4006 | 3072 | 146 | 0.000191 |
-| 2 | 5 | 4130 | 3840 | 589 | 0.000283 |
-| 2 | 6 | 4372 | 4096 | 654 | 0.000307 |
-| 2 | 7 | 5064 | 4096 | 91 | 0.000178 |
-| 2 | 8 | 5215 | 4864 | 90 | 0.000101 |
-| 2 | 9 | 5682 | 5120 | 103 | 0.000134 |
-| 2 | 10 | 5890 | 5120 | 12 | 0.000126 |
-| 3 | 1 | 2670 | 2048 | 151 | 0.000148 |
-| 3 | 2 | 3893 | 2048 | 57 | 0.000270 |
-| 3 | 3 | 4056 | 3840 | 482 | 0.000232 |
-| 3 | 4 | 4513 | 3072 | 181 | 0.000270 |
-| 3 | 5 | 4745 | 4352 | 209 | 0.000150 |
-| 3 | 6 | 4899 | 4096 | 86 | 0.000155 |
-| 3 | 7 | 5045 | 4608 | 81 | 0.000107 |
-| 3 | 8 | 5186 | 4864 | 148 | 0.000120 |
-| 3 | 9 | 5813 | 5120 | 120 | 0.000158 |
-| 3 | 10 | 5976 | 5120 | 360 | 0.000272 |
-| 3 | 11 | 6138 | 5888 | 237 | 0.000149 |
-| 3 | 12 | 6288 | 5120 | 141 | 0.000228 |
-| 3 | 13 | 6495 | 6144 | 235 | 0.000162 |
+| 1 | 1 | 2661 | 2048 | 120 | 0.000135 |
+| 1 | 2 | 3564 | 3072 | 135 | 0.000129 |
+| 1 | 3 | 3712 | 3328 | 97 | 0.000101 |
+| 2 | 1 | 2675 | 2048 | 151 | 0.000149 |
+| 2 | 2 | 3666 | 2048 | 105 | 0.000259 |
+| 2 | 3 | 3917 | 3584 | 96 | 0.000095 |
+| 2 | 4 | 4041 | 3840 | 92 | 0.000078 |
+| 2 | 5 | 4174 | 3072 | 83 | 0.000188 |
+| 2 | 6 | 4317 | 4096 | 101 | 0.000085 |
+| 2 | 7 | 4460 | 4096 | 122 | 0.000112 |
+| 2 | 8 | 4606 | 4096 | 235 | 0.000175 |
+| 2 | 9 | 4744 | 4352 | 164 | 0.000133 |
+| 2 | 10 | 4866 | 4352 | 188 | 0.000158 |
+| 2 | 11 | 4999 | 4864 | 174 | 0.000105 |
+| 2 | 12 | 5119 | 4864 | 155 | 0.000114 |
+| 2 | 13 | 5243 | 4864 | 204 | 0.000149 |
+| 2 | 14 | 5365 | 5120 | 94 | 0.000090 |
+| 2 | 15 | 5482 | 5120 | 179 | 0.000138 |
+| 2 | 16 | 5632 | 5376 | 413 | 0.000216 |
+| 3 | 1 | 2670 | 2560 | 151 | 0.000084 |
+| 3 | 2 | 3797 | 2048 | 75 | 0.000265 |
+| 3 | 3 | 3960 | 3072 | 680 | 0.000393 |
+| 3 | 4 | 4653 | 3072 | 376 | 0.000364 |
+| 3 | 5 | 4964 | 4096 | 81 | 0.000161 |
+| 3 | 6 | 5105 | 4864 | 80 | 0.000083 |
+| 3 | 7 | 5245 | 4864 | 66 | 0.000095 |
+| 3 | 8 | 5371 | 5120 | 82 | 0.000086 |
+| 3 | 9 | 5513 | 5120 | 122 | 0.000120 |
+| 3 | 10 | 6143 | 5120 | 122 | 0.000201 |
+| 3 | 11 | 6305 | 5888 | 136 | 0.000131 |
+| 3 | 12 | 6927 | 6144 | 271 | 0.000233 |
 

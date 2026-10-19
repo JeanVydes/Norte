@@ -60,7 +60,10 @@ Each run writes itself a markdown report under `results/`, named
 - **Tasks** — one row per task: requests, input, cache read, hit rate, output,
   and the cost the provider reported. Then the tasks in full.
 - **Tool calls** — what the agent reached for, by name, and how many of those
-  calls failed. A failed call is billed like any other request.
+  calls failed. A failed call is billed like any other request. The report also
+  groups failures by the tool's error text and labels them `schema`, `policy`,
+  `compile` or `tool`, so a rejected argument is not mistaken for a compiler
+  error. The raw text is in `calls.csv` and the JSONL trail.
 - **The bill** — the provider's `usage.cost`, summed; per task, per request and
   per hundred tasks; the cache hit; and how many requests reported no cost at
   all, when some did not.

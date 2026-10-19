@@ -1,0 +1,5 @@
+schema,shape,trap,rounds,requests,calls,rejected,accepted,answered,called,median_micros,rejections,error
+flat,one string field,none,5,10,5,0,5,5,5,6762067,,
+enum,"one enum field (low, medium, high)","the ask insists on `urgent`, which is not in the enum",5,7,2,1,1,5,2,5974828,"invalid arguments for tool set_priority: unknown variant `urgent`, expected one of `low`, `medium`, `high`",
+nested,"a nested guest object and a number, deny_unknown_fields","the ask insists on a `floor`, which the schema does not declare",5,10,5,0,5,5,5,8729672,,
+tagged,an internally tagged enum (`command: {kind: ...}`),"the ask insists the command is a plain string, which the tagged enum cannot accept",5,16,11,6,5,5,5,12446194,"invalid arguments for tool run_command: invalid type: string ""echo hi"", expected internally tagged enum CommandLine | invalid arguments for tool run_command: invalid type: string ""{\""kind\"": \""program\"", \""program\"": \""echo\"", \""args\"": [\""hi\""]}"", expected internally tagged enum CommandLine",

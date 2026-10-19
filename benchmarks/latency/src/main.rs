@@ -9,13 +9,15 @@
 //!
 //! Every delta is classified as it arrives — text, reasoning, or something else
 //! — because a model that spends its whole budget thinking has a first token and
-//! no answer, and that is a latency fact worth seeing rather than hiding.
+//! no answer, and that is a latency fact worth seeing rather than hiding. Two
+//! timestamps are recorded: the first delta of any kind, and the first answer
+//! text delta. The second one is the TTFT a caller who waits for words feels.
 //!
 //! ```sh
 //! OPENROUTER_API_KEY=sk-or-... \
 //! BENCH_ENDPOINT=https://openrouter.ai/api/v1 \
 //! BENCH_MODEL=deepseek/deepseek-v4.1-flash-1017 \
-//!   cargo run -p norte-bench-latency -- --rounds 5
+//!   cargo run -p norte-bench-latency -- --rounds 10
 //! ```
 
 use std::error::Error;
@@ -34,6 +36,10 @@ use serde::Serialize;
 
 const DEFAULT_PROMPT: &str = "Write a four-line haiku about latency.";
 
+/// Enough room for a reasoning model to finish thinking and still write the
+/// answer; 512 was small enough that some rounds produced no text at all.
+const OUTPUT_BUDGET: u64 = 2_048;
+
 const USAGE: &str = "\
 norte-bench-latency — time to first token and turn time, live
 
@@ -41,7 +47,7 @@ USAGE:
     norte-bench-latency [OPTIONS]
 
 OPTIONS:
-    --rounds <n>    rounds per mode (default 5)
+    --rounds <n>    rounds per mode (default 10)
     --prompt <s>    the ask (default: a four-line haiku about latency)
     --report <p>    write the markdown report to <p>
     --jsonl <p>     write the JSONL trail to <p>
@@ -58,7 +64,10 @@ Live: needs a key and a route in the environment.
 struct Round {
     mode: String,
     round: u64,
-    ttft_ms: Option<f64>,
+    /// First delta of any kind, reasoning included.
+    first_delta_ms: Option<f64>,
+    /// First answer-text delta; `None` when the round produced no text.
+    ttft_text_ms: Option<f64>,
     total_ms: f64,
     text_deltas: u64,
     reasoning_deltas: u64,
@@ -82,7 +91,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     };
 
-    let rounds = run.cli().option_u64("rounds")?.unwrap_or(5).max(1);
+    let rounds = run.cli().option_u64("rounds")?.unwrap_or(10).max(1);
     let prompt = run
         .cli()
         .option("prompt")
@@ -92,7 +101,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .route()
         .ok_or("the latency benchmark is live and needs a route")?
         .clone();
-    let options = route.turn_options(512);
+    let options = route.turn_options(OUTPUT_BUDGET);
 
     let mut records = Vec::new();
     for round in 0..rounds {
@@ -152,16 +161,18 @@ async fn measure_streaming(
         .input(Message::user(prompt))
         .options(options)
         .start();
-    let mut ttft: Option<f64> = None;
+    let mut first_delta: Option<f64> = None;
+    let mut ttft_text: Option<f64> = None;
     let mut text_deltas = 0_u64;
     let mut reasoning_deltas = 0_u64;
     let mut other_deltas = 0_u64;
     let mut bytes = 0_u64;
     while let Some(event) = stream.next().await {
         if let EngineEvent::StreamDelta { delta, .. } = event? {
-            ttft.get_or_insert_with(|| millis(started.elapsed()));
+            first_delta.get_or_insert_with(|| millis(started.elapsed()));
             match delta {
                 StreamDelta::Text { text, .. } => {
+                    ttft_text.get_or_insert_with(|| millis(started.elapsed()));
                     text_deltas += 1;
                     bytes += u64::try_from(text.len()).unwrap_or(0);
                 }
@@ -177,7 +188,8 @@ async fn measure_streaming(
         "streaming",
         round,
         &Counts {
-            ttft,
+            first_delta,
+            ttft_text,
             total,
             text_deltas,
             reasoning_deltas,
@@ -214,7 +226,8 @@ async fn measure_buffered(
         "buffered",
         round,
         &Counts {
-            ttft: None,
+            first_delta: None,
+            ttft_text: None,
             total,
             text_deltas: 0,
             reasoning_deltas: 0,
@@ -227,7 +240,8 @@ async fn measure_buffered(
 
 /// What the stream showed, before it is joined with the provider's counters.
 struct Counts {
-    ttft: Option<f64>,
+    first_delta: Option<f64>,
+    ttft_text: Option<f64>,
     total: Duration,
     text_deltas: u64,
     reasoning_deltas: u64,
@@ -249,7 +263,8 @@ fn assemble(mode: &str, round: u64, counts: &Counts, usage: &Usage) -> Round {
     Round {
         mode: mode.to_owned(),
         round,
-        ttft_ms: counts.ttft,
+        first_delta_ms: counts.first_delta,
+        ttft_text_ms: counts.ttft_text,
         total_ms,
         text_deltas: counts.text_deltas,
         reasoning_deltas: counts.reasoning_deltas,
@@ -297,10 +312,11 @@ fn as_u64(value: f64) -> u64 {
     value.max(0.0) as u64
 }
 
-const CSV_HEADERS: [&str; 13] = [
+const CSV_HEADERS: [&str; 14] = [
     "mode",
     "round",
-    "ttft_ms",
+    "first_delta_ms",
+    "ttft_text_ms",
     "total_ms",
     "text_deltas",
     "reasoning_deltas",
@@ -317,20 +333,31 @@ fn csv_rows(records: &[Round]) -> Vec<Vec<String>> {
     records
         .iter()
         .map(|record| {
-            let note = if record.mode == "streaming" && record.text_deltas == 0 {
-                "no text delta arrived".to_owned()
-            } else {
+            let streamed = record.mode == "streaming";
+            let note = if streamed && record.text_deltas == 0 {
+                "no text answer; the output budget may have gone to reasoning".to_owned()
+            } else if streamed {
                 String::new()
+            } else {
+                "deltas are not observed in buffered mode".to_owned()
+            };
+            let count = |value: u64| {
+                if streamed {
+                    value.to_string()
+                } else {
+                    "—".to_owned()
+                }
             };
             vec![
                 record.mode.clone(),
                 record.round.to_string(),
-                format_opt_ms(record.ttft_ms),
+                format_opt_ms(record.first_delta_ms),
+                format_opt_ms(record.ttft_text_ms),
                 format_ms(record.total_ms),
-                record.text_deltas.to_string(),
-                record.reasoning_deltas.to_string(),
-                record.other_deltas.to_string(),
-                record.bytes.to_string(),
+                count(record.text_deltas),
+                count(record.reasoning_deltas),
+                count(record.other_deltas),
+                count(record.bytes),
                 record
                     .output_tokens
                     .map_or_else(|| "—".to_owned(), |v| v.to_string()),
@@ -384,6 +411,7 @@ fn render(
             ),
         ),
         ("rounds per mode", rounds.to_string()),
+        ("output budget", OUTPUT_BUDGET.to_string()),
         ("prompt", prompt.to_owned()),
         ("modes", "streaming, buffered".to_owned()),
     ]);
@@ -396,9 +424,12 @@ fn render(
             let subset: Vec<&Round> = records.iter().filter(|r| r.mode == *mode).collect();
             let mut totals: Vec<f64> = subset.iter().map(|r| r.total_ms).collect();
             totals.sort_by(f64::total_cmp);
-            let mut ttfts: Vec<f64> = subset.iter().filter_map(|r| r.ttft_ms).collect();
+            let mut first: Vec<f64> = subset.iter().filter_map(|r| r.first_delta_ms).collect();
+            first.sort_by(f64::total_cmp);
+            let mut ttfts: Vec<f64> = subset.iter().filter_map(|r| r.ttft_text_ms).collect();
             ttfts.sort_by(f64::total_cmp);
             let text: u64 = subset.iter().map(|r| r.text_deltas).sum();
+            let answered = subset.iter().filter(|r| r.text_deltas > 0).count();
             let reasoning: u64 = subset.iter().map(|r| r.reasoning_deltas).sum();
             let output: u64 = subset.iter().filter_map(|r| r.output_tokens).sum();
             let cache_read: u64 = subset.iter().filter_map(|r| r.cache_read).sum();
@@ -406,13 +437,27 @@ fn render(
             vec![
                 (*mode).to_owned(),
                 subset.len().to_string(),
+                if *mode == "streaming" {
+                    format!("{answered}/{}", subset.len())
+                } else {
+                    "—".to_owned()
+                },
+                format_opt_ms(first.get(first.len() / 2).copied()),
                 format_opt_ms(ttfts.first().copied()),
                 format_opt_ms(ttfts.get(ttfts.len() / 2).copied()),
                 format_ms(*totals.first().unwrap_or(&0.0)),
                 format_ms(percentile(&totals, 500)),
                 format_ms(*totals.last().unwrap_or(&0.0)),
-                text.to_string(),
-                reasoning.to_string(),
+                if *mode == "streaming" {
+                    text.to_string()
+                } else {
+                    "—".to_owned()
+                },
+                if *mode == "streaming" {
+                    reasoning.to_string()
+                } else {
+                    "—".to_owned()
+                },
                 output.to_string(),
                 cache_read.to_string(),
                 format!("{cost:.6}"),
@@ -423,8 +468,10 @@ fn render(
         &[
             "mode",
             "rounds",
-            "ttft min",
-            "ttft p50",
+            "text rounds (stream)",
+            "first delta p50",
+            "ttft text min",
+            "ttft text p50",
             "total min",
             "total p50",
             "total max",
@@ -436,6 +483,8 @@ fn render(
         ],
         &[
             Align::Left,
+            Align::Right,
+            Align::Right,
             Align::Right,
             Align::Right,
             Align::Right,
@@ -465,7 +514,8 @@ fn render(
         &[
             "mode",
             "round",
-            "ttft ms",
+            "first delta ms",
+            "ttft text ms",
             "total ms",
             "text",
             "reason",
@@ -479,6 +529,7 @@ fn render(
         ],
         &[
             Align::Left,
+            Align::Right,
             Align::Right,
             Align::Right,
             Align::Right,
@@ -507,10 +558,13 @@ fn render(
         .reduce(f64::max)
         .unwrap_or(0.0);
     report.paragraph(&format!(
-        "A turn here takes from {} to {}. The streaming host sees its first token at \
-         `ttft`; the buffered host waits the whole turn before it can decide anything. \
-         A round with `note = no text delta arrived` spent the whole output budget before \
-         producing any answer text — latency the caller feels as nothing happening.",
+        "A turn here takes from {} to {}. `first delta` is the first event of any kind, \
+         reasoning included; `ttft text` is the first answer token, which is the one a caller \
+         who waits for words feels. A round with `ttft text = —` spent the output budget before \
+         writing an answer; it is not a zero-latency answer. The buffered host has neither \
+         timestamp, nor a delta count, because it never reads an event; those cells are `—`. These are single-run samples on one route, \
+         not a significance test; compare runs that agree on model, provider, endpoint and \
+         commit.",
         format_ms(fastest),
         format_ms(slowest)
     ));

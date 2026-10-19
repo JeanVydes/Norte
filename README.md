@@ -15,7 +15,7 @@
 first-class provider SDKs, and a streaming, durable engine.
 
 Nothing in your application names a vendor, and no model catalogue is baked in:
-you declare what your models can do, and the engine does the rest — every call
+you declare what your models can do, and the engine does the rest, every call
 under a policy you write, every turn in a history you can audit.
 
 ## Why Norte
@@ -45,16 +45,16 @@ under a policy you write, every turn in a history you can audit.
 
 ## Providers and coverage
 
-| Provider | Crate | Coverage |
-| --- | --- | --- |
-| OpenAI | `norte-openai` | Responses (primary) and Chat Completions |
-| Anthropic | `norte-anthropic` | Messages |
-| Google Gemini | `norte-gemini` | generateContent, with explicit cached content |
+| Provider | Crate | APIs | Coverage |
+| --- | --- | --- | --- |
+| OpenAI | `norte-openai` | Responses, Chat Completions | `███████████████████░` 95 % |
+| Anthropic | `norte-anthropic` | Messages | `███████████████████░` 95 % |
+| Google Gemini | `norte-gemini` | generateContent, cached content | `███████████████████░` 95 % |
 
-Each adapter implements roughly 95 % of its vendor's documented API. What is
-missing is small and named: the Realtime API (out of scope), `logprobs`, and
-unary `stream: false` delivery (`collect()` already covers blocking callers). A
-modality an API cannot express is a typed error, never a silent drop, and a
+Coverage is the share of each vendor's documented API the adapter implements.
+What is missing is small and named: the Realtime API (out of scope), `logprobs`,
+and unary `stream: false` delivery (`collect()` already covers blocking callers).
+A modality an API cannot express is a typed error, never a silent drop, and a
 documented block with no neutral form is kept verbatim and replayed unchanged.
 
 Anything OpenAI-compatible works through the OpenAI adapter with your own base

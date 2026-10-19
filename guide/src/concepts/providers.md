@@ -87,11 +87,17 @@ if you want them directly.
 
 ## What is missing, honestly
 
-Each adapter covers roughly 95 % of its wire's documented surface. The missing
-part is small and named: the Realtime API (out of scope), `logprobs` (opt-in,
-per-token and floating point, which would break the `Eq` invariant every domain
-part relies on), and unary `stream: false` delivery (`finish()` already covers
-blocking callers).
+| Adapter | Coverage |
+| --- | --- |
+| `norte-openai` | `███████████████████░` 95 % |
+| `norte-anthropic` | `███████████████████░` 95 % |
+| `norte-gemini` | `███████████████████░` 95 % |
+
+Coverage is the share of the vendor's documented API the adapter implements. The
+missing part is small and named: the Realtime API (out of scope), `logprobs`
+(opt-in, per-token and floating point, which would break the `Eq` invariant every
+domain part relies on), and unary `stream: false` delivery (`finish()` already
+covers blocking callers).
 
 Two rules the adapters do keep:
 

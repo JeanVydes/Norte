@@ -27,6 +27,7 @@
 # Reference
 
 - [Crates](reference/crates.md)
+- [Requirements](reference/requirements.md)
 - [Glossary](reference/glossary.md)
 
 ---

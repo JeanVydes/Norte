@@ -94,10 +94,8 @@ if you want them directly.
 | `norte-gemini` | `███████████████████░` 95 % |
 
 Coverage is the share of the vendor's documented API the adapter implements. The
-missing part is small and named: the Realtime API (out of scope), `logprobs`
-(opt-in, per-token and floating point, which would break the `Eq` invariant every
-domain part relies on), and unary `stream: false` delivery (`finish()` already
-covers blocking callers).
+missing part is small and named: the Realtime API (out of scope) and unary
+`stream: false` delivery (`finish()` already covers blocking callers).
 
 Two rules the adapters do keep:
 

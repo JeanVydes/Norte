@@ -36,7 +36,7 @@ everything with every edge optional but the core's.
 | `examples/cookbook` | Small, self-contained recipes: one file per topic, each wiring its own engine. Nothing is shared between them on purpose, so a recipe can be read and copied on its own. |
 | `norte-facade-smoke` | A package whose only dependency is `norte`: every path and every macro in it starts at the facade. Its test mirrors the README quickstart. |
 | `benchmarks/agent-cost` | What a coding agent costs on an existing crate, with one report per run under `results/`. |
-| `docs/SRS.md` | The behavioural specification: the source of truth for what the engine promises, kept local and not committed. |
+| `guide/src/reference/requirements.md` | The requirements ledger: every id, the code that enforces it and the suite or CI job that checks it. |
 | `guide/` | This guide. |
 | `fuzz/` | `cargo-fuzz` targets for the wire parsers. |
 

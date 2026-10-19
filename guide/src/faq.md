@@ -49,8 +49,10 @@ you compile.
 
 ## Is the behavioural spec in the repository?
 
-It is `docs/SRS.md`, kept local and not committed. The code is the source of
-truth; the spec is the requirement behind it.
+Yes: [Requirements](reference/requirements.md) is the ledger behind the library —
+every requirement with its id, the code that enforces it and the suite or CI job
+that checks it. The ids in source comments and workflow names resolve there. The
+code is the source of truth; the ledger is the requirement it implements.
 
 ## My turn ended with an error, but the requests were billed. Why?
 

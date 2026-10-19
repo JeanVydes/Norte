@@ -68,3 +68,5 @@ Five ideas hold the whole library together.
 - Looking for a type: [Crates](reference/crates.md) and
   [Glossary](reference/glossary.md); the full API is in rustdoc
   (`cargo doc --workspace --no-deps --open`).
+- Auditing a promise: [Requirements](reference/requirements.md) carries every id
+  with the code and the CI job that enforce it.

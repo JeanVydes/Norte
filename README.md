@@ -52,10 +52,10 @@ under a policy you write, every turn in a history you can audit.
 | Google Gemini | `norte-gemini` | generateContent, cached content | `███████████████████░` 95 % |
 
 Coverage is the share of each vendor's documented API the adapter implements.
-What is missing is small and named: the Realtime API (out of scope), `logprobs`,
-and unary `stream: false` delivery (`collect()` already covers blocking callers).
-A modality an API cannot express is a typed error, never a silent drop, and a
-documented block with no neutral form is kept verbatim and replayed unchanged.
+What is missing is small and named: the Realtime API (out of scope) and unary
+`stream: false` delivery (`collect()` already covers blocking callers). A modality
+an API cannot express is a typed error, never a silent drop, and a documented
+block with no neutral form is kept verbatim and replayed unchanged.
 
 Anything OpenAI-compatible works through the OpenAI adapter with your own base
 `URL`: OpenRouter, Groq, Together, vLLM, an internal gateway or a self-hosted
@@ -122,6 +122,10 @@ program, how to run it, and the reports it writes.
   and built with [mdBook](https://rust-lang.github.io/mdBook/); run
   `mdbook serve guide` to read it locally, and CI publishes it to GitHub Pages
   from `dev`.
+- **Requirements** — [`guide/src/reference/requirements.md`](guide/src/reference/requirements.md)
+  is the ledger: every requirement with its id, the code that enforces it, and
+  the test or CI job that checks it. The ids in source comments and workflow
+  names resolve there.
 - **Rustdoc** — every crate documents its public surface; the reference is
   generated, not written twice:
 

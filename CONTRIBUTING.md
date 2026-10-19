@@ -34,8 +34,9 @@ workflow for contributing.
 - `guide/` — the multi-page user guide, written in Markdown and built with
   [mdBook](https://rust-lang.github.io/mdBook/) (`mdbook serve guide`). CI
   publishes it to GitHub Pages from `dev`; a pull request only builds it.
-- `docs/SRS.md` — the single source of truth for behaviour, kept local and not
-  committed.
+- `guide/src/reference/requirements.md` — the requirements ledger: every id, the
+  code that enforces it and the suite or CI job that checks it. The code is the
+  source of truth; the ledger records the promise it implements.
 - top-level `Cargo.toml` — the workspace manifest.
 
 ## How to Contribute

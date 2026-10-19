@@ -1,4 +1,4 @@
-//! Property tests for the invariants the SRS pins (FR-TEST-3): continuity merge,
+//! Property tests for the invariants the requirements ledger pins (FR-TEST-3): continuity merge,
 //! graph commits, policy evaluation, reconstruction determinism / prefix
 //! stability (FR-RECON-1, FR-RECON-2, FR-RECON-11) and lossless, byte-stable
 //! conversation export/import (FR-EXP-2).

@@ -22,6 +22,10 @@ workflow for contributing.
 - `rustychain-testing/` — the scripted model, fixture replayer, request probe
   and conformance suites.
 - `rustychain-macros/` — the procedural macros used across the workspace.
+- `examples/cookbook/` — small, self-contained recipes: one file per topic, each
+  wiring its own engine, nothing shared between them on purpose.
+- `benchmarks/` — measurements against a real model, one folder per benchmark,
+  each with its own README and a `results/` folder the run writes into.
 - `docs/SRS.md` — the single source of truth for behaviour, kept local (it is
   deliberately not committed).
 - top-level `Cargo.toml` — the workspace manifest.
@@ -97,9 +101,14 @@ Tests are hermetic: there are no live API keys and no external services. Provide
 behaviour is pinned by recorded fixtures; live smoke tests are run separately on a
 schedule (FR-TEST-2).
 
+`benchmarks/` is the opposite and is treated as such: a benchmark talks to a paid
+model on purpose, so `cargo test --workspace` type-checks and builds it but never
+runs it. Its results are written by the run, under its own `results/`.
+
 ## Adding a new crate to the workspace
 
-1. Add the crate folder at the repo root.
+1. Add the crate folder at the repo root — or under `examples/` for something
+   runnable and under `benchmarks/` for something measured.
 2. Add it to the top-level `Cargo.toml` under `[workspace]` → `members` and to
    `[workspace.dependencies]`.
 3. Extend `scripts/check-dependencies.sh` if the crate introduces a new layer in

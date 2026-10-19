@@ -1877,15 +1877,22 @@ mod tests {
 
     #[tokio::test]
     async fn a_cancelled_command_is_reported_as_cancelled() {
+        let dir = temp_dir("cancelled-midway");
+        let marker = dir.join("marked");
+        let watched = marker.clone();
         let tool = CommandTool::new();
         let context = ToolContext::new();
         let signal = context.cancellation();
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            // Cancel only once `echo before` has run: the script touches the
+            // marker *after* the output reached the pipe, so the assertion
+            // below is not a race against process startup.
+            wait_for(&watched).await;
             signal.cancel();
         });
+        let script = format!("echo before; touch {}; sleep 30", marker.display());
         let output = tool
-            .call_with_context(&context, request(shell("echo before; sleep 30")))
+            .call_with_context(&context, request(shell(&script)))
             .await
             .expect("execute");
         assert!(output.is_error);
@@ -1896,6 +1903,7 @@ mod tests {
             structured["stdout"], "before\n",
             "the output produced before the cancellation is kept (FR-TOOL-BASH-5)"
         );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
@@ -2332,6 +2340,18 @@ mod tests {
 
     fn structured(output: &ToolOutput) -> Value {
         output.structured.clone().expect("structured")
+    }
+
+    /// Waits until `path` exists, so a test that races a spawned process never
+    /// depends on how long the process takes to start.
+    async fn wait_for(path: &std::path::Path) {
+        for _ in 0..1000 {
+            if path.exists() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("timed out waiting for {}", path.display());
     }
 
     fn temp_dir(label: &str) -> PathBuf {

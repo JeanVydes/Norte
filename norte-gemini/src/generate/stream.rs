@@ -970,7 +970,7 @@ mod tests {
     #[tokio::test]
     async fn empty_parts_are_ignored() {
         let events = drain(&[r#"{"candidates":[{"content":{"parts":[{}]}}]}"#]).await;
-        assert!(events.is_empty());
+        assert!(events.is_empty(), "an empty part yields no event");
     }
 
     #[tokio::test]
@@ -1098,6 +1098,6 @@ mod tests {
     #[tokio::test]
     async fn done_and_empty_chunks_are_ignored() {
         let events = drain(&["[DONE]", r#"{"candidates":[]}"#]).await;
-        assert!(events.is_empty());
+        assert!(events.is_empty(), "done and empty chunks yield no event");
     }
 }

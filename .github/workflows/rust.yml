@@ -149,6 +149,11 @@ jobs:
       security-events: write
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - name: Resolve the dependency graph
+        run: cargo generate-lockfile
       - uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}

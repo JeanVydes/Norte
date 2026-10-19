@@ -822,6 +822,9 @@ mod tests {
 
     #[tokio::test]
     async fn done_sentinel_is_ignored() {
-        assert!(drain(&["[DONE]"]).await.is_empty());
+        assert!(
+            drain(&["[DONE]"]).await.is_empty(),
+            "the done sentinel yields no event"
+        );
     }
 }

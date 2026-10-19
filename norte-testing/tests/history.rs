@@ -98,7 +98,8 @@ async fn an_empty_append_is_a_no_op() {
             .history(session.id)
             .await
             .expect("history")
-            .is_empty()
+            .is_empty(),
+        "a fresh session has no history"
     );
 }
 

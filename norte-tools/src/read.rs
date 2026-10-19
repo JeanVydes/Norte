@@ -1094,7 +1094,10 @@ mod tests {
         });
         let output = read(ReadTool::new(), request).await;
         assert_eq!(output.selected, 0, "the file is shorter than that");
-        assert!(output.lines.is_empty());
+        assert!(
+            output.lines.is_empty(),
+            "a range past the end selects no lines"
+        );
         assert_eq!(output.next_start, None);
         assert_eq!(
             output.total_lines, 1,
@@ -1248,7 +1251,7 @@ mod tests {
 
         assert!(output.count_only);
         assert_eq!(output.selected, 2);
-        assert!(output.lines.is_empty());
+        assert!(output.lines.is_empty(), "count_only returns no lines");
         assert_eq!(output.shown, 0);
         assert_eq!(output.next_start, None);
         assert!(
@@ -1378,7 +1381,10 @@ mod tests {
         let structured: ReadOutput =
             serde_json::from_value(output.structured.expect("structured")).expect("shape");
         assert_eq!(structured.text_kind, TextKind::Binary);
-        assert!(structured.lines.is_empty());
+        assert!(
+            structured.lines.is_empty(),
+            "a binary file has no lines to show"
+        );
         assert_eq!(structured.bytes, 4);
         let text = output.parts[0].as_text().expect("text");
         assert!(text.contains("binary"), "{text}");
@@ -1413,7 +1419,7 @@ mod tests {
 
         assert_eq!(output.total_lines, 0);
         assert_eq!(output.bytes, 0);
-        assert!(output.lines.is_empty());
+        assert!(output.lines.is_empty(), "an empty file has no lines");
         assert!(!output.truncated);
         assert_eq!(output.next_start, None);
         assert!(
@@ -1786,7 +1792,7 @@ mod tests {
         let output = read(ReadTool::new(), request).await;
 
         assert_eq!(output.selected, 2);
-        assert!(output.lines.is_empty());
+        assert!(output.lines.is_empty(), "count_only returns no lines");
         assert!(output.count_only);
     }
 

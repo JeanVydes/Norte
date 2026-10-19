@@ -318,7 +318,7 @@ async fn tool_subset_is_canonical_and_deduplicated() {
         },
     )
     .await;
-    assert!(empty.tools.is_empty());
+    assert!(empty.tools.is_empty(), "an empty filter declares no tools");
 }
 
 /// Seeds the same fixed history into a session and exports it, so every

@@ -939,6 +939,9 @@ mod tests {
         assert_eq!(error.provider_kind(), Some(ProviderErrorKind::Other));
 
         let done = drain(&["[DONE]", r#"{"type":"response.created"}"#]).await;
-        assert!(done.is_empty());
+        assert!(
+            done.is_empty(),
+            "the sentinel and the creation marker are dropped"
+        );
     }
 }

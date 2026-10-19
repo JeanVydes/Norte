@@ -56,7 +56,6 @@ pub enum ShortCircuitReason {
 
 /// Builds a synthetic stream from a fixed sequence of events, for layers that
 /// short-circuit instead of calling the model (FR-LAYER-2).
-#[must_use]
 pub fn synthetic_stream(events: Vec<StreamEvent>) -> ModelStream {
     Box::pin(futures_util::stream::iter(
         events.into_iter().map(Ok::<_, crate::error::Error>),

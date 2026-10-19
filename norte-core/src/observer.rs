@@ -182,7 +182,10 @@ mod tests {
             index: 0,
             text: "hi".to_owned(),
         };
-        assert!(set.project(text).is_empty());
+        assert!(
+            set.project(text).is_empty(),
+            "a dropped delta projects nothing"
+        );
     }
 
     #[test]

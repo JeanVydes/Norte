@@ -92,6 +92,9 @@ mod tests {
     fn header_scheme_exposes_a_query_param() {
         let scheme = AuthScheme::query("key", "abc");
         assert_eq!(scheme.query_param(), Some(("key", "abc")));
-        assert!(scheme.headers().expect("headers").is_empty());
+        assert!(
+            scheme.headers().expect("headers").is_empty(),
+            "a query-param scheme sends no headers"
+        );
     }
 }

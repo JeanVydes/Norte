@@ -2269,7 +2269,7 @@ mod tests {
             .await
             .expect("execute");
         assert!(!output.is_error);
-        assert!(!output.parts.is_empty());
+        assert!(!output.parts.is_empty(), "a completed call reports output");
         assert!(output.structured.is_some());
     }
 

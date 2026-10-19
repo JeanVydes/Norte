@@ -124,8 +124,14 @@ mod tests {
     #[test]
     fn survives_arbitrary_chunk_boundaries() {
         let mut decoder = SseDecoder::new();
-        assert!(decoder.push(b"data: he").is_empty());
-        assert!(decoder.push(b"llo\n").is_empty());
+        assert!(
+            decoder.push(b"data: he").is_empty(),
+            "a partial chunk completes no event"
+        );
+        assert!(
+            decoder.push(b"llo\n").is_empty(),
+            "a partial chunk completes no event"
+        );
         let events = decoder.push(b"\ndata: world\n\n");
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].data, "hello");
@@ -151,7 +157,10 @@ mod tests {
     #[test]
     fn ignores_blocks_without_a_field() {
         let mut decoder = SseDecoder::new();
-        assert!(decoder.push(b": just a comment\n\n").is_empty());
+        assert!(
+            decoder.push(b": just a comment\n\n").is_empty(),
+            "a comment block is not an event"
+        );
     }
 
     /// A tiny deterministic generator so the parser fuzz test reproduces exactly

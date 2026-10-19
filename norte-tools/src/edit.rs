@@ -1882,7 +1882,7 @@ mod tests {
             .await
             .expect("execute");
         assert!(!output.is_error);
-        assert!(!output.parts.is_empty());
+        assert!(!output.parts.is_empty(), "a completed call reports output");
         assert_eq!(
             std::fs::read_to_string(&path).expect("read"),
             "let a = 2;\n"

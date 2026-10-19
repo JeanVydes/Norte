@@ -596,7 +596,10 @@ async fn a_required_approval_blocks_then_resumes() {
     let result = history[2].tool_results()[0];
     assert!(!result.is_error);
     assert_eq!(result.structured, Some(json!({ "echoed": "secret" })));
-    assert!(!outcome.session.grants.is_empty());
+    assert!(
+        !outcome.session.grants.is_empty(),
+        "the approval leaves a grant"
+    );
 }
 
 #[tokio::test]

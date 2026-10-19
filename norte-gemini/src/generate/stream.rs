@@ -1,8 +1,11 @@
+use std::collections::BTreeMap;
+
 use futures_util::StreamExt;
 use norte_core::{
-    CallId, Citation, CitationSource, Error, ExtensionPart, FinishReason, MediaKind, MediaMetadata,
-    MediaPart, MediaSource, MimeType, ModelStream, Part, ProviderError, ProviderErrorKind,
-    ProviderTool, ReasoningVisibility, Result, SafetyRating, StreamEvent, Usage, VendorUsage,
+    CallId, Citation, CitationSource, Error, ExtensionPart, FinishReason, LogprobAlternative,
+    LogprobValue, MediaKind, MediaMetadata, MediaPart, MediaSource, MimeType, ModelStream, Part,
+    ProviderError, ProviderErrorKind, ProviderTool, ReasoningVisibility, Result, SafetyRating,
+    StreamEvent, TokenLogprob, Usage, VendorUsage,
 };
 use norte_http::SseStream;
 use serde_json::{Value, json};
@@ -124,8 +127,36 @@ impl Decoder {
             self.grounding(&candidate, events);
             self.citation_metadata(&candidate, events);
             safety_ratings(&candidate, events);
+            self.logprobs(&candidate, events);
         }
         Ok(())
+    }
+
+    /// Surfaces the candidate's per-token probabilities on the text part being
+    /// streamed (FR-LP-3). Informational: the accumulator drops the event, so
+    /// nothing here reaches the committed message. The vendor's own aggregates
+    /// (`logProbabilitySum` on the result, `avgLogprobs` on the candidate) are
+    /// not repeated: they are the sum and the mean of the entries surfaced here.
+    fn logprobs(&self, candidate: &Value, events: &mut Vec<StreamEvent>) {
+        let Some(index) = self.text_index else {
+            return;
+        };
+        let Some(result) = candidate.get("logprobsResult") else {
+            return;
+        };
+        let chosen = result.get("chosenCandidates").and_then(Value::as_array);
+        let top = result.get("topCandidates").and_then(Value::as_array);
+        let entries: Vec<TokenLogprob> = chosen
+            .into_iter()
+            .flatten()
+            .enumerate()
+            .filter_map(|(position, chosen)| {
+                gemini_logprob(chosen, top.and_then(|top| top.get(position)))
+            })
+            .collect();
+        if !entries.is_empty() {
+            events.push(StreamEvent::Logprobs { index, entries });
+        }
     }
 
     /// Surfaces search / maps grounding as neutral `URL` citations on the text
@@ -543,6 +574,52 @@ fn safety_rating(value: &Value) -> SafetyRating {
             .unwrap_or(false),
         extension,
     }
+}
+
+/// Reads one chosen token and the top candidates the vendor reported for the
+/// same position, keeping any unmodelled field verbatim. A position without a
+/// token and a probability is dropped rather than guessed at.
+fn gemini_logprob(chosen: &Value, top: Option<&Value>) -> Option<TokenLogprob> {
+    let logprob = LogprobValue::new(chosen.get("logProbability").and_then(Value::as_f64)?);
+    let token = opt_str(chosen, "token")?.to_owned();
+    let alternatives = top
+        .and_then(|top| top.get("candidates"))
+        .and_then(Value::as_array)
+        .map(|candidates| candidates.iter().filter_map(alternative).collect())
+        .unwrap_or_default();
+    Some(TokenLogprob {
+        token,
+        logprob,
+        bytes: None,
+        alternatives,
+        extension: extension_of(chosen, &["token", "logProbability"]),
+    })
+}
+
+/// Reads one runner-up token from a vendor top list.
+fn alternative(value: &Value) -> Option<LogprobAlternative> {
+    let logprob = LogprobValue::new(value.get("logProbability").and_then(Value::as_f64)?);
+    let token = opt_str(value, "token")?.to_owned();
+    Some(LogprobAlternative {
+        token,
+        logprob,
+        bytes: None,
+        extension: extension_of(value, &["token", "logProbability"]),
+    })
+}
+
+/// Keeps the fields of a vendor object that the neutral vocabulary does not
+/// model.
+fn extension_of(value: &Value, typed: &[&str]) -> BTreeMap<String, Value> {
+    let mut extension = BTreeMap::new();
+    if let Some(object) = value.as_object() {
+        for (key, value) in object {
+            if !typed.contains(&key.as_str()) {
+                extension.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    extension
 }
 
 fn mime_of(data: &Value) -> Result<MimeType> {
@@ -1099,5 +1176,39 @@ mod tests {
     async fn done_and_empty_chunks_are_ignored() {
         let events = drain(&["[DONE]", r#"{"candidates":[]}"#]).await;
         assert!(events.is_empty(), "done and empty chunks yield no event");
+    }
+
+    #[tokio::test]
+    async fn logprobs_decode_against_the_streamed_text_part() {
+        let events = drain(&[
+            r#"{"candidates":[{"content":{"parts":[{"text":"Hello"}]},"logprobsResult":{"chosenCandidates":[{"token":"Hello","tokenId":123,"logProbability":-0.4},{"token":" world","logProbability":-0.2}],"topCandidates":[{"candidates":[{"token":"Hello","logProbability":-0.4},{"token":"Hi","logProbability":-1.9}]},{"candidates":[{"token":" world","logProbability":-0.2}]}],"logProbabilitySum":-0.6},"avgLogprobs":-0.3}]}"#,
+        ])
+        .await;
+
+        let text = events
+            .iter()
+            .find_map(|event| match event {
+                StreamEvent::TextDelta { index, text } => Some((*index, text.as_str())),
+                _ => None,
+            })
+            .expect("text delta");
+
+        let entries = events
+            .iter()
+            .find_map(|event| match event {
+                StreamEvent::Logprobs { index, entries } if *index == text.0 => Some(entries),
+                _ => None,
+            })
+            .expect("logprobs");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].token, "Hello");
+        assert_eq!(entries[0].logprob, LogprobValue::new(-0.4));
+        assert_eq!(entries[0].alternatives.len(), 2);
+        assert_eq!(entries[0].alternatives[1].token, "Hi");
+        assert_eq!(
+            entries[0].extension.get("tokenId"),
+            Some(&json!(123)),
+            "unmodelled vendor fields survive"
+        );
     }
 }

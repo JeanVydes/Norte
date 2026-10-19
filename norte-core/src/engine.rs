@@ -915,6 +915,7 @@ impl Engine {
         capabilities.check_tools(&model_ref, &tools)?;
         let reasoning = options.reasoning.unwrap_or(self.config.reasoning);
         capabilities.check_reasoning(&model_ref, reasoning)?;
+        capabilities.check_generation(&model_ref, &options.params)?;
         let tool_names: Vec<ToolName> = tools.iter().map(|spec| spec.name.clone()).collect();
 
         let cache_boundaries = reconstructed.cache_boundaries.clone();
@@ -1773,6 +1774,10 @@ fn stream_delta(event: &StreamEvent) -> Option<StreamDelta> {
         StreamEvent::SafetyRatings { ratings } => Some(StreamDelta::SafetyRatings {
             ratings: ratings.clone(),
         }),
+        StreamEvent::Logprobs { index, entries } => Some(StreamDelta::Logprobs {
+            index: *index,
+            entries: entries.clone(),
+        }),
         _ => None,
     }
 }
@@ -1935,6 +1940,17 @@ impl<'a> TurnBuilder<'a> {
     #[must_use]
     pub fn output_schema(mut self, schema: Value) -> Self {
         self.options.params.output_schema = Some(schema);
+        self
+    }
+
+    /// Requests token-level log probabilities for this turn: `top` runner-up
+    /// tokens per position, or `0` for the chosen token's probability alone.
+    /// The model must declare
+    /// [`Feature::Logprobs`](crate::Feature::Logprobs); the engine rejects the
+    /// turn before the request otherwise (FR-LP-1).
+    #[must_use]
+    pub fn logprobs(mut self, top: u8) -> Self {
+        self.options.params.logprobs = Some(top);
         self
     }
 

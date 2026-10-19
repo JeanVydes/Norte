@@ -5,9 +5,10 @@ use std::time::Duration;
 
 use norte_core::{
     CallId, ContinuityFragment, ContinuityScope, ContinuitySemantics, Decision, Engine,
-    EngineBuilder, EngineConfig, EngineEvent, Error, FinishReason, FnExecutor, Message,
-    MessageStatus, Part, Phase, Policy, PolicySet, PolicyView, Result, Role, Store, StreamEvent,
-    ToolApprovalPolicy, ToolContext, ToolName, ToolRegistry, ToolResultPart, WireFamily,
+    EngineBuilder, EngineConfig, EngineEvent, Error, Feature, FinishReason, FnExecutor,
+    LogprobValue, Message, MessageStatus, Part, Phase, Policy, PolicySet, PolicyView, Result, Role,
+    Store, StreamEvent, TokenLogprob, ToolApprovalPolicy, ToolContext, ToolName, ToolRegistry,
+    ToolResultPart, WireFamily,
 };
 use norte_testing::{
     InMemoryBlobStore, InMemoryStore, ScriptedModel, StrictContinuity, model, text_capabilities,
@@ -1380,5 +1381,125 @@ async fn the_results_a_policy_sees_depend_on_the_execution_path() {
     assert!(
         parallel.iter().all(|seen| seen.history == 1),
         "early dispatch sees the input only; the message is still in flight"
+    );
+}
+
+#[tokio::test]
+async fn logprobs_without_the_capability_fail_before_the_request() {
+    let scripted = Arc::new(ScriptedModel::new(model("test/echo")).turn_text("never"));
+    let harness = harness(scripted, ToolRegistry::new(), PolicySet::default());
+    let session = harness.engine.create().await.expect("create");
+
+    let error = harness
+        .engine
+        .turn(session.id)
+        .input(Message::user("go"))
+        .logprobs(3)
+        .start()
+        .finish()
+        .await
+        .expect_err("capability error");
+
+    assert!(matches!(error, Error::Capability { .. }));
+    assert_eq!(
+        harness.model.request_count(),
+        0,
+        "the request is rejected before the wire"
+    );
+}
+
+#[tokio::test]
+async fn a_logprob_count_above_the_cap_is_a_limit_error() {
+    let mut capabilities = text_capabilities();
+    capabilities.features.insert(Feature::Logprobs);
+    let scripted = Arc::new(
+        ScriptedModel::new(model("test/echo"))
+            .with_capabilities(capabilities)
+            .turn_text("never"),
+    );
+    let harness = harness(scripted, ToolRegistry::new(), PolicySet::default());
+    let session = harness.engine.create().await.expect("create");
+
+    let error = harness
+        .engine
+        .turn(session.id)
+        .input(Message::user("go"))
+        .logprobs(21)
+        .start()
+        .finish()
+        .await
+        .expect_err("limit error");
+
+    assert!(matches!(error, Error::LimitExceeded { limit: 20, .. }));
+    assert_eq!(harness.model.request_count(), 0);
+}
+
+#[tokio::test]
+async fn requested_logprobs_never_change_the_committed_message() {
+    let plain = Arc::new(ScriptedModel::new(model("test/echo")).turn_text("hello"));
+    let baseline = harness(plain, ToolRegistry::new(), PolicySet::default());
+    let plain_session = baseline.engine.create().await.expect("create");
+    let plain_outcome = baseline
+        .engine
+        .send(plain_session.id, Message::user("go"))
+        .finish()
+        .await
+        .expect("turn");
+    let plain_head = plain_outcome.session.head.expect("head");
+    let plain_message = baseline.store.node(plain_head).await.expect("node").message;
+
+    let mut capabilities = text_capabilities();
+    capabilities.features.insert(Feature::Logprobs);
+    let scripted = Arc::new(
+        ScriptedModel::new(model("test/echo"))
+            .with_capabilities(capabilities)
+            .turn(vec![
+                StreamEvent::TextStart { index: 0 },
+                StreamEvent::TextDelta {
+                    index: 0,
+                    text: "hello".to_owned(),
+                },
+                StreamEvent::Logprobs {
+                    index: 0,
+                    entries: vec![TokenLogprob {
+                        token: "hello".to_owned(),
+                        logprob: LogprobValue::new(-0.25),
+                        bytes: Some(vec![104]),
+                        alternatives: Vec::new(),
+                        extension: std::collections::BTreeMap::new(),
+                    }],
+                },
+                StreamEvent::Finish(FinishReason::Stop),
+            ]),
+    );
+    let harness = harness(scripted, ToolRegistry::new(), PolicySet::default());
+    let session = harness.engine.create().await.expect("create");
+    let outcome = harness
+        .engine
+        .turn(session.id)
+        .input(Message::user("go"))
+        .logprobs(2)
+        .start()
+        .finish()
+        .await
+        .expect("turn");
+
+    let head = outcome.session.head.expect("head");
+    let message = harness.store.node(head).await.expect("node").message;
+    assert_eq!(
+        serde_json::to_vec(&message.parts).expect("serialize"),
+        serde_json::to_vec(&plain_message.parts).expect("serialize"),
+        "log probabilities never enter the message parts"
+    );
+    assert_ne!(
+        message
+            .origin
+            .as_ref()
+            .and_then(|origin| origin.request_digest.as_ref()),
+        plain_message
+            .origin
+            .as_ref()
+            .and_then(|origin| origin.request_digest.as_ref()),
+        "the digest hashes the request, so it does record that the turn asked"
     );
 }

@@ -6,6 +6,7 @@ use crate::domain::media::{MediaKind, MimeType};
 use crate::domain::part::Part;
 use crate::error::{Error, Result};
 use crate::id::ModelRef;
+use crate::model::{GenerationParams, MAX_TOP_LOGPROBS};
 use crate::tool::ToolSpec;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -176,6 +177,8 @@ pub enum Feature {
     ParallelToolCalls,
     ForcedToolChoice,
     Batch,
+    /// Token-level log probabilities (`top_logprobs`) for a turn.
+    Logprobs,
 }
 
 /// The kinds of structured output a model can produce.
@@ -336,6 +339,35 @@ impl Capabilities {
                     feature: format!("tool kind {:?} ({})", tool.kind, tool.name),
                 });
             }
+        }
+        Ok(())
+    }
+
+    /// Fails when the model cannot honor a generation parameter the turn asks
+    /// for. Only `logprobs` is gated today; the other parameters are either
+    /// wire-level no-ops or covered by the modality, tool and reasoning checks
+    /// (FR-LP-1).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Capability`] when the model does not declare
+    /// [`Feature::Logprobs`], and [`Error::LimitExceeded`] above
+    /// [`MAX_TOP_LOGPROBS`].
+    pub fn check_generation(&self, model: &ModelRef, params: &GenerationParams) -> Result<()> {
+        let Some(top) = params.logprobs else {
+            return Ok(());
+        };
+        if top > MAX_TOP_LOGPROBS {
+            return Err(Error::LimitExceeded {
+                what: "logprobs".to_owned(),
+                limit: usize::from(MAX_TOP_LOGPROBS),
+            });
+        }
+        if !self.supports_feature(Feature::Logprobs) {
+            return Err(Error::Capability {
+                model: model.clone(),
+                feature: "log probabilities".to_owned(),
+            });
         }
         Ok(())
     }

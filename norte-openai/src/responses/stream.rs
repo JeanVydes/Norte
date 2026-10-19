@@ -3,9 +3,10 @@ use std::collections::BTreeMap;
 use base64::Engine as _;
 use futures_util::StreamExt;
 use norte_core::{
-    CallId, Citation, CitationSource, Error, ExtensionPart, FinishReason, MediaKind, MediaMetadata,
-    MimeType, ModelStream, Part, ProviderError, ProviderErrorKind, ProviderId, ProviderTool,
-    ReasoningVisibility, RefusalPart, Result, StreamEvent, Usage, VendorUsage,
+    CallId, Citation, CitationSource, Error, ExtensionPart, FinishReason, LogprobAlternative,
+    LogprobValue, MediaKind, MediaMetadata, MimeType, ModelStream, Part, ProviderError,
+    ProviderErrorKind, ProviderId, ProviderTool, ReasoningVisibility, RefusalPart, Result,
+    StreamEvent, TokenLogprob, Usage, VendorUsage,
 };
 use norte_http::SseStream;
 use serde_json::Value;
@@ -212,10 +213,17 @@ impl Decoder {
     }
 
     fn text_delta(value: &Value) -> Result<Vec<StreamEvent>> {
-        Ok(vec![StreamEvent::TextDelta {
-            index: u32_field(value, "output_index")?,
+        let index = u32_field(value, "output_index")?;
+        let mut events = vec![StreamEvent::TextDelta {
+            index,
             text: str_field(value, "delta")?.to_owned(),
-        }])
+        }];
+        if let Some(logprobs) = value.get("logprobs").filter(|value| !value.is_null()) {
+            if let Some(event) = logprobs_event(logprobs, index) {
+                events.push(event);
+            }
+        }
+        Ok(events)
     }
 
     fn reasoning_delta(
@@ -345,6 +353,75 @@ impl Decoder {
             _ => FinishReason::Stop,
         }
     }
+}
+
+/// Surfaces the probabilities the vendor reported for one output-text delta
+/// (FR-LP-3). Informational: the accumulator drops the event, so nothing here
+/// reaches the committed message.
+fn logprobs_event(value: &Value, index: u32) -> Option<StreamEvent> {
+    let entries: Vec<TokenLogprob> = value.as_array()?.iter().filter_map(token_logprob).collect();
+    (!entries.is_empty()).then_some(StreamEvent::Logprobs { index, entries })
+}
+
+/// Reads one vendor logprob entry, keeping any field the neutral vocabulary does
+/// not model in `extension`. Without a token and a probability the entry is
+/// dropped rather than guessed at.
+fn token_logprob(value: &Value) -> Option<TokenLogprob> {
+    let mut fields = value.as_object()?.clone();
+    let Some(Value::String(token)) = fields.remove("token") else {
+        return None;
+    };
+    let logprob = fields
+        .remove("logprob")
+        .and_then(|value| value.as_f64())
+        .map(LogprobValue::new)?;
+    let bytes = match fields.remove("bytes") {
+        Some(Value::Array(bytes)) => Some(
+            bytes
+                .iter()
+                .filter_map(|byte| byte.as_u64().and_then(|byte| u8::try_from(byte).ok()))
+                .collect(),
+        ),
+        _ => None,
+    };
+    let alternatives = match fields.remove("top_logprobs") {
+        Some(Value::Array(top)) => top.iter().filter_map(alternative).collect(),
+        _ => Vec::new(),
+    };
+    Some(TokenLogprob {
+        token,
+        logprob,
+        bytes,
+        alternatives,
+        extension: fields.into_iter().collect(),
+    })
+}
+
+/// Reads one runner-up token from a vendor top list.
+fn alternative(value: &Value) -> Option<LogprobAlternative> {
+    let mut fields = value.as_object()?.clone();
+    let Some(Value::String(token)) = fields.remove("token") else {
+        return None;
+    };
+    let logprob = fields
+        .remove("logprob")
+        .and_then(|value| value.as_f64())
+        .map(LogprobValue::new)?;
+    let bytes = match fields.remove("bytes") {
+        Some(Value::Array(bytes)) => Some(
+            bytes
+                .iter()
+                .filter_map(|byte| byte.as_u64().and_then(|byte| u8::try_from(byte).ok()))
+                .collect(),
+        ),
+        _ => None,
+    };
+    Some(LogprobAlternative {
+        token,
+        logprob,
+        bytes,
+        extension: fields.into_iter().collect(),
+    })
 }
 
 /// Maps one output-text annotation onto the neutral [`Citation`].
@@ -943,5 +1020,49 @@ mod tests {
             done.is_empty(),
             "the sentinel and the creation marker are dropped"
         );
+    }
+
+    #[tokio::test]
+    async fn a_text_delta_carries_the_logprobs_of_its_index() {
+        let events = drain(&[
+            r#"{"type":"response.output_text.delta","output_index":2,"content_index":0,"delta":"Hi","logprobs":[{"token":"Hi","logprob":-0.1,"top_logprobs":[{"token":"Hello","logprob":-2.0}]}]}"#,
+        ])
+        .await;
+
+        let text = events
+            .iter()
+            .find_map(|event| match event {
+                StreamEvent::TextDelta { index, text } => Some((*index, text.as_str())),
+                _ => None,
+            })
+            .expect("text delta");
+        assert_eq!(text, (2, "Hi"));
+
+        let entries = events
+            .iter()
+            .find_map(|event| match event {
+                StreamEvent::Logprobs { index, entries } if *index == 2 => Some(entries),
+                _ => None,
+            })
+            .expect("logprobs");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].token, "Hi");
+        assert_eq!(entries[0].logprob, LogprobValue::new(-0.1));
+        assert_eq!(
+            entries[0].bytes, None,
+            "this wire carries no bytes for the token"
+        );
+        assert_eq!(entries[0].alternatives[0].token, "Hello");
+        assert_eq!(entries[0].alternatives[0].logprob, LogprobValue::new(-2.0));
+    }
+
+    #[tokio::test]
+    async fn a_text_delta_without_logprobs_yields_text_alone() {
+        let events = drain(&[
+            r#"{"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"plain"}"#,
+        ])
+        .await;
+        assert_eq!(events.len(), 1, "no probability event is invented");
+        assert!(matches!(events[0], StreamEvent::TextDelta { .. }));
     }
 }

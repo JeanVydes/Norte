@@ -4,6 +4,7 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 
 use crate::domain::continuity::ContinuityFragment;
+use crate::domain::logprob::TokenLogprob;
 use crate::domain::media::{MediaKind, MediaMetadata, MediaPart, MediaSource, MimeType};
 use crate::domain::message::{FinishReason, Message, MessageOrigin, MessageStatus, Usage};
 use crate::domain::moderation::SafetyRating;
@@ -118,6 +119,15 @@ pub enum StreamEvent {
     /// the neutral model never gates on them (see [`SafetyRating`]).
     SafetyRatings {
         ratings: Vec<SafetyRating>,
+    },
+    /// The log probabilities of the tokens streamed for the part at `index`.
+    /// Informational: the accumulator drops the event, so the committed parts
+    /// and the reconstructed prefix are the same whether or not the turn asked
+    /// for them; only the request digest records that it did (FR-LP-2). See
+    /// [`TokenLogprob`].
+    Logprobs {
+        index: u32,
+        entries: Vec<TokenLogprob>,
     },
     Usage(Usage),
     Finish(FinishReason),
@@ -280,11 +290,10 @@ impl StreamAccumulator {
                 self.complete(index, part.clone());
                 Ok(Some(part))
             }
-            StreamEvent::Continuity { .. } | StreamEvent::SafetyRatings { .. } => Ok(None),
-            StreamEvent::Usage(usage) => {
-                self.usage = usage;
-                Ok(None)
-            }
+            StreamEvent::Continuity { .. }
+            | StreamEvent::SafetyRatings { .. }
+            | StreamEvent::Logprobs { .. } => Ok(None),
+            StreamEvent::Usage(usage) => Ok(self.set_usage(usage)),
             StreamEvent::Finish(reason) => {
                 self.finish_reason = Some(reason);
                 Ok(None)
@@ -593,6 +602,11 @@ impl StreamAccumulator {
         })
     }
 
+    fn set_usage(&mut self, usage: Usage) -> Option<Part> {
+        self.usage = usage;
+        None
+    }
+
     fn complete(&mut self, index: u32, part: Part) {
         self.partials.remove(&index);
         self.complete.insert(index, part);
@@ -656,6 +670,7 @@ pub async fn collect(model: &dyn crate::model::Model, request: ModelRequest) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::logprob::LogprobValue;
     use crate::model::StreamLimits;
 
     fn accumulator() -> StreamAccumulator {
@@ -899,5 +914,37 @@ mod tests {
                 text: "abcd".to_owned(),
             })
             .expect_err("over budget");
+    }
+
+    #[test]
+    fn logprobs_do_not_reach_the_accumulator() {
+        let mut accumulator = accumulator();
+        accumulator
+            .apply(StreamEvent::TextStart { index: 0 })
+            .expect("start");
+        accumulator
+            .apply(StreamEvent::Logprobs {
+                index: 0,
+                entries: vec![TokenLogprob {
+                    token: "rust".to_owned(),
+                    logprob: LogprobValue::new(-0.25),
+                    bytes: None,
+                    alternatives: Vec::new(),
+                    extension: BTreeMap::new(),
+                }],
+            })
+            .expect("logprobs");
+        accumulator
+            .apply(StreamEvent::TextDelta {
+                index: 0,
+                text: "rust".to_owned(),
+            })
+            .expect("delta");
+        let result = accumulator.finish().expect("finish");
+        assert_eq!(
+            result.parts,
+            vec![Part::text("rust")],
+            "probabilities are informational and leave no part behind"
+        );
     }
 }

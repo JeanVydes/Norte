@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::capability::ReasoningRequest;
+use crate::domain::logprob::TokenLogprob;
 use crate::domain::moderation::SafetyRating;
 use crate::domain::part::Part;
 use crate::domain::session::Phase;
@@ -42,6 +43,10 @@ pub enum StreamDelta {
     },
     SafetyRatings {
         ratings: Vec<SafetyRating>,
+    },
+    Logprobs {
+        index: u32,
+        entries: Vec<TokenLogprob>,
     },
 }
 

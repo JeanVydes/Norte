@@ -10,12 +10,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use norte_core::{
-    Conversation, Digest, Engine, EngineBuilder, EngineConfig, EngineEvent, Error, FnExecutor,
-    GenerationParams, Message, Model, ModelRequest, Observer, ReasoningEffort, ReasoningRequest,
-    Result, ToolName, ToolRegistry, TurnOptions,
+    Conversation, Digest, Engine, EngineBuilder, EngineConfig, EngineEvent, Error, Feature,
+    FnExecutor, GenerationParams, Message, Model, ModelRequest, Observer, ReasoningEffort,
+    ReasoningRequest, Result, ToolName, ToolRegistry, TurnOptions,
 };
 use norte_testing::{
     InMemoryBlobStore, InMemoryStore, ProbeModel, RecordingObserver, ScriptedModel, model,
+    text_capabilities,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -71,8 +72,12 @@ fn registry() -> ToolRegistry {
 }
 
 fn probe() -> Arc<ProbeModel> {
+    let mut capabilities = text_capabilities();
+    capabilities.features.insert(Feature::Logprobs);
     Arc::new(ProbeModel::new(Arc::new(
-        ScriptedModel::new(model("test/echo")).turn_text("unused"),
+        ScriptedModel::new(model("test/echo"))
+            .with_capabilities(capabilities)
+            .turn_text("unused"),
     )))
 }
 
@@ -211,6 +216,14 @@ async fn every_parameter_vector_is_reflected() {
             ..GenerationParams::default()
         },
         GenerationParams {
+            logprobs: Some(0),
+            ..GenerationParams::default()
+        },
+        GenerationParams {
+            logprobs: Some(20),
+            ..GenerationParams::default()
+        },
+        GenerationParams {
             temperature: Some(0.3),
             top_p: Some(0.9),
             top_k: Some(50),
@@ -218,6 +231,7 @@ async fn every_parameter_vector_is_reflected() {
             stop_sequences: vec!["a".to_owned(), "b".to_owned()],
             seed: Some(42),
             output_schema: Some(json!(true)),
+            logprobs: Some(5),
         },
     ];
 
@@ -472,6 +486,7 @@ async fn export_captures_and_import_restores_request_config() {
         params: GenerationParams {
             temperature: Some(1.0),
             top_k: Some(7),
+            logprobs: Some(6),
             ..GenerationParams::default()
         },
         reasoning: Some(ReasoningRequest::Effort(ReasoningEffort::High)),

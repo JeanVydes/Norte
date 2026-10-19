@@ -29,6 +29,10 @@ pub const TURN_OPTIONS_KEY: &str = "norte.turn_options";
 /// hosts must not write it, and it is removed once the tool message commits.
 pub const PARTIAL_TOOLS_KEY: &str = "norte.partial_tools";
 
+/// The largest `top_logprobs` count the neutral model accepts. Every supported
+/// wire family caps the count at 20.
+pub const MAX_TOP_LOGPROBS: u8 = 20;
+
 /// Sampling and output controls shared by every adapter.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct GenerationParams {
@@ -48,6 +52,14 @@ pub struct GenerationParams {
     /// output.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_schema: Option<Value>,
+    /// Token-level log probabilities for this turn: `Some(0)` reports only the
+    /// chosen token's probability, `Some(n)` adds up to `n` runner-up tokens,
+    /// and `None` keeps probabilities off the wire entirely. The engine rejects
+    /// a count above [`MAX_TOP_LOGPROBS`], and rejects any count when the model
+    /// does not declare [`Feature::Logprobs`](crate::Feature::Logprobs), before
+    /// the request is built (FR-LP-1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logprobs: Option<u8>,
 }
 
 impl GenerationParams {
@@ -79,6 +91,7 @@ impl GenerationParams {
                 .output_schema
                 .clone()
                 .or_else(|| base.output_schema.clone()),
+            logprobs: self.logprobs.or(base.logprobs),
         }
     }
 }

@@ -33,6 +33,7 @@ pub use domain::continuity::{
     ContinuityFragment, ContinuityScope, ContinuitySemantics, ContinuityToken, ReplayDecision,
 };
 pub use domain::conversation::{CONVERSATION_SCHEMA_VERSION, Conversation};
+pub use domain::logprob::{LogprobAlternative, LogprobValue, TokenLogprob};
 pub use domain::media::{
     MediaKind, MediaMetadata, MediaPart, MediaSource, MimeType, ProviderFileRef,
 };
@@ -64,8 +65,9 @@ pub use layer::{
 pub use media_adapter::{MediaAdapter, ProviderFiles};
 pub use memory::{InMemoryBlobStore, InMemoryStore};
 pub use model::{
-    ContinuityAdapter, GenerationParams, Model, ModelRequest, ModelStream, PARTIAL_TOOLS_KEY,
-    SESSION_EXTENSION, StreamLimits, TURN_OPTIONS_KEY, TurnOptions, splice_vendor_extensions,
+    ContinuityAdapter, GenerationParams, MAX_TOP_LOGPROBS, Model, ModelRequest, ModelStream,
+    PARTIAL_TOOLS_KEY, SESSION_EXTENSION, StreamLimits, TURN_OPTIONS_KEY, TurnOptions,
+    splice_vendor_extensions,
 };
 pub use norte_macros::tool;
 pub use observer::{Observer, ObserverSet, StreamTransform};

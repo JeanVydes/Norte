@@ -2,9 +2,9 @@ use std::collections::BTreeMap;
 
 use futures_util::StreamExt;
 use norte_core::{
-    CallId, Citation, CitationSource, Error, FinishReason, MediaKind, MediaMetadata, MimeType,
-    ModelStream, ProviderError, ProviderErrorKind, ReasoningVisibility, Result, StreamEvent, Usage,
-    VendorUsage,
+    CallId, Citation, CitationSource, Error, FinishReason, LogprobAlternative, LogprobValue,
+    MediaKind, MediaMetadata, MimeType, ModelStream, ProviderError, ProviderErrorKind,
+    ReasoningVisibility, Result, StreamEvent, TokenLogprob, Usage, VendorUsage,
 };
 use norte_http::SseStream;
 use serde_json::Value;
@@ -106,6 +106,9 @@ impl Decoder {
         {
             if let Some(delta) = choice.get("delta") {
                 self.delta(delta, &mut events)?;
+            }
+            if let Some(logprobs) = choice.get("logprobs").filter(|value| !value.is_null()) {
+                push_logprobs(logprobs, &mut events);
             }
             if let Some(finish) = choice.get("finish_reason").and_then(Value::as_str) {
                 events.extend(self.flush_audio());
@@ -342,6 +345,82 @@ impl Decoder {
         }
         Ok(())
     }
+}
+
+/// Surfaces the probabilities the vendor reported for the text and refusal
+/// parts of one chunk (FR-LP-3). Informational: the accumulator drops the
+/// event, so nothing here reaches the committed message.
+fn push_logprobs(value: &Value, events: &mut Vec<StreamEvent>) {
+    for (field, index) in [("content", TEXT_INDEX), ("refusal", REFUSAL_INDEX)] {
+        let Some(entries) = value.get(field).and_then(Value::as_array) else {
+            continue;
+        };
+        let entries: Vec<TokenLogprob> = entries.iter().filter_map(token_logprob).collect();
+        if !entries.is_empty() {
+            events.push(StreamEvent::Logprobs { index, entries });
+        }
+    }
+}
+
+/// Reads one vendor logprob entry, keeping any field the neutral vocabulary does
+/// not model in `extension`. Without a token and a probability the entry is
+/// dropped rather than guessed at.
+fn token_logprob(value: &Value) -> Option<TokenLogprob> {
+    let mut fields = value.as_object()?.clone();
+    let Some(Value::String(token)) = fields.remove("token") else {
+        return None;
+    };
+    let logprob = fields
+        .remove("logprob")
+        .and_then(|value| value.as_f64())
+        .map(LogprobValue::new)?;
+    let bytes = match fields.remove("bytes") {
+        Some(Value::Array(bytes)) => Some(
+            bytes
+                .iter()
+                .filter_map(|byte| byte.as_u64().and_then(|byte| u8::try_from(byte).ok()))
+                .collect(),
+        ),
+        _ => None,
+    };
+    let alternatives = match fields.remove("top_logprobs") {
+        Some(Value::Array(top)) => top.iter().filter_map(alternative).collect(),
+        _ => Vec::new(),
+    };
+    Some(TokenLogprob {
+        token,
+        logprob,
+        bytes,
+        alternatives,
+        extension: fields.into_iter().collect(),
+    })
+}
+
+/// Reads one runner-up token from a vendor top list.
+fn alternative(value: &Value) -> Option<LogprobAlternative> {
+    let mut fields = value.as_object()?.clone();
+    let Some(Value::String(token)) = fields.remove("token") else {
+        return None;
+    };
+    let logprob = fields
+        .remove("logprob")
+        .and_then(|value| value.as_f64())
+        .map(LogprobValue::new)?;
+    let bytes = match fields.remove("bytes") {
+        Some(Value::Array(bytes)) => Some(
+            bytes
+                .iter()
+                .filter_map(|byte| byte.as_u64().and_then(|byte| u8::try_from(byte).ok()))
+                .collect(),
+        ),
+        _ => None,
+    };
+    Some(LogprobAlternative {
+        token,
+        logprob,
+        bytes,
+        extension: fields.into_iter().collect(),
+    })
 }
 
 /// Maps one chat-completions annotation onto the neutral [`Citation`].
@@ -825,6 +904,60 @@ mod tests {
         assert!(
             drain(&["[DONE]"]).await.is_empty(),
             "the done sentinel yields no event"
+        );
+    }
+
+    #[tokio::test]
+    async fn logprobs_decode_for_the_text_and_refusal_parts() {
+        let events = drain(&[
+            r#"{"choices":[{"index":0,"delta":{"content":"H"},"logprobs":{"content":[{"token":"H","logprob":-0.25,"bytes":[72],"top_logprobs":[{"token":"h","logprob":-1.5,"bytes":[104],"vendor_field":7}]}]},"finish_reason":null}]}"#,
+            r#"{"choices":[{"index":0,"delta":{"refusal":"no"},"logprobs":{"refusal":[{"token":"no","logprob":-0.1,"bytes":[110,111],"top_logprobs":[]}]},"finish_reason":null}]}"#,
+        ])
+        .await;
+
+        let entries = events
+            .iter()
+            .find_map(|event| match event {
+                StreamEvent::Logprobs { index, entries } if *index == 1 => Some(entries),
+                _ => None,
+            })
+            .expect("text logprobs");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].token, "H");
+        assert_eq!(entries[0].logprob, LogprobValue::new(-0.25));
+        assert_eq!(entries[0].bytes, Some(vec![72]));
+        assert_eq!(entries[0].alternatives.len(), 1);
+        assert_eq!(entries[0].alternatives[0].token, "h");
+        assert_eq!(entries[0].alternatives[0].logprob, LogprobValue::new(-1.5));
+        assert_eq!(entries[0].alternatives[0].bytes, Some(vec![104]));
+        assert_eq!(
+            entries[0].alternatives[0].extension.get("vendor_field"),
+            Some(&serde_json::json!(7)),
+            "unmodelled vendor fields survive"
+        );
+
+        let refusal = events
+            .iter()
+            .find_map(|event| match event {
+                StreamEvent::Logprobs { index, entries } if *index == 2 => Some(entries),
+                _ => None,
+            })
+            .expect("refusal logprobs");
+        assert_eq!(refusal[0].token, "no");
+        assert_eq!(refusal[0].bytes, Some(vec![110, 111]));
+    }
+
+    #[tokio::test]
+    async fn an_entry_without_a_probability_is_dropped() {
+        let events = drain(&[
+            r#"{"choices":[{"index":0,"delta":{"content":"x"},"logprobs":{"content":[{"token":"x"}]},"finish_reason":null}]}"#,
+        ])
+        .await;
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, StreamEvent::Logprobs { .. })),
+            "a malformed entry is skipped rather than guessed at"
         );
     }
 }

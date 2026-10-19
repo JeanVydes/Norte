@@ -85,6 +85,12 @@ pub(crate) fn build(
     if let Some(top_p) = request.params.top_p {
         body.insert("top_p".to_owned(), json!(top_p));
     }
+    if let Some(top) = request.params.logprobs {
+        body.insert("logprobs".to_owned(), Value::Bool(true));
+        if top > 0 {
+            body.insert("top_logprobs".to_owned(), json!(top));
+        }
+    }
     if !quirks.contains(Quirk::NoSeed) {
         if let Some(seed) = request.params.seed {
             body.insert("seed".to_owned(), json!(seed));
@@ -739,5 +745,34 @@ mod tests {
         let error =
             build(&model(), &continuity(), &Quirks::new(), &request).expect_err("collision");
         assert!(matches!(error, Error::Capability { .. }));
+    }
+
+    #[test]
+    fn logprobs_ask_for_probabilities_and_a_count() {
+        let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
+        request.params.logprobs = Some(5);
+        let body = build(&model(), &continuity(), &Quirks::new(), &request).expect("build");
+        assert_eq!(body["logprobs"], true);
+        assert_eq!(body["top_logprobs"], 5);
+    }
+
+    #[test]
+    fn a_zero_count_asks_for_the_chosen_token_only() {
+        let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
+        request.params.logprobs = Some(0);
+        let body = build(&model(), &continuity(), &Quirks::new(), &request).expect("build");
+        assert_eq!(body["logprobs"], true);
+        assert!(
+            body.get("top_logprobs").is_none(),
+            "a zero count needs no top list"
+        );
+    }
+
+    #[test]
+    fn logprobs_stay_off_the_wire_when_unset() {
+        let request = ModelRequest::new(model(), vec![Message::user("hi")]);
+        let body = build(&model(), &continuity(), &Quirks::new(), &request).expect("build");
+        assert!(body.get("logprobs").is_none());
+        assert!(body.get("top_logprobs").is_none());
     }
 }

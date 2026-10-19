@@ -361,6 +361,12 @@ fn generation_config(request: &ModelRequest) -> serde_json::Map<String, Value> {
     if let Some(thinking) = thinking_config(request.reasoning) {
         config.insert("thinkingConfig".to_owned(), thinking);
     }
+    if let Some(top) = request.params.logprobs {
+        config.insert("responseLogprobs".to_owned(), Value::Bool(true));
+        if top > 0 {
+            config.insert("logprobs".to_owned(), json!(top));
+        }
+    }
     config
 }
 
@@ -796,5 +802,37 @@ mod tests {
             .insert("google.gemini:contents".to_owned(), serde_json::json!([]));
         let error = build(&model(), &continuity(), &request).expect_err("collision");
         assert!(matches!(error, Error::Capability { .. }));
+    }
+
+    #[test]
+    fn logprobs_turn_on_the_result_and_the_count() {
+        let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
+        request.params.logprobs = Some(4);
+        let body = build(&model(), &continuity(), &request).expect("build");
+        assert_eq!(body["generationConfig"]["responseLogprobs"], true);
+        assert_eq!(body["generationConfig"]["logprobs"], 4);
+    }
+
+    #[test]
+    fn a_zero_count_asks_for_the_chosen_token_only() {
+        let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
+        request.params.logprobs = Some(0);
+        let body = build(&model(), &continuity(), &request).expect("build");
+        assert_eq!(body["generationConfig"]["responseLogprobs"], true);
+        assert!(
+            body["generationConfig"].get("logprobs").is_none(),
+            "a zero count needs no top list"
+        );
+    }
+
+    #[test]
+    fn logprobs_stay_out_of_the_counting_bodies() {
+        let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
+        request.params.logprobs = Some(4);
+        let body = build_count(&model(), &continuity(), &request).expect("build");
+        assert!(
+            body.get("generationConfig").is_none(),
+            "a token-counting call sends no sampling parameters"
+        );
     }
 }

@@ -54,14 +54,16 @@ pub(crate) fn build(
             Value::Array(build_tools(model, &request.tools)?),
         );
     }
+    let mut include: Vec<Value> = Vec::new();
     if let Some(reasoning) = build_reasoning(request.reasoning) {
         body.insert("reasoning".to_owned(), reasoning);
-        body.insert(
-            "include".to_owned(),
-            Value::Array(vec![Value::String(
-                "reasoning.encrypted_content".to_owned(),
-            )]),
-        );
+        include.push(Value::String("reasoning.encrypted_content".to_owned()));
+    }
+    if request.params.logprobs.is_some() {
+        include.push(Value::String("message.output_text.logprobs".to_owned()));
+    }
+    if !include.is_empty() {
+        body.insert("include".to_owned(), Value::Array(include));
     }
     if let Some(text) = build_text(request) {
         body.insert("text".to_owned(), text);
@@ -74,6 +76,9 @@ pub(crate) fn build(
     }
     if let Some(top_p) = request.params.top_p {
         body.insert("top_p".to_owned(), json!(top_p));
+    }
+    if let Some(top) = request.params.logprobs {
+        body.insert("top_logprobs".to_owned(), json!(top));
     }
     if let Some(key) = request
         .extensions
@@ -819,5 +824,38 @@ mod tests {
         );
         let error = build(&model(), &continuity(), &request).expect_err("collision");
         assert!(matches!(error, Error::Capability { .. }));
+    }
+
+    #[test]
+    fn logprobs_add_the_include_marker_and_the_count() {
+        let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
+        request.params.logprobs = Some(3);
+        let body = build(&model(), &continuity(), &request).expect("build");
+        assert_eq!(body["top_logprobs"], 3);
+        assert_eq!(body["include"], json!(["message.output_text.logprobs"]));
+    }
+
+    #[test]
+    fn logprobs_join_the_reasoning_include_list() {
+        let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
+        request.params.logprobs = Some(0);
+        request.reasoning = ReasoningRequest::Effort(ReasoningEffort::Low);
+        let body = build(&model(), &continuity(), &request).expect("build");
+        assert_eq!(body["top_logprobs"], 0);
+        assert_eq!(
+            body["include"],
+            json!([
+                "reasoning.encrypted_content",
+                "message.output_text.logprobs"
+            ])
+        );
+    }
+
+    #[test]
+    fn logprobs_leave_the_request_untouched_when_unset() {
+        let request = ModelRequest::new(model(), vec![Message::user("hi")]);
+        let body = build(&model(), &continuity(), &request).expect("build");
+        assert!(body.get("top_logprobs").is_none());
+        assert!(body.get("include").is_none());
     }
 }

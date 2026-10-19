@@ -20,6 +20,7 @@
 
 - [Switch provider without touching the app](guides/switch-provider.md)
 - [Add a tool](guides/add-a-tool.md)
+- [Handle media](guides/handle-media.md)
 - [Stream to a UI](guides/stream-to-a-ui.md)
 - [Persist a session](guides/persist-a-session.md)
 - [Test without a network](guides/test-without-a-network.md)

@@ -153,11 +153,11 @@ A media source is one of: `Blob(BlobId)`, `Url`, `ProviderFile` (vendor file id 
 
 **FR-PART-4.** A `ProviderFile` reference that has expired shall be re-uploaded from the blob automatically when the blob still exists; otherwise the request fails with a typed error naming the part.
 
-**Where it lives:** `norte-core/src/domain/media.rs` (`deserialize`), `norte-core/src/media_adapter.rs` (`ingest`, `resolve`), `norte-http/src/media.rs` (`new`).
+**Where it lives:** `norte-core/src/domain/media.rs` (`deserialize`), `norte-core/src/media_adapter.rs` (`ingest`, `resolve`), `norte-http/src/media.rs` (`new`), `norte-openai/src/files.rs` (`upload`), `norte-anthropic/src/files.rs` (`upload`), `norte-gemini/src/files.rs` (`upload`).
 
 **FR-PART-5.** Model-generated media that a vendor delivers as a `Url` or `ProviderFile` rather than stream chunks shall be ingested into `BlobStore` before the assistant message is committed, so the graph never depends on an ephemeral, expiring URL.
 
-**Where it lives:** `norte-core/src/media_adapter.rs` (`resolve`), `norte-http/src/media.rs` (`new`), `norte-testing/tests/media.rs`.
+**Where it lives:** `norte-core/src/media_adapter.rs` (`resolve`), `norte-http/src/media.rs` (`new`), `norte-openai/src/files.rs` (`download`), `norte-anthropic/src/files.rs` (`download`), `norte-gemini/src/files.rs` (`download`), `norte-testing/tests/media.rs`.
 
 **FR-PART-6.** Media preprocessing (resize, re-encode, transcode) is an optional, host-configured building block. Core defines the contract only; it ships no policy and no model limits. Preprocessing must be idempotent so applying it on every turn does not shrink content repeatedly.
 
@@ -464,7 +464,7 @@ The default tools suite (`norte-tools`) ships a production-grade command executo
 
 **Where it lives:** `norte-tools/src/edit.rs` (`unknown_arguments_are_rejected_before_the_body_runs`), `norte-tools/src/read.rs` (`unknown_arguments_are_rejected_before_the_body_runs`), `norte-tools/src/write.rs` (`unknown_arguments_are_rejected_before_the_body_runs`).
 
-**FR-TOOL-3.** Tool results may contain text, media parts and optional structured JSON; the engine packages them into a single `Tool` message for the next model turn.
+**FR-TOOL-3.** Tool results may contain text, media parts and optional structured JSON; the engine packages them into a single `Tool` message for the next model turn. A media part inside a result is resolved like any other on the way out (FR-RECON-4): the materialization step descends into the result's parts, so a stored blob inside a tool result is rebuilt for the wire rather than dropped. A wire whose tool-result field carries text alone refuses the media with a typed capability error instead of sending the result with the media silently gone.
 
 **FR-TOOL-4.** A tool may declare its name and description with an attribute macro applied to the type that implements the executor. Registration then resolves the argument and result types from that executor implementation, so the declaration never restates them.
 
@@ -475,6 +475,10 @@ The default tools suite (`norte-tools`) ships a production-grade command executo
 **FR-TOOL-6.** The argument schema the adapters put on the wire is self-contained: before the declaration leaves the engine, local references are expanded into place and the definition block is dropped. A model that does not resolve `$ref` therefore still sees the whole shape and stops guessing at it — the failure mode is sending a string where an object is required. Both spellings of the block are honoured, `$defs` and draft-07's `definitions`, so a schema that arrives from an MCP server is expanded as well. A reference that cannot be expanded (an unknown name, or a recursive type, where expansion would not terminate) is left intact together with its definitions, so the document stays valid either way. Provider-supplied declarations are re-emitted verbatim and are not rewritten. The prose of a declaration answers to two audiences and the two are kept apart: the `///` comments in an executor crate are rustdoc for whoever maintains the executor, while `#[schemars(description = ..)]` and `#[schemars(example = ..)]` author the text the model reads (a tool's own description is already a model-facing literal in its declaration). An internal requirement code or an unresolved rustdoc link therefore never reaches the wire, and a nested shape the field name does not describe — a line range, a search-and-replace pair — is shown with an example instead of being left to guessing. Where serde carries the shape with a tag, the tag is written into the schema as the variant's discriminator: an internally tagged enum (`#[serde(tag = ..)]`) also derives `#[schemars(tag = ..)]`, so each variant names its tag with a `const` and a model that never reads the example still learns the key instead of spending a request on it — the shape that separates a program invocation from a shell script is the one seen live.
 
 **Where it lives:** `examples/cookbook/examples/tools.rs`, `norte-tools/tests/wire_schema.rs`.
+
+**FR-TOOL-7.** A tool call may be given host context that is not part of the conversation. The host registers a provider on the engine; immediately before each execution — the first attempt and one that resumes a parked call alike — the engine asks it for an ordered map, keyed by the call's own facts (session, turn, call id, tool and the arguments after any policy transform), and hands the result to the executor as `ToolContext::metadata`. Nothing is persisted: the map is re-derived on every execution and never reaches the graph, the wire or an export, so a conversation exported, imported or resumed on another host runs its tools against *that* host's context instead of a stale copy from the one that recorded it — which is also what makes a parked call worth resuming, since the data it needs may exist only at the moment it runs. The provider is a pure callback with no fallible return; an engine configured without one supplies an empty map, so a tool that reads context works unchanged where no host has context to give. Because the engine asks right before it executes, the information is as fresh as the call and never visible to the model.
+
+**Where it lives:** `norte-core/src/tool/mod.rs` (`ToolContext`, `ToolCallInfo`, `ToolMetadataProvider`), `norte-core/src/engine.rs` (`call_metadata`).
 
 ### 10.4 File Executors
 
@@ -589,7 +593,7 @@ Input media map onto each wire as follows; a kind a wire cannot express is a typ
 | Audio | `inlineData` / `fileData` | — typed error | `input_file` | `input_audio` (inline `wav` / `mp3`) |
 | Video | `inlineData` / `fileData` | — typed error | `input_file` | — typed error |
 
-Model-generated media streams back through the same events: audio output arrives as `MediaStart` / `MediaChunk` with its transcript and (on Chat) the vendor audio id settled by a `MediaMetadata` event, and image-generation output as an image media part. An assistant audio turn is replayed by reference (the vendor id), never by re-sending the bytes as input.
+Model-generated media streams back through the same events: audio output arrives as `MediaStart` / `MediaChunk` with its transcript and (on Chat) the vendor audio id settled by a `MediaMetadata` event, and image-generation output as an image media part. An assistant audio turn is replayed by reference (the vendor id), never by re-sending the bytes as input. A media part inside a tool result rides the same wires as any other input media — the materializer descends into the result's parts — except that a wire whose tool-result field is text-only refuses it with a typed capability error rather than sending the result with the media silently gone (FR-TOOL-3).
 
 ### 12.1 OpenAI
 
@@ -623,7 +627,9 @@ Model-generated media streams back through the same events: audio output arrives
 
 **Where it lives:** `norte-anthropic/src/messages/stream.rs` (`block_stop`), `norte-gemini/src/generate/stream.rs` (`code_execution_result`, `part`, `uri_only`), `norte-openai/src/responses/stream.rs` (`output_item_done`).
 
-**FR-ADP-4.** Adapters implement media materialization (FR-RECON-4) and, where a vendor returns generated media as a URL or file, its ingestion into `BlobStore` (FR-PART-5).
+**FR-ADP-4.** Adapters implement media materialization (FR-RECON-4) and, where a vendor returns generated media as a URL or file, its ingestion into `BlobStore` (FR-PART-5). A vendor with a server-side file store also implements the host-wired `ProviderFiles` port — upload from bytes, download back — for the three vendors that document one (OpenAI, Anthropic and Gemini), so a `ProviderFile` reference that lapses can be re-created from its blob instead of dropped. The port is per vendor and off by default: a vendor with no file API leaves it unset, and the engine then fails an expired reference with a typed error naming the part rather than sending a request missing its media (FR-PART-4). Where a vendor documents the store but honours one direction only — Anthropic and Gemini download only files the vendor generated, never an uploaded one — the adapter surfaces the vendor's own typed error instead of pretending the direction exists. A Files call against a vendor that does not implement the route surfaces that vendor's typed error (a `404` read as `NotFound`), so a host that guessed wrong sees the cause rather than an empty reference.
+
+**Where it lives:** `norte-core/src/media_adapter.rs` (`ProviderFiles`), `norte-http/src/media.rs` (`with_provider_files`), `norte-openai/src/files.rs`, `norte-anthropic/src/files.rs`, `norte-gemini/src/files.rs`, `examples/cookbook/examples/provider_files.rs`.
 
 **FR-ADP-5.** A vendor usage object is read through a claim: the adapter takes the counters it models out of a copy of the payload, and every field no claim touched is kept verbatim in `Usage::vendor`. A counter the neutral vocabulary has no field for is therefore never dropped, and an adapter that stops claiming one duplicates it visibly in `vendor` instead of losing it silently. The map serializes only when non-empty, so a payload whose every field was claimed adds no bytes, and an Anthropic usage record spread over several events is merged before it is read once, so no field is claimed twice. Being key-ordered and made of `Eq` values, it keeps an export byte-identical across a round trip (FR-EXP-2).
 
@@ -724,6 +730,8 @@ The engine emits a typed event stream that observers and host code may subscribe
 **Where it lives:** `norte-testing/tests/scenarios.rs`.
 
 **FR-TEST-5.** Media materialization and `ProviderFile` expiry/re-upload are covered by tests that assert byte-stable output and a single, explicit invalidation on expiry.
+
+**Where it lives:** `norte-testing/tests/media.rs`, `norte-http/src/media.rs` (`an_expired_provider_file_is_revived_from_its_blob_once`, `an_expired_provider_file_without_a_port_is_a_typed_error`), `norte-openai/src/files.rs` (`a_file_round_trips_through_the_files_api`, `a_vendor_without_a_files_api_surfaces_the_provider_error`), `norte-anthropic/src/files.rs`, `norte-gemini/src/files.rs`.
 
 **FR-TEST-6 — Exhaustive byte-identity matrix.** Byte identity is asserted at every level and on every vector, and any failing vector fails the build:
 - **Envelope.** `Conversation` JSON serialize → deserialize → serialize over generated histories, metadata, queue and phase, including empty and maximal shapes; deserialize must not lose information and re-serialization must be byte-stable.

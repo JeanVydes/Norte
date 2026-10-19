@@ -148,3 +148,37 @@ error: the next request contains the failure and the turn continues.
 `ToolContext` is handed to an executor and carries the session, the call id, a
 cancellation token, a progress sink and free-form metadata. It is how a long
 tool cancels cleanly when the turn is cancelled.
+
+## Host context for a call
+
+`ToolContext::metadata` is the one field the engine fills for you, and it is how
+host state reaches a tool without being written into the conversation. Register
+a provider on the engine:
+
+```rust,ignore
+use std::collections::BTreeMap;
+use norte_core::EngineBuilder;
+
+let engine = EngineBuilder::new()
+    /* .. */
+    .tool_metadata(|info| {
+        let mut map = BTreeMap::new();
+        map.insert("tenant".to_owned(), tenant_of(&info.session).into());
+        map.insert("trace_id".to_owned(), trace_id().into());
+        map
+    })
+    .build()?;
+```
+
+The provider is consulted immediately before each execution — the first attempt
+and one that resumes a call parked on an approval alike — and receives
+`ToolCallInfo`: the session, turn, call id, the tool and the arguments after any
+policy transform. Because the value is derived per call, nothing about it is
+persisted: it never enters the graph, the wire or an export, so a conversation
+resumed on another host runs its tools against *that* host's data instead of a
+stale copy — and a parked call gets the context that was true when it finally
+ran, not when it was queued.
+
+An executor reads it as `context.metadata`; with no provider configured the
+engine supplies an empty map, so a tool that reads context works unchanged where
+a host has none to give.

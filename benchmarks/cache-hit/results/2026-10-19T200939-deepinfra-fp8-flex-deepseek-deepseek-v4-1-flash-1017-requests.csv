@@ -1,0 +1,10 @@
+number,phase,turn,input,output,cache_read,cache_write,hit,cost
+1,1. normal,turn 1 (nothing to reuse yet),9136,44,0,0,0.0,0.000727
+2,1. normal,turn 2 (the conversation again),9185,44,9088,0,98.9,0.000039
+3,2. tool,the turn that calls the tool,9238,52,9088,0,98.4,0.000045
+4,2. tool,the turn that calls the tool,9295,13,9216,0,99.2,0.000031
+5,2. tool,the turn after the result,9316,32,9216,0,98.9,0.000037
+6,3. approval,the turn that parks,9335,57,9216,0,98.7,0.000044
+7,3. approval,the resume (not a new request: the parked one),9416,19,9344,0,99.2,0.000032
+8,3. approval,the turn after the approval,9444,29,9344,0,98.9,0.000037
+9,4. export,the first turn of the new process,9474,37,9344,0,98.6,0.000041

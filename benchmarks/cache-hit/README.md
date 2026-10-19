@@ -97,3 +97,15 @@ happened.
 - **Pin the provider for a comparison.** With `OpenRouter` free to route, two
   turns of the same conversation can land on different upstreams, each with its
   own cache; the hit then measures routing, not the prefix.
+
+## Results
+
+Canonical run (`deepseek/deepseek-v4-flash-0731` at Baidu, 2 s pause):
+`results/2026-10-19T194919-baidu-deepseek-deepseek-v4-flash-0731.md`.
+
+Provider check (`deepseek/deepseek-v4.1-flash-1017` pinned to
+`deepinfra/fp8/flex`, 2 s pause):
+`results/2026-10-19T200939-deepinfra-fp8-flex-deepseek-deepseek-v4-1-flash-1017.md`.
+Nine requests, 83,839 input tokens (73,856 read from cache, 88.1%), 327 output,
+$0.001033 billed. The per-request costs match the endpoint's listed rates to the
+microdollar: $0.0784/M input, $0.2352/M output, $0.002352/M cache read.

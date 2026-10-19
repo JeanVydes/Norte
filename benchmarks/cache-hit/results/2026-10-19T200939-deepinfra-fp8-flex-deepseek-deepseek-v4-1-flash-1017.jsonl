@@ -1,0 +1,34 @@
+{"kind":"turn","at":"2026-10-19T20:10:31.298719318Z","data":{"elapsed":{"nanos":562546284,"secs":5},"label":"turn 1 (nothing to reuse yet)","phase":"1. normal"}}
+{"kind":"turn","at":"2026-10-19T20:10:31.298779671Z","data":{"elapsed":{"nanos":501386600,"secs":6},"label":"turn 2 (the conversation again)","phase":"1. normal"}}
+{"kind":"turn","at":"2026-10-19T20:10:31.298807203Z","data":{"elapsed":{"nanos":767550599,"secs":8},"label":"the turn that calls the tool","phase":"2. tool"}}
+{"kind":"turn","at":"2026-10-19T20:10:31.298832902Z","data":{"elapsed":{"nanos":998725739,"secs":7},"label":"the turn after the result","phase":"2. tool"}}
+{"kind":"turn","at":"2026-10-19T20:10:31.298858911Z","data":{"elapsed":{"nanos":529209862,"secs":3},"label":"the turn that parks","phase":"3. approval"}}
+{"kind":"turn","at":"2026-10-19T20:10:31.298897914Z","data":{"elapsed":{"nanos":660514992,"secs":8},"label":"the resume (not a new request: the parked one)","phase":"3. approval"}}
+{"kind":"turn","at":"2026-10-19T20:10:31.298928252Z","data":{"elapsed":{"nanos":575826562,"secs":5},"label":"the turn after the approval","phase":"3. approval"}}
+{"kind":"turn","at":"2026-10-19T20:10:31.298954812Z","data":{"elapsed":{"nanos":112164434,"secs":5},"label":"the first turn of the new process","phase":"4. export"}}
+{"kind":"request","at":"2026-10-19T20:10:31.298988836Z","data":{"cache_read":0,"cache_write":0,"cost":0.0007266112,"input":9136,"output":44,"phase":"1. normal","turn":"turn 1 (nothing to reuse yet)"}}
+{"kind":"request","at":"2026-10-19T20:10:31.299042998Z","data":{"cache_read":9088,"cache_write":0,"cost":0.000039328576,"input":9185,"output":44,"phase":"1. normal","turn":"turn 2 (the conversation again)"}}
+{"kind":"request","at":"2026-10-19T20:10:31.299073936Z","data":{"cache_read":9088,"cache_write":0,"cost":0.000045365376,"input":9238,"output":52,"phase":"2. tool","turn":"the turn that calls the tool"}}
+{"kind":"request","at":"2026-10-19T20:10:31.299113380Z","data":{"cache_read":9216,"cache_write":0,"cost":0.000030927232,"input":9295,"output":13,"phase":"2. tool","turn":"the turn that calls the tool"}}
+{"kind":"request","at":"2026-10-19T20:10:31.299145842Z","data":{"cache_read":9216,"cache_write":0,"cost":0.000037042432,"input":9316,"output":32,"phase":"2. tool","turn":"the turn after the result"}}
+{"kind":"request","at":"2026-10-19T20:10:31.299178343Z","data":{"cache_read":9216,"cache_write":0,"cost":0.000044412032,"input":9335,"output":57,"phase":"3. approval","turn":"the turn that parks"}}
+{"kind":"request","at":"2026-10-19T20:10:31.299205855Z","data":{"cache_read":9344,"cache_write":0,"cost":0.000032090688,"input":9416,"output":19,"phase":"3. approval","turn":"the resume (not a new request: the parked one)"}}
+{"kind":"request","at":"2026-10-19T20:10:31.299235310Z","data":{"cache_read":9344,"cache_write":0,"cost":0.000036637888,"input":9444,"output":29,"phase":"3. approval","turn":"the turn after the approval"}}
+{"kind":"request","at":"2026-10-19T20:10:31.299263313Z","data":{"cache_read":9344,"cache_write":0,"cost":0.000040871488,"input":9474,"output":37,"phase":"4. export","turn":"the first turn of the new process"}}
+{"kind":"prefix","at":"2026-10-19T20:10:31.299291526Z","data":{"bytes":39857,"digest":null,"label":"request 1","messages":2,"phase":"1. normal","same":null,"shared":null}}
+{"kind":"prefix","at":"2026-10-19T20:10:31.299317175Z","data":{"bytes":40133,"digest":"b7219ecf85ec995ffc7789571d2a5aa301112f0042763ba1078011de9847ac99","label":"request 2","messages":4,"phase":"1. normal","same":true,"shared":2}}
+{"kind":"prefix","at":"2026-10-19T20:10:31.299346450Z","data":{"bytes":39857,"digest":null,"label":"request 1","messages":2,"phase":"2. tool","same":null,"shared":null}}
+{"kind":"prefix","at":"2026-10-19T20:10:31.299371848Z","data":{"bytes":40133,"digest":"b7219ecf85ec995ffc7789571d2a5aa301112f0042763ba1078011de9847ac99","label":"request 2","messages":4,"phase":"2. tool","same":true,"shared":2}}
+{"kind":"prefix","at":"2026-10-19T20:10:31.299400582Z","data":{"bytes":40414,"digest":"9b542013b4de6c19ead77f98d1a02259322608db0d72fcd3e0d8ec94b43f9b58","label":"request 3","messages":6,"phase":"2. tool","same":true,"shared":4}}
+{"kind":"prefix","at":"2026-10-19T20:10:31.299435127Z","data":{"bytes":40694,"digest":"d3832688c7a12a49f2e363b4357e79264c0c8c4d21a4b13fd78a3b88f34b55a6","label":"request 4","messages":8,"phase":"2. tool","same":true,"shared":6}}
+{"kind":"prefix","at":"2026-10-19T20:10:31.299464382Z","data":{"bytes":40815,"digest":"cd8a2b7c445bcf31e1f0f9c9e5d7cc7f3e600f57015c4243f6ac0949245a6c3d","label":"request 5","messages":10,"phase":"2. tool","same":true,"shared":8}}
+{"kind":"prefix","at":"2026-10-19T20:10:31.299493176Z","data":{"bytes":39857,"digest":null,"label":"request 1","messages":2,"phase":"3. approval","same":null,"shared":null}}
+{"kind":"prefix","at":"2026-10-19T20:10:31.299518454Z","data":{"bytes":40133,"digest":"b7219ecf85ec995ffc7789571d2a5aa301112f0042763ba1078011de9847ac99","label":"request 2","messages":4,"phase":"3. approval","same":true,"shared":2}}
+{"kind":"prefix","at":"2026-10-19T20:10:31.299560092Z","data":{"bytes":40414,"digest":"9b542013b4de6c19ead77f98d1a02259322608db0d72fcd3e0d8ec94b43f9b58","label":"request 3","messages":6,"phase":"3. approval","same":true,"shared":4}}
+{"kind":"prefix","at":"2026-10-19T20:10:31.299589678Z","data":{"bytes":40694,"digest":"d3832688c7a12a49f2e363b4357e79264c0c8c4d21a4b13fd78a3b88f34b55a6","label":"request 4","messages":8,"phase":"3. approval","same":true,"shared":6}}
+{"kind":"prefix","at":"2026-10-19T20:10:31.299618532Z","data":{"bytes":40815,"digest":"cd8a2b7c445bcf31e1f0f9c9e5d7cc7f3e600f57015c4243f6ac0949245a6c3d","label":"request 5","messages":10,"phase":"3. approval","same":true,"shared":8}}
+{"kind":"prefix","at":"2026-10-19T20:10:31.299647587Z","data":{"bytes":40934,"digest":"05d82ae711b8ef2e10af3face02bdc3f29d210c08a0079d0c02c660c209e17fe","label":"request 6","messages":12,"phase":"3. approval","same":true,"shared":10}}
+{"kind":"prefix","at":"2026-10-19T20:10:31.299676462Z","data":{"bytes":41269,"digest":"09a515eeeeddd0cd35e44367fa54fec4ef490e710f8e97e58964c39f601310ba","label":"request 7","messages":14,"phase":"3. approval","same":true,"shared":12}}
+{"kind":"prefix","at":"2026-10-19T20:10:31.299705496Z","data":{"bytes":41432,"digest":"36bca25ff8f23403742e0bcd624bbecab082bdd2e54178c670c2c7eaf102afba","label":"request 8","messages":16,"phase":"3. approval","same":true,"shared":14}}
+{"kind":"prefix","at":"2026-10-19T20:10:31.299734291Z","data":{"bytes":41432,"digest":null,"label":"the other engine's last request","messages":16,"phase":"4. export","same":null,"shared":null}}
+{"kind":"prefix","at":"2026-10-19T20:10:31.299760730Z","data":{"bytes":41591,"digest":"a9644d333fc7d91d8c0620602cc89ec3e594933d3fcdd1c678e803a52e787d46","label":"request 1","messages":18,"phase":"4. export","same":true,"shared":16}}

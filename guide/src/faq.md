@@ -96,6 +96,19 @@ the large bytes (`inline_threshold` decides when they leave the history), and
 `norte-media` for preprocessing an image down to the provider's limits
 (`ImagePreprocessor`: max dimension, max bytes, output format, quality).
 
+## Can I get token probabilities?
+
+Yes, per turn and only if the model declares `Feature::Logprobs`. The turn asks
+for a count — `.logprobs(5)` for five runner-up tokens, `.logprobs(0)` for the
+chosen token alone — and each chunk arrives as an informational `Logprobs` delta
+carrying the token, its probability, its bytes when the vendor reports them, the
+runner-ups and any vendor field the neutral vocabulary does not model. The
+library never stores them: probabilities are not a `Part`, they do not enter the
+message, and they never reach history or the next request, so a host that wants a
+record keeps it from the observer channel. A model without the feature, or a count
+above 20, is a typed error before the request is built. See
+[Streaming](concepts/streaming.md).
+
 ## How do I know two runs are comparable?
 
 Record what the run was: model, provider, endpoint, parameters and the commit of

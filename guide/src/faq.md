@@ -29,6 +29,12 @@ compatibility endpoint). Point `VendorProfile` at `http://localhost:8000/v1` and
 use `OpenAiChat`. Declare capabilities honestly — a local model that does not
 stream should be declared `StreamingGranularity::Disabled`.
 
+## Does the library phone home?
+
+No. There is no telemetry, no analytics, no licence check and no update ping. The
+only network traffic is to the model endpoint you configure; storage, tools and
+secrets all belong to the process you run.
+
 ## Why so many crates?
 
 So that a dependency rule can be enforced: core depends on nothing internal, and

@@ -41,6 +41,24 @@ Five ideas hold the whole library together.
 - Not tied to a cloud. Persistence is two traits — `Store` and `BlobStore` — with
   in-memory implementations that are ready to use and nothing else.
 
+## Running it in production
+
+- **An in-process library.** No sidecar, no daemon and no control plane: Norte is
+  a crate your service links. The model endpoint is configuration, so a private
+  gateway, an on-prem server and a cloud provider are the same code path.
+- **Scales horizontally.** Sessions live in the `Store` and bytes in the
+  `BlobStore` you implement, so workers share a session with optimistic
+  concurrency instead of a coordinator, and one that dies mid-turn leaves the
+  session at its last commit.
+- **Governed and auditable.** Every tool call passes a policy, every approval is a
+  record bound to its arguments, and every turn is one commit carrying the model,
+  the token counters and the cost the provider reported.
+- **Data stays where you put it.** No telemetry and no call home: the only network
+  traffic is to the endpoint you configure, and secrets are redacted from tool
+  output before it is stored or replayed.
+- **Permissive and audited.** MIT licence, `unsafe` forbidden, dependencies
+  audited and parsers fuzzed in CI, MSRV pinned.
+
 ## Where to go
 
 - New here: [Getting started](getting-started.md).

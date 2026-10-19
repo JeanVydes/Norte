@@ -34,27 +34,33 @@ under a policy you write, every turn in a history you can audit.
   byte for byte, for a review, a replay or a hand-off.
 - **Secure.** `unsafe` is forbidden, every wire parser is fuzzed, secrets are
   redacted from tool output, and failures are typed errors rather than panics.
+- **Private by default.** No telemetry and no call home: the only network traffic
+  is to the endpoint you configure. Bring your own inference — any
+  OpenAI-compatible server — and your own database and object storage.
 - **Observable.** Every request, tool call, token count and cache boundary is an
   event, streamed as it happens.
 - **Cost you can attribute.** Usage and cost come from the provider's own
   payloads, per request and per turn: chargeback-ready, with no rate table to
   maintain.
 
-## Providers
+## Providers and coverage
 
-| Provider | SDK | Wire surface |
+| Provider | Crate | Coverage |
 | --- | --- | --- |
-| OpenAI | `norte-openai` | Responses (primary) and Chat Completions, including the compatible long tail |
+| OpenAI | `norte-openai` | Responses (primary) and Chat Completions |
 | Anthropic | `norte-anthropic` | Messages |
 | Google Gemini | `norte-gemini` | generateContent, with explicit cached content |
 
-Each adapter covers roughly 95 % of that wire's documented surface. What is
+Each adapter implements roughly 95 % of its vendor's documented API. What is
 missing is small and named: the Realtime API (out of scope), `logprobs`, and
 unary `stream: false` delivery (`collect()` already covers blocking callers). A
-modality a wire cannot express is a typed error, never a silent drop, and a
-documented block with no typed neutral form is kept verbatim and replayed
-unchanged. OpenRouter, Groq, Together, vLLM and any other OpenAI-compatible
-endpoint work through the OpenAI SDK with a different base URL.
+modality an API cannot express is a typed error, never a silent drop, and a
+documented block with no neutral form is kept verbatim and replayed unchanged.
+
+Anything OpenAI-compatible works through the OpenAI adapter with your own base
+`URL`: OpenRouter, Groq, Together, vLLM, an internal gateway or a self-hosted
+model server. The endpoint is configuration, so an on-prem deployment is a `URL`
+and a key.
 
 ## Install
 

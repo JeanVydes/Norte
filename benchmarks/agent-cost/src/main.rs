@@ -30,7 +30,7 @@
 //! the agent left, running its tests, and running the command line the tasks
 //! asked for, with the verdict printed beside the agent's answer.
 //!
-//! The money is the provider's own number, and not one this recipe works out.
+//! The money is the provider's own number, and not one this benchmark works out.
 //! `Usage` carries the token counters (input, output, reasoning, cache read,
 //! cache write, audio), an extension map for the counters with no neutral field,
 //! and `vendor`: whatever the payload reported and that vocabulary does not
@@ -40,7 +40,7 @@
 //! decision, one request to the next, so a rate written down here would be the
 //! list price of a route that may not be the one that served it.
 //!
-//! What the recipe adds is the tally: how many requests a session took, the
+//! What the benchmark adds is the tally: how many requests a session took, the
 //! tokens in and out, how much of the input came from the provider's cache — and
 //! the count of requests is the number that makes an agent cheap or expensive,
 //! because every one of them re-sends a transcript that grew by the last result.
@@ -54,22 +54,29 @@
 //!
 //! ```sh
 //! OPENROUTER_API_KEY=sk-or-... \
-//! COOKBOOK_ENDPOINT=https://openrouter.ai/api/v1 \
-//! COOKBOOK_MODEL=deepseek/deepseek-v4-flash-0731 \
-//! COOKBOOK_PROVIDER=DeepInfra \
-//! cargo run -p rustychain-cookbook --example agent_cost
+//! BENCH_ENDPOINT=https://openrouter.ai/api/v1 \
+//! BENCH_MODEL=deepseek/deepseek-v4-flash-0731 \
+//! BENCH_PROVIDER=DeepInfra \
+//! cargo run -p rustychain-bench-agent-cost
 //! ```
 //!
-//! `COOKBOOK_PROVIDER` pins the upstream so that two runs stay comparable; it is
+//! `BENCH_PROVIDER` pins the upstream so that two runs stay comparable; it is
 //! a routing hint and never a price. Without it the router picks, and the field
 //! the response carries says what that route charged.
+//!
+//! A run leaves a report behind: the same figures, per task and per request,
+//! written as markdown under `results/` next to the ones before it, so what a
+//! model cost on a given day can be read back without replaying the run.
+//! `--report <path>` writes it elsewhere.
 
 use std::collections::BTreeMap;
 use std::error::Error;
+use std::fmt::Write as _;
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
+use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
 use rustychain_core::{
     Capabilities, Decision, Engine, EngineBuilder, EngineConfig, EngineEvent, InMemoryBlobStore,
@@ -112,6 +119,14 @@ const TASKS: [&str; 3] = [
      two words. The `2` is the flag's value, not a word, so it must not reach the text. Answer \
      with the code you added.",
 ];
+
+/// The requests a task may spend before the loop gives up. Higher than a chat
+/// turn's 16 on purpose: a coding task reads, edits and reads back, and a request
+/// that runs out of budget is one the provider already billed.
+const BUDGET: usize = 32;
+
+/// What the provider field says when the run did not pin one.
+const ROUTER_PICKS: &str = "whoever the router picks";
 
 /// The crate `seed` writes before the agent runs: real files, already written,
 /// which every task has to read before it can change anything. They are here
@@ -236,11 +251,30 @@ cargo run -- --verbose "the sky is blue"   # 4 words: the, sky, is, blue
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    let mut destination = None;
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--report" => {
+                let path = args.next().ok_or("--report needs a path")?;
+                destination = Some(PathBuf::from(path));
+            }
+            "--help" | "-h" => {
+                usage();
+                return Ok(());
+            }
+            other => return Err(format!("unknown argument `{other}`; try --help").into()),
+        }
+    }
+
+    let started = Utc::now();
+    let model = required("BENCH_MODEL", "deepseek/deepseek-v4-flash-0731")?;
+    let endpoint = required("BENCH_ENDPOINT", "https://openrouter.ai/api/v1")?;
+    let provider = std::env::var("BENCH_PROVIDER").unwrap_or_else(|_| ROUTER_PICKS.to_owned());
+
     let root = scratch()?;
     seed(&root)?;
-    let (engine, options) = engine(&root)?;
-    let provider = std::env::var("COOKBOOK_PROVIDER")
-        .unwrap_or_else(|_| "whoever the router picks".to_owned());
+    let (engine, options) = engine(&root, &endpoint, &model)?;
 
     println!("scratch:  {}", root.display());
     println!(
@@ -253,11 +287,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
     println!("provider: {provider}");
     println!(
-        "money:    the `usage.cost` every response reports, summed; the recipe applies no price \
+        "money:    the `usage.cost` every response reports, summed; the benchmark applies no price \
          of its own\n"
     );
 
     let mut ledger = Ledger::default();
+    let mut results = Vec::new();
     for (index, task) in TASKS.iter().enumerate() {
         println!("--- task {}: {task}", index + 1);
         let session = engine.create().await?;
@@ -283,7 +318,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
         // The last request has no successor to bill it, so the turn settles here.
         screen.settle(&engine, session.id).await?;
-        let task = screen.task;
+        let tally = screen.task;
         match outcome {
             Ok(outcome) => println!(
                 "  turn:     {} part(s) committed, phase {:?}; the text above is what the model \
@@ -298,8 +333,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 println!("  failed:   {error} — the requests above are what it cost to find out");
             }
         }
-        println!("  task:     {}\n", task.line());
-        ledger.add(&task);
+        println!("  task:     {}\n", tally.line());
+        ledger.add(&tally);
+        results.push(tally);
     }
 
     closing(&ledger);
@@ -307,8 +343,43 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // The evidence, not the model's word: the crate as the agent left it.
     println!("\n--- the crate as the agent left it");
     print_tree(&root);
-    verify(&root);
+    let verdict = verify(&root);
+
+    // The run written down, so it can be read back and compared with the next.
+    let destination =
+        destination.unwrap_or_else(|| default_report_path(&provider, &model, started));
+    let markdown = Report {
+        started,
+        model: &model,
+        provider: &provider,
+        endpoint: &endpoint,
+        commit: commit(),
+        budget: BUDGET,
+        tasks: &results,
+        verdict: &verdict,
+        scratch: &root,
+    }
+    .render();
+    write_report(&markdown, &destination)?;
+    println!("\n--- report: {}", destination.display());
     Ok(())
+}
+
+/// What the benchmark takes, for a reader who typed the crate's name and nothing
+/// else.
+fn usage() {
+    println!(
+        "agent-cost — what a coding agent costs, in the provider's own numbers\n\n\
+         usage: rustychain-bench-agent-cost [--report <path>]\n\n\
+         the report defaults to results/<date>-<provider>-<model>.md beside this crate; \
+         `--report` writes it elsewhere\n\n\
+         environment:\n  \
+         OPENROUTER_API_KEY  the key for the endpoint (required)\n  \
+         BENCH_ENDPOINT      the OpenAI-compatible base url (required)\n  \
+         BENCH_MODEL         the model id (required)\n  \
+         BENCH_PROVIDER      pins the upstream through the router, so two runs stay comparable \
+         (optional)"
+    );
 }
 
 /// The host's independent audit, and not the agent's claim.
@@ -318,29 +389,42 @@ async fn main() -> Result<(), Box<dyn Error>> {
 /// check, the one the agent does not control — the crate has to compile, its
 /// tests have to pass, and the command line the tasks named has to print what the
 /// task said it would, judged after the turn is over. A toolchain that is not
-/// there is said out loud rather than passed off as a pass.
-fn verify(root: &Path) {
+/// there is said out loud rather than passed off as a pass. The verdicts come
+/// back as well as out, because they belong in the report too.
+fn verify(root: &Path) -> Verdict {
     println!("\n--- the host checks the agent's claim");
-    match cargo(root, &["test", "--quiet", "--offline"]) {
-        None => println!("cargo test: not run — there is no `cargo` on PATH"),
+
+    let tests = match cargo(root, &["test", "--quiet", "--offline"]) {
+        None => Check::new("cargo test", "not run — there is no `cargo` on PATH"),
         Some((true, stdout, _)) => {
-            println!("cargo test: the crate builds and every test passes");
-            for line in stdout.lines().filter(|line| line.contains("test result")) {
-                println!("  {}", line.trim());
+            let results = stdout
+                .lines()
+                .filter(|line| line.contains("test result"))
+                .map(|line| line.trim().to_owned())
+                .collect::<Vec<_>>();
+            if results.is_empty() {
+                Check::new("cargo test", "the crate builds")
+            } else {
+                Check::with_detail(
+                    "cargo test",
+                    "the crate builds and every test passes",
+                    results,
+                )
             }
         }
-        Some((false, stdout, stderr)) => {
-            println!("cargo test: FAILED");
-            for line in stdout
+        Some((false, stdout, stderr)) => Check::with_detail(
+            "cargo test",
+            "FAILED",
+            stdout
                 .lines()
                 .chain(stderr.lines())
                 .filter(|line| line.contains("test result") || line.contains("error"))
                 .take(6)
-            {
-                println!("  {}", line.trim());
-            }
-        }
-    }
+                .map(|line| line.trim().to_owned())
+                .collect(),
+        ),
+    };
+
     let expected = "4 words: the, sky";
     let line = [
         "run",
@@ -352,8 +436,11 @@ fn verify(root: &Path) {
         "2",
         "the sky, is blue.",
     ];
-    match cargo(root, &line) {
-        None => println!("cargo run: not run — there is no `cargo` on PATH"),
+    let printed = match cargo(root, &line) {
+        None => Check::new(
+            "cargo run -- --verbose --limit 2 \"the sky, is blue.\"",
+            "not run — there is no `cargo` on PATH",
+        ),
         Some((ok, stdout, stderr)) => {
             let got = stdout.lines().next().unwrap_or("").trim();
             let verdict = match (ok, got == expected) {
@@ -368,9 +455,57 @@ fn verify(root: &Path) {
                         .trim()
                 ),
             };
-            println!("cargo run -- --verbose --limit 2 \"the sky, is blue.\": {verdict}");
+            Check::new(
+                "cargo run -- --verbose --limit 2 \"the sky, is blue.\"",
+                &verdict,
+            )
+        }
+    };
+
+    let verdict = Verdict {
+        checks: vec![tests, printed],
+    };
+    for check in &verdict.checks {
+        println!("{}: {}", check.what, check.verdict);
+        for line in &check.detail {
+            println!("  {line}");
         }
     }
+    verdict
+}
+
+/// One command the host ran after the turn, and what it said.
+struct Check {
+    /// The command, as a line a reader could repeat.
+    what: String,
+    /// The one-line verdict.
+    verdict: String,
+    /// The lines worth keeping as evidence.
+    detail: Vec<String>,
+}
+
+impl Check {
+    fn new(what: &str, verdict: &str) -> Self {
+        Self {
+            what: what.to_owned(),
+            verdict: verdict.to_owned(),
+            detail: Vec::new(),
+        }
+    }
+
+    fn with_detail(what: &str, verdict: &str, detail: Vec<String>) -> Self {
+        Self {
+            what: what.to_owned(),
+            verdict: verdict.to_owned(),
+            detail,
+        }
+    }
+}
+
+/// What the host found, kept for the report.
+#[derive(Default)]
+struct Verdict {
+    checks: Vec<Check>,
 }
 
 /// Runs `cargo` in the scratch directory, offline: a crate with no dependencies
@@ -382,7 +517,7 @@ fn cargo(root: &Path, args: &[&str]) -> Option<(bool, String, String)> {
         .current_dir(root)
         .env("CARGO_TERM_COLOR", "never")
         // The check must not land in the workspace's target directory, or it
-        // would contend for a build lock the recipe's own invocation holds.
+        // would contend for a build lock the benchmark's own invocation holds.
         .env_remove("CARGO_TARGET_DIR")
         .output()
         .ok()?;
@@ -446,7 +581,7 @@ fn collect_files(dir: &Path, into: &mut Vec<PathBuf>) {
 /// commit: the next request is about to be built out of them, which is exactly
 /// when the reader should see the bytes the model is being handed and what they
 /// cost. A result is printed and not only the call because "the agent read the
-/// file" should be something the reader watched happen, not something the recipe
+/// file" should be something the reader watched happen, not something the benchmark
 /// asserts.
 #[derive(Default)]
 struct Screen {
@@ -503,6 +638,10 @@ impl Screen {
                 self.break_line();
                 let status = if *is_error { "failed" } else { "ok" };
                 println!("  ✓ {tool} {status} in {duration_ms} ms");
+                self.task.calls.push(Call {
+                    name: tool.to_string(),
+                    is_error: *is_error,
+                });
             }
             _ => {}
         }
@@ -604,8 +743,6 @@ fn preview(text: &str, max: usize) -> String {
 /// The first lines of a tool result: enough to see the bytes the model was
 /// handed, and a count where the rest was left out.
 fn excerpt(text: &str, max_lines: usize, max_chars: usize) -> String {
-    use std::fmt::Write as _;
-
     let mut out = String::new();
     let mut shown = 0;
     for (index, line) in text.lines().enumerate() {
@@ -628,7 +765,8 @@ fn excerpt(text: &str, max_lines: usize, max_chars: usize) -> String {
 }
 
 /// One task's tally: the counters the provider reported, and the money it
-/// reported for them.
+/// reported for them. The requests and the calls are kept as well, in order,
+/// because a total is not an audit: the report wants to show where it came from.
 #[derive(Default)]
 struct Task {
     requests: u64,
@@ -639,6 +777,25 @@ struct Task {
     unpriced: u64,
     /// The vendor's own `usage.cost`, summed over the requests that carried one.
     reported: Option<f64>,
+    /// Every request, as the provider reported it.
+    rows: Vec<Row>,
+    /// Every tool call the turn made.
+    calls: Vec<Call>,
+}
+
+/// One request's counters, kept for the report.
+struct Row {
+    request: u64,
+    input: u64,
+    cached: u64,
+    output: u64,
+    cost: Option<f64>,
+}
+
+/// One tool call, kept for the report.
+struct Call {
+    name: String,
+    is_error: bool,
 }
 
 impl Task {
@@ -646,7 +803,7 @@ impl Task {
     ///
     /// `cost` is `OpenAI`-compatible, and it reaches here untouched: it survives
     /// the parse in `Usage::vendor`, because the vocabulary does not name it. The
-    /// recipe reads that field; it never writes a price of its own.
+    /// benchmark reads that field; it never writes a price of its own.
     fn reported_cost(usage: &Usage) -> Option<f64> {
         usage.vendor.get("cost").and_then(Value::as_f64)
     }
@@ -665,6 +822,13 @@ impl Task {
             Some(reported) => *self.reported.get_or_insert(0.0) += reported,
             None => self.unpriced += 1,
         }
+        self.rows.push(Row {
+            request: self.requests,
+            input,
+            cached,
+            output,
+            cost: reported,
+        });
         let money = reported.map_or_else(
             || " · no `cost` in the payload".to_owned(),
             |reported| format!(" · ${reported:.6}"),
@@ -755,7 +919,7 @@ fn closing(ledger: &Ledger) {
         }
         None => println!(
             "no response carried a `cost`, so the counters above are the whole statement: this \
-             wire reports usage without a price, and a recipe cannot invent one"
+             wire reports usage without a price, and a benchmark cannot invent one"
         ),
     }
     if let Some(hit) = hit_rate(ledger.cached, ledger.input) {
@@ -770,6 +934,359 @@ fn closing(ledger: &Ledger) {
         "every figure is the provider's, per request: a transcript that grows with each tool \
          result is what an agent's bill is made of, and the request count is where it shows"
     );
+}
+
+/// The run written down: the figures the terminal showed, as markdown, so a
+/// result can be read back — and compared with the next run — without replaying
+/// it. It is written by the run that produced it, which is the only thing that
+/// can be trusted to describe what happened.
+struct Report<'a> {
+    started: DateTime<Utc>,
+    model: &'a str,
+    provider: &'a str,
+    endpoint: &'a str,
+    commit: Option<String>,
+    budget: usize,
+    tasks: &'a [Task],
+    verdict: &'a Verdict,
+    scratch: &'a Path,
+}
+
+impl Report<'_> {
+    /// The whole document, one section at a time: a report read by a person and
+    /// by the next run, so the sections are assembled rather than printed.
+    fn render(&self) -> String {
+        let mut ledger = Ledger::default();
+        for task in self.tasks {
+            ledger.add(task);
+        }
+        [
+            self.heading(),
+            self.run(),
+            self.reproduce(),
+            self.tasks_table(&ledger),
+            Self::asked(),
+            self.calls(),
+            Self::bill(&ledger),
+            self.check(),
+            self.requests(),
+        ]
+        .concat()
+    }
+
+    /// The title, what the run is, and what the figures are.
+    fn heading(&self) -> String {
+        let mut out = String::new();
+        let _ = writeln!(out, "# agent-cost — `{}` @ {}\n", self.model, self.provider);
+        let _ = writeln!(
+            out,
+            "A coding agent on a crate it did not write: rename a public function, change what a \
+             word is and fix the test that pinned the old rule, thread a flag from the command \
+             line. Nothing is written from scratch, so the agent has to read before it edits, and \
+             it can build the crate with the `command` tool — a compiler error is a tool result it \
+             reads and fixes inside the turn.\n"
+        );
+        let _ = writeln!(
+            out,
+            "Every figure is the provider's own: the `usage.cost` each response reported, summed, \
+             and the token counters it reported. No rate is applied here, so a request whose \
+             payload carried no `cost` is counted and named as such rather than priced by this \
+             file.\n"
+        );
+        out
+    }
+
+    /// What was run: the route, the budget, the commit.
+    fn run(&self) -> String {
+        let mut out = String::new();
+        let _ = writeln!(out, "## The run\n");
+        let _ = writeln!(out, "| | |");
+        let _ = writeln!(out, "| --- | --- |");
+        let _ = writeln!(
+            out,
+            "| when | {} |",
+            self.started.format("%Y-%m-%d %H:%M:%S UTC")
+        );
+        let _ = writeln!(out, "| model | `{}` |", self.model);
+        let _ = writeln!(out, "| provider | {} |", self.provider);
+        let _ = writeln!(out, "| endpoint | `{}` |", self.endpoint);
+        let _ = writeln!(out, "| rustychain | {} |", env!("CARGO_PKG_VERSION"));
+        if let Some(commit) = &self.commit {
+            let _ = writeln!(out, "| commit | `{commit}` |");
+        }
+        let _ = writeln!(
+            out,
+            "| budget | {} request(s) per task, {} task(s) |",
+            self.budget,
+            self.tasks.len()
+        );
+        let _ = writeln!(out, "| scratch | `{}` |", self.scratch.display());
+        out
+    }
+
+    /// The environment, as a block that can be pasted.
+    fn reproduce(&self) -> String {
+        let mut out = String::new();
+        let _ = writeln!(out, "\n## Reproduce\n");
+        let _ = writeln!(out, "```sh");
+        let _ = writeln!(out, "export OPENROUTER_API_KEY=...");
+        let _ = writeln!(out, "export BENCH_ENDPOINT={}", self.endpoint);
+        let _ = writeln!(out, "export BENCH_MODEL={}", self.model);
+        if self.provider != ROUTER_PICKS {
+            let _ = writeln!(out, "export BENCH_PROVIDER={}", self.provider);
+        }
+        let _ = writeln!(out, "cargo run -p rustychain-bench-agent-cost");
+        let _ = writeln!(out, "```");
+        out
+    }
+
+    /// One row per task, and the total.
+    fn tasks_table(&self, ledger: &Ledger) -> String {
+        let mut out = String::new();
+        let _ = writeln!(out, "\n## Tasks\n");
+        let _ = writeln!(
+            out,
+            "| # | requests | input | cache read | hit | output | cost (USD) |"
+        );
+        let _ = writeln!(out, "| ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
+        for (index, task) in self.tasks.iter().enumerate() {
+            let _ = writeln!(
+                out,
+                "| {} | {} | {} | {} | {} | {} | {} |",
+                index + 1,
+                task.requests,
+                task.input,
+                task.cached,
+                hit_cell(task.cached, task.input),
+                task.output,
+                money_cell(task.reported)
+            );
+        }
+        let _ = writeln!(
+            out,
+            "| **all** | {} | {} | {} | {} | {} | {} |",
+            ledger.requests,
+            ledger.input,
+            ledger.cached,
+            hit_cell(ledger.cached, ledger.input),
+            ledger.output,
+            money_cell(ledger.reported)
+        );
+        out
+    }
+
+    /// The tasks in full, so the figures above have something to stand on.
+    fn asked() -> String {
+        let mut out = String::new();
+        let _ = writeln!(out, "\n### What the tasks asked\n");
+        for (index, task) in TASKS.iter().enumerate() {
+            let _ = writeln!(out, "{}. {task}", index + 1);
+        }
+        out
+    }
+
+    /// What the agent reached for, and what it cost to be told no.
+    fn calls(&self) -> String {
+        let mut out = String::new();
+        let _ = writeln!(out, "\n## Tool calls\n");
+        let mut all_calls = 0_u64;
+        let mut all_failed = 0_u64;
+        for (index, task) in self.tasks.iter().enumerate() {
+            let failed = task.calls.iter().filter(|call| call.is_error).count();
+            all_calls += task.calls.len() as u64;
+            all_failed += failed as u64;
+            let _ = writeln!(
+                out,
+                "- **task {}**: {} call(s){}",
+                index + 1,
+                task.calls.len(),
+                by_tool(&task.calls)
+            );
+        }
+        let _ = writeln!(
+            out,
+            "\n{all_calls} call(s) in all, {all_failed} refused or failed. A call that fails is \
+             billed like any other request, because the round that carried it was paid for before \
+             the tool ever ran, which is why it is counted here."
+        );
+        out
+    }
+
+    /// The one figure the benchmark is about, from the provider's own field.
+    fn bill(ledger: &Ledger) -> String {
+        let mut out = String::new();
+        let _ = writeln!(out, "\n## The bill\n");
+        let tasks = as_f64(ledger.tasks.max(1));
+        match ledger.reported {
+            Some(reported) => {
+                let _ = writeln!(
+                    out,
+                    "- the provider's `usage.cost`, summed over {} of {} request(s): \
+                     **${reported:.6}**",
+                    ledger.requests - ledger.unpriced,
+                    ledger.requests
+                );
+                let _ = writeln!(
+                    out,
+                    "- per task: ${:.6} · per request: ${:.6} · a hundred tasks: ${:.4}",
+                    reported / tasks,
+                    reported / as_f64(ledger.requests.max(1)),
+                    reported / tasks * 100.0
+                );
+            }
+            None => {
+                let _ = writeln!(
+                    out,
+                    "- no response carried a `cost`: this wire reports usage without a price, and a \
+                     benchmark cannot invent one"
+                );
+            }
+        }
+        if ledger.unpriced > 0 {
+            let _ = writeln!(
+                out,
+                "- {} request(s) reported no `cost`, so the total is short by whatever they were \
+                 charged",
+                ledger.unpriced
+            );
+        }
+        if let Some(hit) = hit_rate(ledger.cached, ledger.input) {
+            let _ = writeln!(
+                out,
+                "- cache hit: {hit:.1} % of the input ({} of {} tokens). A read is counted inside \
+                 `input` on this wire, so it is already part of the total above; what the hit was \
+                 worth is in that number, not in a rate applied here.",
+                ledger.cached, ledger.input
+            );
+        }
+        out
+    }
+
+    /// The host's audit, written down beside the agent's answer.
+    fn check(&self) -> String {
+        let mut out = String::new();
+        let _ = writeln!(out, "\n## The host's check\n");
+        for check in &self.verdict.checks {
+            let _ = writeln!(out, "- **{}**: {}", check.what, check.verdict);
+            for line in &check.detail {
+                let _ = writeln!(out, "  - `{line}`");
+            }
+        }
+        out
+    }
+
+    /// Every request, in order: the audit trail behind the totals.
+    fn requests(&self) -> String {
+        let mut out = String::new();
+        let _ = writeln!(out, "\n## Requests\n");
+        let _ = writeln!(
+            out,
+            "Every model request the engine made, in order, with the usage the provider reported \
+             for each. A turn's outcome hides these: the transcript is re-sent and re-billed once \
+             per iteration, which is what an agent's bill is made of.\n"
+        );
+        let _ = writeln!(
+            out,
+            "| task | request | input | cache read | output | cost (USD) |"
+        );
+        let _ = writeln!(out, "| ---: | ---: | ---: | ---: | ---: | ---: |");
+        for (index, task) in self.tasks.iter().enumerate() {
+            for row in &task.rows {
+                let _ = writeln!(
+                    out,
+                    "| {} | {} | {} | {} | {} | {} |",
+                    index + 1,
+                    row.request,
+                    row.input,
+                    row.cached,
+                    row.output,
+                    money_cell(row.cost)
+                );
+            }
+        }
+        out
+    }
+}
+
+/// The tool calls of one task, said by name: `read` ×4, `edit` ×3, `command` ×2
+/// (1 failed).
+fn by_tool(calls: &[Call]) -> String {
+    if calls.is_empty() {
+        return " — none".to_owned();
+    }
+    let mut tally: BTreeMap<&str, (u64, u64)> = BTreeMap::new();
+    for call in calls {
+        let entry = tally.entry(call.name.as_str()).or_insert((0, 0));
+        entry.0 += 1;
+        if call.is_error {
+            entry.1 += 1;
+        }
+    }
+    let listed = tally
+        .iter()
+        .map(|(name, (count, failed))| {
+            if *failed > 0 {
+                format!("`{name}` ×{count} ({failed} failed)")
+            } else {
+                format!("`{name}` ×{count}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(" — {listed}")
+}
+
+/// Where a run writes itself when told nowhere else: beside this crate, named
+/// after the moment and the route, so one model's results do not overwrite
+/// another's.
+fn default_report_path(provider: &str, model: &str, at: DateTime<Utc>) -> PathBuf {
+    let name = format!(
+        "{}-{}-{}.md",
+        at.format("%Y-%m-%dT%H%M%S"),
+        slug(provider),
+        slug(model)
+    );
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("results")
+        .join(name)
+}
+
+/// A file-name-safe form of a name: `deepseek/deepseek-v4-flash-0731` becomes
+/// `deepseek-deepseek-v4-flash-0731`.
+fn slug(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for character in text.chars() {
+        if character.is_ascii_alphanumeric() {
+            out.push(character.to_ascii_lowercase());
+        } else if !out.is_empty() && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    out.trim_end_matches('-').to_owned()
+}
+
+/// The commit the run started from, when it is run from a checkout. Optional on
+/// purpose: a benchmark has to run from a tarball too.
+fn commit() -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let sha = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    (!sha.is_empty()).then_some(sha)
+}
+
+/// Writes the report, making the directory if a first run has to.
+fn write_report(markdown: &str, path: &Path) -> Result<(), Box<dyn Error>> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, markdown)?;
+    Ok(())
 }
 
 /// `u64 as f64` loses precision as far as the lint policy is concerned, so the
@@ -792,6 +1309,18 @@ fn hit_of(cached: u64, input: u64) -> String {
     hit_rate(cached, input)
         .map(|hit| format!(" ({hit:.1} % of input)"))
         .unwrap_or_default()
+}
+
+/// A hit rate as a table cell, or an em dash where the provider reported none.
+fn hit_cell(cached: u64, input: u64) -> String {
+    hit_rate(cached, input).map_or_else(|| "—".to_owned(), |hit| format!("{hit:.1} %"))
+}
+
+/// A reported cost as a table cell, or an em dash where the payload carried
+/// none. The currency is the provider's; the column says USD because that is what
+/// `OpenRouter` reports.
+fn money_cell(reported: Option<f64>) -> String {
+    reported.map_or_else(|| "—".to_owned(), |reported| format!("{reported:.6}"))
 }
 
 /// Pins the upstream provider when `COOKBOOK_PROVIDER` names one.
@@ -868,7 +1397,7 @@ impl Policy for StayInside {
     }
 }
 
-/// Narrows the command tool to what the recipe is for: the crate's own build.
+/// Narrows the command tool to what the benchmark is for: the crate's own build.
 ///
 /// A command request may name any program, and authorizing it is the host's job,
 /// not the executor's. So the host sets the working directory (the request cannot
@@ -948,7 +1477,7 @@ fn escapes(path: &str) -> bool {
 
 /// A directory of its own, emptied on every run.
 fn scratch() -> Result<PathBuf, Box<dyn Error>> {
-    let root = std::env::temp_dir().join("rustychain-cookbook-agent-cost");
+    let root = std::env::temp_dir().join("rustychain-bench-agent-cost");
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root)?;
     Ok(root)
@@ -957,7 +1486,11 @@ fn scratch() -> Result<PathBuf, Box<dyn Error>> {
 /// The wiring: the four executors, the policies that decide their paths and the
 /// one program the command tool may run, the model, and the turn options that pin
 /// the route.
-fn engine(root: &Path) -> Result<(Engine, TurnOptions), Box<dyn Error>> {
+fn engine(
+    root: &Path,
+    endpoint: &str,
+    model: &str,
+) -> Result<(Engine, TurnOptions), Box<dyn Error>> {
     let mut tools = ToolRegistry::new();
     tools.register_tool_declaration(ReadTool::new().into_declaration())?;
     tools.register_tool_declaration(WriteTool::new().into_declaration())?;
@@ -995,35 +1528,39 @@ fn engine(root: &Path) -> Result<(Engine, TurnOptions), Box<dyn Error>> {
     let engine = EngineBuilder::new()
         .store(Arc::new(InMemoryStore::new()))
         .blobs(Arc::new(InMemoryBlobStore::new()))
-        .model(Arc::new(openrouter(capabilities)?))
+        .model(Arc::new(openrouter(capabilities, endpoint, model)?))
         .tools(tools)
         .policies(policies)
         // A real coding agent reads, edits and reads back over a dozen times; the
         // default budget of 16 is a chat turn's, not a session's, and a request
         // that runs out of budget is one the provider already billed.
         .config(EngineConfig {
-            max_iterations: 32,
+            max_iterations: BUDGET,
             ..EngineConfig::default()
         })
         .build()?;
     Ok((engine, turn_options()))
 }
 
-/// A variable the recipe cannot invent a value for: the model and the endpoint
+/// A variable the benchmark cannot invent a value for: the model and the endpoint
 /// belong to the run, not to this file.
 fn required(name: &str, example: &str) -> Result<String, Box<dyn Error>> {
     std::env::var(name).map_err(|_| format!("set {name}, for example {name}={example}").into())
 }
 
 /// Wires `OpenRouter`. An `OpenAI`-compatible vendor is a profile, not a preset.
-fn openrouter(capabilities: Capabilities) -> Result<OpenAiChat, Box<dyn Error>> {
+fn openrouter(
+    capabilities: Capabilities,
+    endpoint: &str,
+    model: &str,
+) -> Result<OpenAiChat, Box<dyn Error>> {
     let provider = ProviderId::new("openrouter")?;
-    let endpoint = required("COOKBOOK_ENDPOINT", "https://openrouter.ai/api/v1")?;
-    let profile = VendorProfile::new(provider.clone(), WireFamily::new(WIRE_CHAT)?, &endpoint)?
-        .with_auth(AuthScheme::bearer(std::env::var("OPENROUTER_API_KEY")?));
-    let id = required("COOKBOOK_MODEL", "deepseek/deepseek-v4-flash-0731")?;
+    let profile =
+        VendorProfile::new(provider.clone(), WireFamily::new(WIRE_CHAT)?, endpoint)?.with_auth(
+            AuthScheme::bearer(required("OPENROUTER_API_KEY", "sk-or-...")?),
+        );
     Ok(OpenAiChat::new(
-        ModelRef::new(provider, ModelId::new(&id)?),
+        ModelRef::new(provider, ModelId::new(model)?),
         profile,
         capabilities,
     )?)

@@ -34,7 +34,9 @@ the second calls the shipped executors directly.
 | `cache` | What the provider really read: cache hits across a turn, a tool call, a park and an export |
 | `export_import` | A byte-identical restore: the same request before and after a round trip |
 | `branching` | Rewind to an ancestor and branch: the shared prefix stays cached |
-| `agent_cost` | What an agentic session costs, in the provider's own numbers: per request, per task, and what it billed |
+
+The cost of an agentic session is a measurement rather than a recipe, and it
+lives in [`benchmarks/agent-cost`](../../benchmarks/agent-cost).
 
 ## Configuration
 
@@ -43,7 +45,7 @@ the second calls the shipped executors directly.
 | `OPENROUTER_API_KEY` | *required* | The key every recipe that calls a model uses (`tools` and `executors` need none). |
 | `COOKBOOK_MODEL` | *required* | The model the recipes call. |
 | `COOKBOOK_ENDPOINT` | *required* | The `OpenAI`-compatible base `URL` the recipes call. |
-| `COOKBOOK_PROVIDER` | OpenRouter decides | Pins the upstream provider for `cache`, `branching` and `agent_cost`, so two runs of the same recipe stay comparable. |
+| `COOKBOOK_PROVIDER` | OpenRouter decides | Pins the upstream provider for `cache` and `branching`, so two runs of the same recipe stay comparable. |
 
 Every recipe that calls a model talks to a real one, so the model decides what
 it does with a prompt: the tool recipes say, in a system message, which tool to

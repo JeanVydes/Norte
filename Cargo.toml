@@ -2,6 +2,7 @@
 resolver = "3"
 exclude = ["fuzz"]
 members = [
+    "benchmarks/agent-cost",
     "examples/cookbook",
     "rustychain-macros",
     "rustychain-core",

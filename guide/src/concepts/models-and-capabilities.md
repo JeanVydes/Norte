@@ -31,9 +31,14 @@ let capabilities = Capabilities::builder()
 | `StreamingGranularity` | `Delta`, `Part`, `Disabled` |
 | `CacheMode` | `None`, `Automatic`, `Explicit` |
 | `ReasoningRequest` | the reasoning ask: automatic, a budget, or off |
+| `Feature` | `Citations`, `ParallelToolCalls`, `ForcedToolChoice`, `Batch`, `Logprobs` |
 
 A request that asks for something outside the declared capabilities is a typed
 error before the wire is touched, not a vendor error afterwards.
+
+`Feature::Logprobs` gates token probabilities: a turn asks for a count and gets a
+typed error when the model does not declare the feature, so the host declares it
+once per model instead of discovering the gap on the wire.
 
 ## ModelRef: who answers
 

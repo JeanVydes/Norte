@@ -29,6 +29,10 @@ First release.
   conformance suites, for tests only.
 - `norte-macros` — `#[tool]`, `declare_function!` and `declare_tool!`.
 - `norte` — the facade: one dependency, everything re-exported.
+- Token-level log probabilities (`logprobs`): opt-in per turn, gated on
+  `Feature::Logprobs`, mapped on the OpenAI Chat, OpenAI Responses and Gemini
+  wires, and delivered as an informational `Logprobs` delta the host may keep.
+  The library never persists them.
 
 Each adapter covers roughly 95 % of its wire's documented surface; what is
 missing is named in the README. There is no model catalogue, no price table and

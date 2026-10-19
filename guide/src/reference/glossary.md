@@ -37,6 +37,11 @@ errors. See [Streaming](concepts/streaming.md).
 **Layer** — a wrapper around the model call that can rewrite a request, answer it
 locally, or pass it on. See [Layers and observers](concepts/layers-and-observers.md).
 
+**Logprob** — the probability a model assigned to a token, wanted by evaluation
+and guardrail hosts and rarely by others. Opt-in per turn (`logprobs(n)`), gated
+on `Feature::Logprobs`, delivered as a `Logprobs` delta and never written to the
+conversation. See [Streaming](concepts/streaming.md).
+
 **Message** — a `Role` plus a list of `Part`s, plus an optional origin (which
 carries `Usage`).
 
@@ -72,7 +77,7 @@ counter, a steering queue, grants and metadata.
 and approvals; `BlobStore` holds content-addressed bytes.
 
 **StreamDelta** — a piece of the model's output as it arrives: text, reasoning,
-refusal, tool arguments, media, continuity, safety ratings.
+refusal, tool arguments, media, continuity, safety ratings, log probabilities.
 
 **StreamTransform** — a rewrite of `StreamDelta`s between the provider and your
 loop. Can drop or change a delta.

@@ -32,9 +32,44 @@ purpose, because it is the call that waits for the commit.
 | `Media { index, bytes, last }` | Media bytes arrived. |
 | `Continuity { index, len }` | An opaque continuity token arrived. |
 | `SafetyRatings { ratings }` | The provider's ratings for this chunk. |
+| `Logprobs { index, entries }` | The provider's token probabilities, when the turn asked for them. |
 
 `index` identifies the part the delta belongs to, so a message with text *and* a
 tool call streams both without losing track.
+
+## Log probabilities
+
+Token probabilities are opt-in per turn, because most turns do not want them and
+the payload is large. The turn asks for a count; `0` reports only the chosen
+token, `n` adds up to `n` runner-up tokens:
+
+```rust,ignore
+let mut stream = engine.turn(session.id)
+    .input(Message::user("Where did the model hesitate?"))
+    .logprobs(5)
+    .start();
+
+while let Some(event) = stream.next().await {
+    if let EngineEvent::StreamDelta { delta: StreamDelta::Logprobs { entries, .. }, .. } = event? {
+        for entry in entries {
+            sink.record(entry.token.as_str(), entry.logprob.get());
+        }
+    }
+}
+```
+
+Each entry carries the position's chosen token, its probability, and the
+runner-ups under the delta's `index`, so probabilities line up with the text a
+renderer is already showing. A field the neutral vocabulary does not model — a
+Gemini `tokenId`, a vendor extra — travels in the entry's extension map instead
+of being dropped.
+
+The library itself keeps none of this. Probabilities are informational: never a
+`Part`, never part of the committed message, never replayed on the next request,
+so asking for them leaves the cache prefix where it was. A model that does not
+declare `Feature::Logprobs` is rejected before the request is built (see
+[Models and capabilities](concepts/models-and-capabilities.md)), and how long the
+numbers live is the host's decision, made from its own observer.
 
 ## EngineEvent — the turn
 

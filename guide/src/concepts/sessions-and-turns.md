@@ -59,6 +59,7 @@ parked at `AwaitingApproval` or interrupted mid-loop.
 | `options(TurnOptions)` | Params, reasoning, tool subset and vendor extensions at once. |
 | `params(GenerationParams)` | The generation parameters for this turn. |
 | `temperature`, `top_p`, `top_k`, `max_output_tokens`, `stop_sequences`, `seed` | Shorthands for the fields above. |
+| `logprobs(u8)` | Ask the model for token probabilities, up to 20 runner-ups. Needs `Feature::Logprobs` on the model. |
 | `output_schema(Value)` | A JSON Schema the answer must satisfy. |
 | `reasoning(ReasoningRequest)` | Ask for reasoning, and how much of it. |
 | `tools(impl IntoIterator<Item = ToolName>)` | Restrict the request to a subset of the registered tools. |

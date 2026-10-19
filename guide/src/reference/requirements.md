@@ -227,6 +227,10 @@ Capabilities are data. Before every request the engine consults the model’s ca
 
 **FR-CAP-6.** A descriptor is assembled with a typed, fluent builder, or parsed from host JSON. The builder accepts closed enums and typed values only, never strings, so a misspelled capability cannot enter the descriptor.
 
+**FR-LP-1.** Token-level log probabilities are opt-in per turn: the turn asks for a count, and the engine rejects that turn with a typed error when the model does not declare `Feature::Logprobs`, or when the count exceeds the neutral cap of 20. Both failures are raised before the request is built, so a model that cannot report probabilities is never asked for them. Every other turn of the same session is unaffected.
+
+**Where it lives:** `norte-core/src/capability.rs` (`check_generation`), `norte-core/src/engine.rs` (`TurnBuilder::logprobs`), `norte-core/src/model.rs`.
+
 **Verified by:** `norte-core` (`capability.rs`) and `norte-testing` (`tests/engine.rs`, `tests/turn_options.rs`).
 
 ## 6. Streaming Pipeline
@@ -246,6 +250,10 @@ Streaming is the only primitive. A blocking call is obtained by collecting the s
 **Where it lives:** `norte-core/src/engine.rs` (`drain_stream`, `into_result`), `norte-core/src/policy.rs`, `norte-core/src/stream.rs` (`grow_tool_call`).
 
 **FR-STREAM-5.** Observers and stream transforms see every event in order and may not drop events that affect durability; they may only annotate, filter for logging, or produce additional side-channel events.
+
+**FR-LP-2.** Each token's probability arrives as an informational stream event tagged with the part index it belongs to: the chosen token, its raw bytes when the vendor reports them, the runner-up tokens, and any vendor field the neutral vocabulary does not model. The accumulator drops the event, so the committed message's parts and the reconstructed prefix are unchanged — asking for probabilities never moves a cache boundary. What records the request is the request digest in the message origin and the stored per-turn options (FR-EXP-7); the library persists no probabilities, and the host decides what to keep from the observer channel.
+
+**Where it lives:** `norte-core/src/domain/logprob.rs`, `norte-core/src/engine.rs` (`stream_delta`), `norte-core/src/stream.rs` (`apply`).
 
 **Verified by:** `norte-core` (`stream.rs`) and `norte-testing` (`tests/engine.rs`, `tests/scenarios.rs`, `tests/observers.rs`).
 
@@ -566,7 +574,7 @@ The three mechanisms separate concerns that a single interceptor chain conflated
 
 ## 12. Provider Adapters
 
-Adapters must expose the documented public surface of their respective providers for the features advertised by the capability descriptor. Gaps are compile-time or runtime typed errors, never silent omissions. Two things keep that honest: a feature the roadmap (§19) lists as `Deferred` is absent by an explicit decision and never half-works, and an opt-in vendor field the request never asked for is not part of the advertised surface — the adapter does not invent a neutral home for data nobody requested. Log probabilities are requested explicitly, per turn (§5, §6), and surface as an informational event the host may keep or drop; because the request asked for them, they are no longer an unrequested vendor field.
+Adapters must expose the documented public surface of their respective providers for the features advertised by the capability descriptor. Gaps are compile-time or runtime typed errors, never silent omissions. Two things keep that honest: a feature the library does not implement is absent by an explicit decision and never half-works, and an opt-in vendor field the request never asked for is not part of the advertised surface — the adapter does not invent a neutral home for data nobody requested. Log probabilities are requested explicitly, per turn (§5, §6), and surface as an informational event the host may keep or drop; because the request asked for them, they are no longer an unrequested vendor field.
 
 A host-executed function tool is declared by its JSON-schema `parameters`. A tool the provider itself executes or defines (a built-in such as web search, computer use, code execution or URL context) is declared by the `ToolSpec::declaration` field, which holds the provider’s declaration object and is re-emitted verbatim on the wire: OpenAI Responses and Anthropic place it as an entry in the same `tools` array, Gemini places it as a separate entry alongside `functionDeclarations`, and Chat Completions, which cannot express it, returns a typed capability error. A provider tool whose `declaration` is absent is a typed capability error on every wire.
 
@@ -618,6 +626,10 @@ Model-generated media streams back through the same events: audio output arrives
 **FR-ADP-4.** Adapters implement media materialization (FR-RECON-4) and, where a vendor returns generated media as a URL or file, its ingestion into `BlobStore` (FR-PART-5).
 
 **FR-ADP-5.** A vendor usage object is read through a claim: the adapter takes the counters it models out of a copy of the payload, and every field no claim touched is kept verbatim in `Usage::vendor`. A counter the neutral vocabulary has no field for is therefore never dropped, and an adapter that stops claiming one duplicates it visibly in `vendor` instead of losing it silently. The map serializes only when non-empty, so a payload whose every field was claimed adds no bytes, and an Anthropic usage record spread over several events is merged before it is read once, so no field is claimed twice. Being key-ordered and made of `Eq` values, it keeps an export byte-identical across a round trip (FR-EXP-2).
+
+**FR-LP-3.** Each wire maps the neutral count onto its own fields and parses what it returns. OpenAI Chat sets `logprobs` and, above zero, `top_logprobs`, and reads `choices[].logprobs.content[]` and `.refusal[]`. OpenAI Responses sets `top_logprobs` and adds `message.output_text.logprobs` to `include`, then reads `response.output_text.delta.logprobs`. Gemini sets `generationConfig.responseLogprobs` and, above zero, `generationConfig.logprobs`, and reads `candidates[].logprobsResult`, pairing each chosen token with its top candidates. A wire whose model does not declare the feature is rejected by the capability gate (FR-LP-1) before the request is built, never silently ignored; a vendor entry with no token or no probability is skipped rather than guessed at; and a field the neutral vocabulary does not model (a Gemini `tokenId`, a vendor extra) travels in the entry's extension map.
+
+**Where it lives:** `norte-openai/src/chat/request.rs`, `norte-openai/src/chat/stream.rs`, `norte-openai/src/responses/request.rs`, `norte-openai/src/responses/stream.rs`, `norte-gemini/src/generate/request.rs`, `norte-gemini/src/generate/stream.rs`.
 
 **Verified by:** Adapter fixture suites; CI jobs **Live Provider Smoke (FR-TEST-2)** and **Parser Fuzzing (FR-TEST-3)**.
 
@@ -718,7 +730,7 @@ The engine emits a typed event stream that observers and host code may subscribe
 - **Export/import.** Export → import → re-export reproduces the conversation exactly, and import preserves the session identity (FR-EXP-4).
 - **Request.** The reconstructed request is byte-identical before and after export/import, including the session-derived cache key (FR-RECON-12, FR-EXP-4).
 - **Wire.** The adapter wire projection (FR-RECON-12) is byte-identical for every shipped wire family (Section 12).
-- **Options.** The full generation-parameter matrix (temperature, top_p, top_k, max_output_tokens, stop_sequences, seed, output_schema), every reasoning mode, representative tool subsets — including empty, single and maximal — and a vendor request extra round-trip through the request and are reported by the audit event (FR-ENG-7, FR-ENG-8, FR-ENG-9).
+- **Options.** The full generation-parameter matrix (temperature, top_p, top_k, max_output_tokens, stop_sequences, seed, output_schema, logprobs), every reasoning mode, representative tool subsets — including empty, single and maximal — and a vendor request extra round-trip through the request and are reported by the audit event (FR-ENG-7, FR-ENG-8, FR-ENG-9).
 
 **Where it lives:** `norte-testing/tests/turn_options.rs`.
 
@@ -729,25 +741,3 @@ The engine emits a typed event stream that observers and host code may subscribe
 - **Continuity across models.** An exported signature is replayed by its exact model, dropped by a different model outside a tool loop, and blocks mid tool loop instead of being sent (FR-CONT-2, FR-CONT-4, FR-EXP-2).
 - **Parked results.** A parked message’s completed results are visible under `norte.partial_tools` while it parks, are never run again on resume, and the key is cleared when the tool message commits (FR-APPR-8).
 - **Expired provider files.** A `ProviderFile` that has expired is revived once from its blob, the revived reference is reused on every later turn so the prefix does not move, and the committed node keeps the reference it was written with (FR-PART-4, FR-RECON-4).
-
-## 19. Crate Roadmap
-
-The core stays storage- and vendor-agnostic. `Store` and `BlobStore` are traits
-(FR-STORE-1) and core ships in-memory implementations of both
-(`norte_core::memory`), so an application runs with no external service and
-a CLI, desktop app or single-process worker needs nothing else. Durable backends
-— a database, an object store, local or remote — remain the **host's** choice and
-deliberately live outside this workspace (FR-STORE-1, FR-STORE-4).
-
-Remaining possible additions to this workspace:
-
-| Crate | Purpose |
-| --- | --- |
-| `norte-ui` / `examples` | Reference UIs and end-to-end agent examples |
-
-`norte-mcp` (Model Context Protocol client and server) is shipped. There is
-no separate code-interpreter tool: `norte-tools`' `CommandTool` executes
-programs directly (bash or another program) and covers that use case.
-
-*Not a promise:* nothing in this section is scheduled or implied by the
-rest of the ledger.

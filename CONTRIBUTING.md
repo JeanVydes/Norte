@@ -26,6 +26,9 @@ workflow for contributing.
   wiring its own engine, nothing shared between them on purpose.
 - `benchmarks/` — measurements against a real model, one folder per benchmark,
   each with its own README and a `results/` folder the run writes into.
+- `guide/` — the multi-page user guide, written in Markdown and built with
+  [mdBook](https://rust-lang.github.io/mdBook/) (`mdbook serve guide`). CI
+  publishes it to GitHub Pages from `dev`; a pull request only builds it.
 - `docs/SRS.md` — the single source of truth for behaviour, kept local (it is
   deliberately not committed).
 - top-level `Cargo.toml` — the workspace manifest.
@@ -69,6 +72,10 @@ bash scripts/check-dependencies.sh
 
 `scripts/check-dependencies.sh` enforces the dependency rule (NFR-ARCH-1): the
 core depends on nothing internal, and wire crates never depend on each other.
+
+The guide is not part of the Rust gate; build it with
+`mdbook build guide` (or read it live with `mdbook serve guide`). CI builds it in
+`.github/workflows/pages.yml`.
 
 ## Building and running
 

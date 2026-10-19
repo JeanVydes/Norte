@@ -111,10 +111,24 @@ program, how to run it, and the results it produced.
 
 ## Documentation
 
-Every crate carries module-level rustdoc (`cargo doc --workspace --no-deps
---open`), and [`CONTRIBUTING.md`](CONTRIBUTING.md) covers the layout, the build
-and the lint policies. The behavioural spec lives beside the code as
-`docs/SRS.md` and is deliberately not committed.
+- **The guide** — [`guide/`](guide) explains what the library offers, the
+  concepts behind it, and how to do specific things. It is written in Markdown
+  and built with [mdBook](https://rust-lang.github.io/mdBook/); run
+  `mdbook serve guide` to read it locally, and CI publishes it to GitHub Pages
+  from `dev`.
+- **Rustdoc** — every crate documents its public surface; the reference is
+  generated, not written twice:
+
+  ```sh
+  cargo doc --workspace --no-deps --open
+  ```
+
+- **Examples** — [`examples/cookbook`](examples/cookbook) is one small recipe per
+  topic, each runnable on its own.
+- **Contributing** — [`CONTRIBUTING.md`](CONTRIBUTING.md) covers the layout, the
+  build and the lint policies.
+- **Behavioural spec** — `docs/SRS.md`, kept beside the code and deliberately not
+  committed.
 
 ## Development
 

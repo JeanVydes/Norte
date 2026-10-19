@@ -31,6 +31,7 @@ the second calls the shipped executors directly.
 | `cache` | What the provider really read: cache hits across a turn, a tool call, a park and an export |
 | `export_import` | A byte-identical restore: the same request before and after a round trip |
 | `branching` | Rewind to an ancestor and branch: the shared prefix stays cached |
+| `agent_cost` | What an agentic session costs: per request, per task, and what the provider itself billed |
 
 ## Configuration
 
@@ -38,6 +39,8 @@ the second calls the shipped executors directly.
 | --- | --- | --- |
 | `OPENROUTER_API_KEY` | — | Required by every recipe that calls a model (`tools` and `executors` need none). |
 | `COOKBOOK_MODEL` | `nvidia/nemotron-3.5-super-vl:free` | The model the recipes call. |
+| `COOKBOOK_PROVIDER` | OpenRouter decides | Pins the upstream provider for `cache`, `branching` and `agent_cost`, and picks the price table `agent_cost` uses. |
+| `COOKBOOK_PRICE_IN` / `_OUT` / `_CACHE_READ` | the table's | USD per million tokens, when the run has to be priced with a rate the table does not carry (`agent_cost`). |
 
 Every recipe that calls a model talks to a real one, so the model decides what
 it does with a prompt: the tool recipes say, in a system message, which tool to
@@ -46,7 +49,10 @@ call.
 OpenRouter serves a model from one of several upstream providers, and they do
 not all implement prompt caching or report it. The cache-read numbers in `cache`
 and `branching` therefore describe the route the run actually got, and the same
-model id can report a hit on one run and nothing on the next.
+model id can report a hit on one run and nothing on the next. `COOKBOOK_PROVIDER`
+names the route instead of leaving it to the router; a run that pins one gets a
+hard failure when that provider refuses it (a 429 of its own, not a fallback),
+which is the honest outcome for a measurement.
 
 The wiring is ~10 lines of [OpenRouter](https://openrouter.ai) — a
 `VendorProfile` with a bearer key, plus the generic `OpenAiChat::new` — because

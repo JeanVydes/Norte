@@ -39,6 +39,11 @@
 //! the identical recipe against a provider that reports it, so the two halves —
 //! the bytes, which the library controls, and the tokens, which it does not —
 //! can be watched next to each other.
+//!
+//! `COOKBOOK_PROVIDER=OpenInference` pins the upstream provider. Without it
+//! `OpenRouter` may route two turns of the same conversation to different
+//! providers, and each provider keeps its own cache: the hit is then a routing
+//! decision, not a property of the prefix.
 
 use std::error::Error;
 use std::sync::{Arc, Mutex};
@@ -47,7 +52,7 @@ use rustychain_core::{
     Capabilities, ContinuityAdapter, Digest, Engine, EngineBuilder, FnExecutor, GrantScope,
     InMemoryBlobStore, InMemoryStore, Message, Modality, Model, ModelId, ModelRef, ModelRequest,
     ModelStream, PolicySet, ProviderId, SessionId, StreamingGranularity, ToolApprovalPolicy,
-    ToolKind, ToolName, ToolRegistry, WireFamily,
+    ToolKind, ToolName, ToolRegistry, TurnOptions, WireFamily,
 };
 use rustychain_http::{AuthScheme, VendorProfile};
 use rustychain_openai::{OpenAiChat, WIRE_CHAT};
@@ -63,18 +68,27 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .append_history(session.id, vec![Message::system(manual())])
         .await?;
     let mut hits = Hits::default();
+    let options = turn_options();
+
+    println!(
+        "--- route: {}",
+        match std::env::var("COOKBOOK_PROVIDER") {
+            Ok(provider) => format!("pinned to {provider}"),
+            Err(_) => "OpenRouter decides, and may switch upstream between turns".to_owned(),
+        }
+    );
 
     println!("--- 1. the normal case");
-    normal(&engine, session.id, &captured, &mut hits).await?;
+    normal(&engine, session.id, &captured, &mut hits, &options).await?;
 
     println!("\n--- 2. after a tool call");
-    after_tool(&engine, session.id, &captured, &mut hits).await?;
+    after_tool(&engine, session.id, &captured, &mut hits, &options).await?;
 
     println!("\n--- 3. after human approval");
-    after_approval(&engine, session.id, &captured, &mut hits).await?;
+    after_approval(&engine, session.id, &captured, &mut hits, &options).await?;
 
     println!("\n--- 4. after an export and an import into a fresh engine");
-    after_export(&engine, &captured, session.id, &mut hits).await?;
+    after_export(&engine, &captured, session.id, &mut hits, &options).await?;
 
     closing(&hits);
     Ok(())
@@ -86,13 +100,26 @@ async fn normal(
     session: SessionId,
     captured: &Captured,
     hits: &mut Hits,
+    options: &TurnOptions,
 ) -> Result<(), Box<dyn Error>> {
-    let outcome = engine.send(session, Message::user(ASK_A)).finish().await?;
+    let outcome = engine
+        .turn(session)
+        .input(Message::user(ASK_A))
+        .options(options.clone())
+        .start()
+        .finish()
+        .await?;
     hits.add(report(
         "turn 1 (nothing to reuse yet)",
         outcome.message.as_ref(),
     ));
-    let outcome = engine.send(session, Message::user(ASK_B)).finish().await?;
+    let outcome = engine
+        .turn(session)
+        .input(Message::user(ASK_B))
+        .options(options.clone())
+        .start()
+        .finish()
+        .await?;
     hits.add(report(
         "turn 2 (the conversation again)",
         outcome.message.as_ref(),
@@ -107,9 +134,13 @@ async fn after_tool(
     session: SessionId,
     captured: &Captured,
     hits: &mut Hits,
+    options: &TurnOptions,
 ) -> Result<(), Box<dyn Error>> {
     let outcome = engine
-        .send(session, Message::user(COUNT_WORDS))
+        .turn(session)
+        .input(Message::user(COUNT_WORDS))
+        .options(options.clone())
+        .start()
         .finish()
         .await?;
     hits.add(report(
@@ -117,7 +148,10 @@ async fn after_tool(
         outcome.message.as_ref(),
     ));
     let outcome = engine
-        .send(session, Message::user("How many was that?"))
+        .turn(session)
+        .input(Message::user("How many was that?"))
+        .options(options.clone())
+        .start()
         .finish()
         .await?;
     hits.add(report(
@@ -135,8 +169,15 @@ async fn after_approval(
     session: SessionId,
     captured: &Captured,
     hits: &mut Hits,
+    options: &TurnOptions,
 ) -> Result<(), Box<dyn Error>> {
-    let outcome = engine.send(session, Message::user(DEPLOY)).finish().await?;
+    let outcome = engine
+        .turn(session)
+        .input(Message::user(DEPLOY))
+        .options(options.clone())
+        .start()
+        .finish()
+        .await?;
     println!("phase: {:?}", outcome.session.phase);
     for record in engine.pending_approvals(session).await? {
         println!("waiting on {} (approval {})", record.tool, record.id);
@@ -150,7 +191,10 @@ async fn after_approval(
         outcome.message.as_ref(),
     ));
     let outcome = engine
-        .send(session, Message::user("What did the deploy return?"))
+        .turn(session)
+        .input(Message::user("What did the deploy return?"))
+        .options(options.clone())
+        .start()
         .finish()
         .await?;
     hits.add(report(
@@ -168,6 +212,7 @@ async fn after_export(
     captured: &Captured,
     session: SessionId,
     hits: &mut Hits,
+    options: &TurnOptions,
 ) -> Result<(), Box<dyn Error>> {
     let conversation = engine.export(session).await?;
     println!(
@@ -188,10 +233,10 @@ async fn after_export(
         }
     );
     let outcome = elsewhere
-        .send(
-            restored.id,
-            Message::user("In one line: what have we done so far?"),
-        )
+        .turn(restored.id)
+        .input(Message::user("In one line: what have we done so far?"))
+        .options(options.clone())
+        .start()
         .finish()
         .await?;
     hits.add(report(
@@ -474,6 +519,26 @@ fn tool_capabilities() -> Capabilities {
         .streaming(StreamingGranularity::Delta)
         .tool_kind(ToolKind::Function)
         .build()
+}
+
+/// Pins the upstream provider when `COOKBOOK_PROVIDER` names one.
+///
+/// The measurement is about a prefix, and the cache that holds it lives inside
+/// one provider: with `OpenRouter` free to route, a turn can land elsewhere and
+/// report a miss the bytes never caused. Pinning turns the number back into a
+/// statement about the provider the run names.
+fn turn_options() -> TurnOptions {
+    let mut options = TurnOptions::default();
+    // Every answer here is a line or two. Saying so also keeps `OpenRouter` from
+    // reserving the model's whole output window against the key on every call.
+    options.params.max_output_tokens = Some(512);
+    if let Ok(provider) = std::env::var("COOKBOOK_PROVIDER") {
+        options.extensions.insert(
+            "openai.chat:provider".to_owned(),
+            serde_json::json!({ "order": [provider], "allow_fallbacks": false }),
+        );
+    }
+    options
 }
 
 /// The model every recipe runs on unless `COOKBOOK_MODEL` says otherwise.

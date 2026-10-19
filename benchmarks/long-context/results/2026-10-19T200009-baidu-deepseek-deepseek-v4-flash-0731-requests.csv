@@ -1,0 +1,5 @@
+arm,step,index,messages,bytes,shared,byte_identical,shared_digest,input,cache_read,cache_write,output,cost,elapsed
+whole,cold,1,66,72529,,,,15120,14336,0,162,0.000224,5.108
+whole,warm,2,68,72738,66,true,8c50fac838cf…,15151,14336,0,256,0.000265,9.577
+compacted,cold,1,3,972,,,,226,0,0,54,0.000050,14.070
+compacted,warm,2,5,1119,3,true,ef0892c79e61…,254,0,0,94,0.000070,9.299

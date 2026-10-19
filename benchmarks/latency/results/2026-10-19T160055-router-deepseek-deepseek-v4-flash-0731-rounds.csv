@@ -1,7 +1,0 @@
-mode,round,ttft_ms,total_ms,text_deltas,reasoning_deltas,other_deltas,bytes,output_tokens,tokens_per_second,cost,note
-streaming,0,15019.5,19190.4,14,40,0,133,163,8.5,0.000035,
-buffered,0,—,17128.4,0,0,0,0,512,29.9,0.000271,
-streaming,1,2507.1,12480.1,22,339,0,101,383,30.7,0.000102,
-buffered,1,—,15328.7,0,0,0,0,512,33.4,0.000098,
-streaming,2,2182.0,15266.9,31,386,0,119,451,29.5,0.000118,
-buffered,2,—,11962.8,0,0,0,0,512,42.8,0.000272,

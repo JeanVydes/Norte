@@ -1,9 +1,0 @@
-phase,turn,elapsed
-1. normal,turn 1 (nothing to reuse yet),2.78 s
-1. normal,turn 2 (the conversation again),1.47 s
-2. tool,the turn that calls the tool,4.01 s
-2. tool,the turn after the result,1.21 s
-3. approval,the turn that parks,1.46 s
-3. approval,the resume (not a new request: the parked one),1.44 s
-3. approval,the turn after the approval,1.65 s
-4. export,the first turn of the new process,1.90 s

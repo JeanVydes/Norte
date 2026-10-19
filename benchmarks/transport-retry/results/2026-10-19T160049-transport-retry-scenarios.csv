@@ -1,9 +1,0 @@
-scenario,plan,max_attempts,attempts,ok,modelled_wait_ms,requests,stable_requests,median_micros,error
-control,,3,1,true,0,1,true,988,
-one-429-with-retry-after,RateLimited 429 retry-after 2000,3,2,true,2000,2,true,3779,
-two-429s-second-silent,RateLimited 429 retry-after 300 | RateLimited 429,4,3,true,1300,3,true,6833,
-three-500s,ServerError 500 | ServerError 502 | ServerError 503,5,4,true,3500,4,true,9985,
-overloaded-then-ok,ModelOverloaded 503,3,2,true,500,2,true,3925,
-transport-timeout,Transport,3,2,true,500,2,true,3812,
-exhausts-max-attempts,RateLimited 429 | RateLimited 429 | RateLimited 429 | RateLimited 429,3,3,false,1500,3,true,6574,Some(RateLimited): provider error: RateLimited: scripted failure (status 429)
-permanent-401,Authentication 401,3,1,false,0,1,true,781,Some(Authentication): provider error: Authentication: scripted failure (status 401)

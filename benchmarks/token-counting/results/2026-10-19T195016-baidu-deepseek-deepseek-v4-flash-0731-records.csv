@@ -1,0 +1,4 @@
+index,input,output,reasoning,cache_read,cache_write,derived_total,cost,complete,vendor_keys
+1,2042,129,96,0,0,2171,0.000315,true,completion_tokens_details cost cost_details is_byok prompt_tokens_details total_tokens
+2,2088,75,39,1792,0,2163,0.000075,true,completion_tokens_details cost cost_details is_byok prompt_tokens_details total_tokens
+3,2135,63,30,2048,0,2198,0.000044,true,completion_tokens_details cost cost_details is_byok prompt_tokens_details total_tokens

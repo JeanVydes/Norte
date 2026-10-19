@@ -1,0 +1,4 @@
+schema,shape,trap,rounds,requests,calls,rejected,accepted,answered,called,median_micros,error
+flat,one string field,none,3,6,3,0,3,3,3,6399302,
+enum,"one enum field (low, medium, high)","the ask insists on `urgent`, which is not in the enum",3,4,1,1,0,3,1,4506054,
+nested,"a nested guest object and a number, deny_unknown_fields","the ask insists on a `floor`, which the schema does not declare",3,6,3,0,3,3,3,8530275,

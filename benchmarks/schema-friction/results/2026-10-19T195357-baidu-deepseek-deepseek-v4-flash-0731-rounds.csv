@@ -1,0 +1,10 @@
+schema,round,requests,calls,rejected,accepted,answered,input_tokens,output_tokens,cache_read,cost
+flat,0,2,1,0,1,true,876,94,512,0.000086
+flat,1,2,1,0,1,true,876,133,512,0.000101
+flat,2,2,1,0,1,true,876,105,512,0.000090
+enum,0,1,0,0,0,true,435,209,256,0.000106
+enum,1,2,1,1,0,true,954,407,512,0.000218
+enum,2,1,0,0,0,true,435,250,256,0.000122
+nested,0,2,1,0,1,true,1090,435,512,0.000247
+nested,1,2,1,0,1,true,1090,544,768,0.000257
+nested,2,2,1,0,1,true,1090,346,768,0.000180

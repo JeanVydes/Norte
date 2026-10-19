@@ -5,7 +5,7 @@ runs. A policy is a small synchronous function over a view of the call, and it
 returns a decision.
 
 ```rust,ignore
-use rustychain_core::{Decision, Policy, PolicyView};
+use norte_core::{Decision, Policy, PolicyView};
 
 struct NoSecrets;
 
@@ -57,7 +57,7 @@ requires approval for a named set of tools.
 ## Transform, and sandboxing
 
 `Transform` is how a host re-roots paths, pins a working directory, or narrows a
-command without touching the model. The cookbook's `agent_cost` uses three:
+command without touching the model. `benchmarks/agent-cost` uses three:
 re-root every relative path into a scratch directory, refuse a path that escapes
 it, and narrow `command` to `program: "cargo"` with a working directory the model
 cannot widen.
@@ -81,7 +81,7 @@ Two notes from doing exactly that:
 A host then decides, using the recorded id:
 
 ```rust,ignore
-use rustychain_core::GrantScope;
+use norte_core::GrantScope;
 
 let pending = engine.pending_approvals(session.id).await?;
 let record = engine

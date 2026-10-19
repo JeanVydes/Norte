@@ -1,0 +1,31 @@
+[package]
+name = "norte-mcp"
+description = "Model Context Protocol client and server for Norte: remote tools, resources and prompts become first-class host tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "../README.md"
+keywords = ["mcp", "llm", "agent", "tools"]
+categories = ["api-bindings", "asynchronous"]
+
+[dependencies]
+norte-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+base64 = { workspace = true }
+sha2 = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[lints]
+workspace = true

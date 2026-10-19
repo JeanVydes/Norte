@@ -29,7 +29,7 @@ export OPENROUTER_API_KEY=sk-or-...
 export BENCH_ENDPOINT=https://openrouter.ai/api/v1
 export BENCH_MODEL=deepseek/deepseek-v4-flash-0731
 export BENCH_PROVIDER=DeepInfra          # optional: pins the upstream
-cargo run -p rustychain-bench-agent-cost
+cargo run -p norte-bench-agent-cost
 ```
 
 | Variable | Default | Purpose |
@@ -86,9 +86,3 @@ written by the thing that measured it.
 
 `results/` holds one report per run. Compare only runs that agree on model,
 provider, endpoint, budget and commit.
-
-The benchmark spent its first life as a cookbook recipe. Two runs on the code as
-it is now (`deepseek/deepseek-v4-flash-0731` pinned to `DeepInfra` through
-`OpenRouter`, three tasks, budget 32) came to 23 and 29 requests, a cache hit of
-around 86 %, and $0.002850 and $0.003835 — about $0.0011 per task. The reports
-that follow were written by the runs themselves.

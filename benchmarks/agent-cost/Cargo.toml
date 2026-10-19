@@ -1,5 +1,5 @@
 [package]
-name = "rustychain-bench-agent-cost"
+name = "norte-bench-agent-cost"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,10 +8,10 @@ publish = false
 description = "What a coding agent costs on a real project, measured in the provider's own numbers."
 
 [dependencies]
-rustychain-core = { workspace = true }
-rustychain-http = { workspace = true }
-rustychain-openai = { workspace = true }
-rustychain-tools = { workspace = true }
+norte-core = { workspace = true }
+norte-http = { workspace = true }
+norte-openai = { workspace = true }
+norte-tools = { workspace = true }
 chrono = { workspace = true }
 futures-util = { workspace = true }
 serde_json = { workspace = true }

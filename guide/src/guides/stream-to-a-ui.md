@@ -8,7 +8,7 @@ state.
 
 ```rust,ignore
 use futures_util::StreamExt;
-use rustychain_core::{EngineEvent, StreamDelta};
+use norte_core::{EngineEvent, StreamDelta};
 
 let mut stream = engine.send(session.id, Message::user(prompt)).start();
 
@@ -89,7 +89,7 @@ own price, when it reports one, is in `Usage::vendor["cost"]`. See
 
 ## Reference implementation
 
-The cookbook's `streaming` example is the minimal loop, and
+The `streaming` recipe in `examples/cookbook` is the minimal loop, and
 `benchmarks/agent-cost` is the maximal one: it renders text, reasoning, each
 iteration with its request digest and cache boundaries, every tool call with the
 bytes it returned, and the provider's bill per request — all of it from the event

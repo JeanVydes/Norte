@@ -18,19 +18,19 @@
 //! only thing that changed.
 //!
 //! ```sh
-//! OPENROUTER_API_KEY=sk-or-... cargo run -p rustychain-cookbook --example export_import
+//! OPENROUTER_API_KEY=sk-or-... cargo run -p norte-cookbook --example export_import
 //! ```
 
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 
-use rustychain_core::{
+use norte_core::{
     Capabilities, ContinuityAdapter, Digest, Engine, EngineBuilder, InMemoryBlobStore,
     InMemoryStore, Message, Modality, Model, ModelId, ModelRef, ModelRequest, ModelStream,
     ProviderId, SessionId, StreamingGranularity, WireFamily,
 };
-use rustychain_http::{AuthScheme, VendorProfile};
-use rustychain_openai::{OpenAiChat, WIRE_CHAT};
+use norte_http::{AuthScheme, VendorProfile};
+use norte_openai::{OpenAiChat, WIRE_CHAT};
 use serde_json::Value;
 
 const SYSTEM: &str = "Answer in one short sentence. Do not use tools.";
@@ -220,7 +220,7 @@ impl Model for Probe {
         self.inner.continuity()
     }
 
-    async fn stream(&self, request: ModelRequest) -> rustychain_core::Result<ModelStream> {
+    async fn stream(&self, request: ModelRequest) -> norte_core::Result<ModelStream> {
         // `request_body` is the projection the live path uses (FR-RECON-12), so
         // recording it records the bytes, not an approximation of them.
         let body = self.inner.request_body(&request)?;

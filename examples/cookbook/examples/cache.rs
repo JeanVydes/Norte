@@ -26,7 +26,7 @@
 //!    memory, the bytes must not be.
 //!
 //! ```sh
-//! OPENROUTER_API_KEY=sk-or-... cargo run -p rustychain-cookbook --example cache
+//! OPENROUTER_API_KEY=sk-or-... cargo run -p norte-cookbook --example cache
 //! ```
 //!
 //! The prefix has to be worth caching before any of this is visible: providers
@@ -48,14 +48,14 @@
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 
-use rustychain_core::{
+use norte_core::{
     Capabilities, ContinuityAdapter, Digest, Engine, EngineBuilder, FnExecutor, GrantScope,
     InMemoryBlobStore, InMemoryStore, Message, Modality, Model, ModelId, ModelRef, ModelRequest,
     ModelStream, PolicySet, ProviderId, SessionId, StreamingGranularity, ToolApprovalPolicy,
     ToolKind, ToolName, ToolRegistry, TurnOptions, WireFamily,
 };
-use rustychain_http::{AuthScheme, VendorProfile};
-use rustychain_openai::{OpenAiChat, WIRE_CHAT};
+use norte_http::{AuthScheme, VendorProfile};
+use norte_openai::{OpenAiChat, WIRE_CHAT};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -395,7 +395,7 @@ fn manual() -> String {
 
 // ── the tools ───────────────────────────────────────────────────────────────
 
-#[rustychain_core::tool(name = "word_count", description = "Count the words in a text")]
+#[norte_core::tool(name = "word_count", description = "Count the words in a text")]
 struct WordCount;
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -411,14 +411,14 @@ struct WordCountResult {
 
 #[async_trait::async_trait]
 impl FnExecutor<WordCountArgs, WordCountResult> for WordCount {
-    async fn call(&self, args: WordCountArgs) -> rustychain_core::Result<WordCountResult> {
+    async fn call(&self, args: WordCountArgs) -> norte_core::Result<WordCountResult> {
         Ok(WordCountResult {
             words: args.text.split_whitespace().count(),
         })
     }
 }
 
-#[rustychain_core::tool(name = "deploy", description = "Deploy a service to an environment")]
+#[norte_core::tool(name = "deploy", description = "Deploy a service to an environment")]
 struct Deploy;
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -435,7 +435,7 @@ struct DeployResult {
 
 #[async_trait::async_trait]
 impl FnExecutor<DeployArgs, DeployResult> for Deploy {
-    async fn call(&self, args: DeployArgs) -> rustychain_core::Result<DeployResult> {
+    async fn call(&self, args: DeployArgs) -> norte_core::Result<DeployResult> {
         Ok(DeployResult {
             url: format!("https://{}.example.test/{}", args.environment, args.service),
         })
@@ -473,7 +473,7 @@ impl Model for Probe {
         self.inner.continuity()
     }
 
-    async fn stream(&self, request: ModelRequest) -> rustychain_core::Result<ModelStream> {
+    async fn stream(&self, request: ModelRequest) -> norte_core::Result<ModelStream> {
         // `request_body` is the projection the live path uses (FR-RECON-12), so
         // recording it records the bytes, not an approximation of them.
         let body = self.inner.request_body(&request)?;

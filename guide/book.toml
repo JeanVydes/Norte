@@ -1,15 +1,15 @@
 [book]
-title = "RustyChain"
+title = "Norte"
 authors = ["Jean Vides"]
 language = "en"
 src = "src"
-description = "Provider-agnostic infrastructure for LLM agents in Rust."
+description = "Provider-agnostic infrastructure for AI agents in Rust."
 
 [output.html]
 default-theme = "navy"
 preferred-dark-theme = "navy"
-git-repository-url = "https://github.com/JeanVydes/rustychain"
-edit-url-template = "https://github.com/JeanVydes/rustychain/edit/dev/guide/{path}"
+git-repository-url = "https://github.com/JeanVydes/Norte"
+edit-url-template = "https://github.com/JeanVydes/Norte/edit/dev/guide/{path}"
 no-section-label = true
 smart-punctuation = true
 

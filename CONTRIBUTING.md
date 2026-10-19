@@ -1,4 +1,4 @@
-# Contributing to RustyChain
+# Contributing to Norte
 
 Thank you for your interest in contributing! This repository is organized as a
 Rust monorepo. Below you'll find how the workspace is structured and the preferred
@@ -6,22 +6,27 @@ workflow for contributing.
 
 ## Repository layout
 
-- `rustychain-core/` — the neutral domain model, engine, streaming pipeline,
+- `norte/` — the facade: `norte-core` re-exported at the root and every other
+  crate as a module of its own name, behind features. It adds no behaviour, and it
+  is the crate an application should depend on.
+- `norte-facade-smoke/` — a package whose only dependency is `norte`, which uses
+  the facade the way an application would.
+- `norte-core/` — the neutral domain model, engine, streaming pipeline,
   policies, layers, capabilities and every contract (port). It carries
   abstractions only — no vendor names, model tables or external persistence —
   plus the in-memory `Store` and `BlobStore` implementations for running with
   nothing else.
-- `rustychain-http/` — shared HTTP transport, `VendorProfile`, auth schemes and
+- `norte-http/` — shared HTTP transport, `VendorProfile`, auth schemes and
   `HttpMedia`.
-- `rustychain-openai/`, `rustychain-anthropic/`, `rustychain-gemini/` — the wire
+- `norte-openai/`, `norte-anthropic/`, `norte-gemini/` — the wire
   adapters and the native vendor presets.
-- `rustychain-tools/` — the default host tool suite, including the `command`
+- `norte-tools/` — the default host tool suite, including the `command`
   executor.
-- `rustychain-media/` — media preprocessing helpers.
-- `rustychain-mcp/` — Model Context Protocol integration.
-- `rustychain-testing/` — the scripted model, fixture replayer, request probe
+- `norte-media/` — media preprocessing helpers.
+- `norte-mcp/` — Model Context Protocol integration.
+- `norte-testing/` — the scripted model, fixture replayer, request probe
   and conformance suites.
-- `rustychain-macros/` — the procedural macros used across the workspace.
+- `norte-macros/` — the procedural macros used across the workspace.
 - `examples/cookbook/` — small, self-contained recipes: one file per topic, each
   wiring its own engine, nothing shared between them on purpose.
 - `benchmarks/` — measurements against a real model, one folder per benchmark,
@@ -29,16 +34,16 @@ workflow for contributing.
 - `guide/` — the multi-page user guide, written in Markdown and built with
   [mdBook](https://rust-lang.github.io/mdBook/) (`mdbook serve guide`). CI
   publishes it to GitHub Pages from `dev`; a pull request only builds it.
-- `docs/SRS.md` — the single source of truth for behaviour, kept local (it is
-  deliberately not committed).
+- `docs/SRS.md` — the single source of truth for behaviour, kept local and not
+  committed.
 - top-level `Cargo.toml` — the workspace manifest.
 
 ## How to Contribute
 
 1. **Fork the repository** and create your branch from `dev`.
 2. **Make changes in the crate that owns the behaviour.** Core contracts live in
-   `rustychain-core`; vendor translations live in the wire crates; host tools
-   live in `rustychain-tools`.
+   `norte-core`; vendor translations live in the wire crates; host tools
+   live in `norte-tools`.
 3. **Write clear, well-documented code** and include tests. Keep changes scoped.
 4. **Run the local checks** (see below).
 5. **Open a pull request** with a clear description and reference related issues.
@@ -52,7 +57,10 @@ workflow for contributing.
 cargo fmt --all
 ```
 
-- There are no cargo features; every crate builds with its full surface.
+- There is no conditional compilation inside a crate: core compiles with its full
+  surface, and a wire crate compiles whole. The only features in the workspace
+  select *which crates* are pulled in (`norte`), plus the `fuzz` feature the wire
+  crates expose to their fuzz targets.
 - Document public APIs with doc comments. Keep the public surface stable and
   documented.
 - Clippy runs with `all` and `pedantic` denied (see `.github/workflows/rust.yml`).
@@ -84,10 +92,10 @@ The guide is not part of the Rust gate; build it with
 cargo build --workspace
 
 # Build a single crate:
-cargo build -p rustychain-core
+cargo build -p norte-core
 
 # Run a single crate's tests:
-cargo test -p rustychain-tools
+cargo test -p norte-tools
 ```
 
 ## Running tests
@@ -108,9 +116,9 @@ Tests are hermetic: there are no live API keys and no external services. Provide
 behaviour is pinned by recorded fixtures; live smoke tests are run separately on a
 schedule (FR-TEST-2).
 
-`benchmarks/` is the opposite and is treated as such: a benchmark talks to a paid
-model on purpose, so `cargo test --workspace` type-checks and builds it but never
-runs it. Its results are written by the run, under its own `results/`.
+A benchmark talks to a paid model, so `cargo test --workspace` type-checks and
+builds it but never runs it. Its results are written by the run, under its own
+`results/`.
 
 ## Adding a new crate to the workspace
 
@@ -124,13 +132,13 @@ runs it. Its results are written by the run, under its own `results/`.
 
 ## API stability (NFR-2)
 
-RustyChain follows [semantic versioning](https://semver.org/).
+Norte follows [semantic versioning](https://semver.org/).
 
 - **Patch** releases fix behaviour without changing the public API.
 - **Minor** releases add public API in a backwards-compatible way.
 - **Major** releases may change the public API. **Breaking changes to the neutral
   model — the domain types, capability descriptors, ports and engine surface in
-  `rustychain-core` — require a major version.**
+  `norte-core` — require a major version.**
 
 Practically:
 
@@ -145,9 +153,34 @@ Practically:
 
 ## Publishing crates
 
-- Crates are published individually from their directory. Update the version in
-  `[workspace.package]` (or per crate) and the changelog before publishing.
-- The monorepo itself is not published as a single package.
+The workspace publishes eleven crates; `examples/cookbook`, `benchmarks/agent-cost`
+and `norte-facade-smoke` are `publish = false` and never leave the repository.
+
+One command does the whole set, in dependency order, and it works before anything
+is on the registry: `cargo publish --workspace` stands up a temporary local
+registry so each crate is verified against the ones published a moment earlier in
+the same run.
+
+```bash
+cargo publish --workspace --dry-run   # the whole set: packaged, verified, not uploaded
+cargo publish --workspace             # for real
+```
+
+The release checklist:
+
+1. `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
+   `cargo test --workspace`, `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps`.
+2. `cargo publish --workspace --dry-run` clean, with eleven `Uploading` lines and
+   no crate skipped.
+3. The version bumped in `[workspace.package]` and in every `norte-*`
+   `version = "…"` entry of the workspace manifest, plus a `CHANGELOG.md` entry.
+4. `cargo login` once with a crates.io API token for the publishing account;
+   `cargo publish` asks for the one-time code if 2FA is enabled.
+5. After the first release, point the README's install block at the registry
+   (`norte = { version = "0.1" }`) instead of at the git branch.
+
+Every published crate carries `license`, `description`, `homepage`, `repository`,
+`readme`, `keywords` and `categories`; `cargo publish` warns when one is missing.
 
 ## Reporting issues
 

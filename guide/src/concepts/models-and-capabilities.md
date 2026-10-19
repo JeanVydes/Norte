@@ -6,7 +6,7 @@ The library ships no model catalogue. The host declares what a model can do, and
 the engine holds requests to that declaration.
 
 ```rust,ignore
-use rustychain_core::{CacheMode, Capabilities, Modality, StreamingGranularity, ToolKind};
+use norte_core::{CacheMode, Capabilities, Modality, StreamingGranularity, ToolKind};
 
 let capabilities = Capabilities::builder()
     .input(Modality::Text)
@@ -38,7 +38,7 @@ error before the wire is touched, not a vendor error afterwards.
 ## ModelRef: who answers
 
 ```rust,ignore
-use rustychain_core::{ModelId, ModelRef, ProviderId};
+use norte_core::{ModelId, ModelRef, ProviderId};
 
 let reference = ModelRef::new(
     ProviderId::new("openrouter")?,
@@ -67,7 +67,7 @@ policies, durability, cost — is provider-independent.
 
 Two consequences worth knowing:
 
-- **Testing needs no network.** `rustychain-testing`'s `ScriptedModel` is a
+- **Testing needs no network.** `norte-testing`'s `ScriptedModel` is a
   `Model`; so is `ProbeModel`, which wraps another model and records the requests
   that went through it. See [Test without a network](guides/test-without-a-network.md).
 - **A missing field is not a failure.** When a wire reports a block the neutral
@@ -84,4 +84,4 @@ comparable; `cache_boundaries` are the positions the provider may cache up to.
 
 This event is the single best place to log an agent's iterations: it fires once
 per model request, including every round of a tool loop, which a turn's outcome
-does not show. The cookbook's `agent_cost` prints one header per occurrence.
+does not show. `benchmarks/agent-cost` prints one header per occurrence.

@@ -2,7 +2,7 @@
 
 Tests in this repository are hermetic by default: no keys, no network, no
 provider. Live calls are `#[ignore]`d and run on a schedule. The crate that makes
-that possible is `rustychain-testing`.
+that possible is `norte-testing`.
 
 ## A scripted model
 
@@ -10,8 +10,8 @@ that possible is `rustychain-testing`.
 the model did:
 
 ```rust,ignore
-use rustychain_core::{CallId, Message};
-use rustychain_testing::{model, ScriptedModel, text_capabilities};
+use norte_core::{CallId, Message};
+use norte_testing::{model, ScriptedModel, text_capabilities};
 
 let scripted = ScriptedModel::new(model("test/scripted"))
     .with_capabilities(text_capabilities())
@@ -78,7 +78,7 @@ If you implement a `Model` or a `Store`, two suites exist so you do not write th
 same tests twice:
 
 ```rust,ignore
-use rustychain_testing::{model_conformance, store_conformance};
+use norte_testing::{model_conformance, store_conformance};
 
 #[tokio::test]
 async fn my_store_is_a_store() {
@@ -91,7 +91,7 @@ contracts: the events a turn must emit, the commit rules, the approval ledger.
 
 ## Fixtures and the fixtures helper
 
-`rustychain_testing::{model, user, system}` are small constructors for the common
+`norte_testing::{model, user, system}` are small constructors for the common
 shapes (`ModelRef`, user and system messages) so a test's setup stays a line long.
 
 ## Live tests
@@ -113,7 +113,7 @@ async fn answers_over_the_real_wire() {
 
 ```sh
 cargo test --workspace                       # hermetic
-cargo test -p rustychain-testing --test live -- --ignored --nocapture   # live
+cargo test -p norte-testing --test live -- --ignored --nocapture   # live
 ```
 
 The CI runs the first everywhere and the second only on a schedule or on demand,

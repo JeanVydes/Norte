@@ -5,7 +5,7 @@
 A `Message` is a `Role` plus a list of `Part`s, plus an optional origin.
 
 ```rust,ignore
-use rustychain_core::{Message, Part};
+use norte_core::{Message, Part};
 
 let system = Message::system("You are a coding agent.");       // Role::System
 let user = Message::user("What does src/lib.rs export?");      // Role::User
@@ -64,7 +64,7 @@ back. They are linked by `call_id`, and the result's `parts` are themselves
 `Part`s, so a result can carry text, media or structured JSON:
 
 ```rust,ignore
-use rustychain_core::{CallId, Part, ToolResultPart};
+use norte_core::{CallId, Part, ToolResultPart};
 
 let result = ToolResultPart::text(call_id, "fn head_words(text: &str, limit: usize)");
 let failure = ToolResultPart::error(call_id, "no such file: src/words.rs");

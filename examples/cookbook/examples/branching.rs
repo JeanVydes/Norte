@@ -15,7 +15,7 @@
 //!   branch turn, because that is the only number that proves a hit.
 //!
 //! ```sh
-//! OPENROUTER_API_KEY=sk-or-... cargo run -p rustychain-cookbook --example branching
+//! OPENROUTER_API_KEY=sk-or-... cargo run -p norte-cookbook --example branching
 //! ```
 //!
 //! `COOKBOOK_PROVIDER=Parasail` pins the upstream provider. `OpenRouter` serves
@@ -33,14 +33,14 @@
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 
-use rustychain_core::{
+use norte_core::{
     Capabilities, Commit, ContinuityAdapter, Digest, Engine, EngineBuilder, InMemoryBlobStore,
     InMemoryStore, Message, Modality, Model, ModelId, ModelRef, ModelRequest, ModelStream, Node,
     NodeId, Phase, ProviderId, Session, Store, StreamingGranularity, ToolKind, ToolRegistry,
     TurnOptions, WireFamily,
 };
-use rustychain_http::{AuthScheme, VendorProfile};
-use rustychain_openai::{OpenAiChat, WIRE_CHAT};
+use norte_http::{AuthScheme, VendorProfile};
+use norte_openai::{OpenAiChat, WIRE_CHAT};
 use serde_json::{Value, json};
 
 #[tokio::main]
@@ -299,7 +299,7 @@ impl Model for Probe {
         self.inner.continuity()
     }
 
-    async fn stream(&self, request: ModelRequest) -> rustychain_core::Result<ModelStream> {
+    async fn stream(&self, request: ModelRequest) -> norte_core::Result<ModelStream> {
         // `request_body` is the projection the live path uses (FR-RECON-12), so
         // recording it records the bytes, not an approximation of them.
         let body = self.inner.request_body(&request)?;

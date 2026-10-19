@@ -1,9 +1,9 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use rustychain_core::{ModelId, ModelRef, ProviderId, WireFamily};
-use rustychain_gemini::generate::FuzzGenerate;
-use rustychain_gemini::{GeminiContinuity, WIRE_GENERATE};
+use norte_core::{ModelId, ModelRef, ProviderId, WireFamily};
+use norte_gemini::generate::FuzzGenerate;
+use norte_gemini::{GeminiContinuity, WIRE_GENERATE};
 
 fuzz_target!(|data: &[u8]| {
     let Ok(text) = std::str::from_utf8(data) else {

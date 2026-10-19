@@ -98,7 +98,7 @@ jobs:
           toolchain: stable
       - uses: Swatinem/rust-cache@v2
       - name: Run the recorded and live provider smoke tests
-        run: cargo test -p rustychain-testing --test live -- --ignored --nocapture
+        run: cargo test -p norte-testing --test live -- --ignored --nocapture
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

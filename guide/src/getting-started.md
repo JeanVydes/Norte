@@ -2,26 +2,34 @@
 
 ## Install
 
-The crates are not published yet; depend on the repository:
-
 ```toml
 [dependencies]
-rustychain-core = { git = "https://github.com/JeanVydes/rustychain", branch = "dev" }
-rustychain-openai = { git = "https://github.com/JeanVydes/rustychain", branch = "dev" }
+norte = "0.0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
 
-`rustychain-core` is the engine and the contracts; a wire crate is a provider.
+`norte` is the entrypoint: `norte-core` is at the root (`norte::Engine`,
+`norte::Message`) and every other crate is a module of its own name —
+`norte::openai`, `norte::anthropic`, `norte::gemini`, `norte::http`,
+`norte::tools`, `norte::media`, `norte::mcp`. The default feature is the OpenAI
+adapter; `features = ["full"]` adds the other two providers, the tool suite, media
+and MCP, and `testing` adds the scripted models for a test target.
+
+Each crate is also usable on its own. The snippets in this guide name them one by
+one — `norte_core::Capabilities`, `norte_openai::presets::openai`,
+`norte_http::VendorProfile` — because that is where each type lives; the same
+items are reachable through the facade (`norte::Capabilities`,
+`norte::presets::openai`, `norte::http::VendorProfile`).
 
 ## A turn, end to end
 
 ```rust,ignore
 use std::sync::Arc;
 
-use rustychain_core::{
+use norte_core::{
     Capabilities, EngineBuilder, InMemoryBlobStore, InMemoryStore, Message, Modality, ToolRegistry,
 };
-use rustychain_openai::presets::openai;
+use norte_openai::presets::openai;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -101,9 +109,9 @@ let outcome = stream.finish().await?;
 Any `OpenAI`-compatible endpoint is a profile, not a preset:
 
 ```rust,ignore
-use rustychain_core::{ModelId, ModelRef, ProviderId, WireFamily};
-use rustychain_http::{AuthScheme, VendorProfile};
-use rustychain_openai::{OpenAiChat, WIRE_CHAT};
+use norte_core::{ModelId, ModelRef, ProviderId, WireFamily};
+use norte_http::{AuthScheme, VendorProfile};
+use norte_openai::{OpenAiChat, WIRE_CHAT};
 
 let provider = ProviderId::new("openrouter")?;
 let profile =
@@ -129,10 +137,10 @@ topic, each wiring its own engine:
 OPENROUTER_API_KEY=sk-or-... \
 COOKBOOK_ENDPOINT=https://openrouter.ai/api/v1 \
 COOKBOOK_MODEL=deepseek/deepseek-v4-flash-0731 \
-cargo run -p rustychain-cookbook --example events
+cargo run -p norte-cookbook --example events
 ```
 
 `events`, `streaming`, `approval`, `policy`, `policy_context`, `tools`, `agent`,
 `executors`, `observers`, `cache`, `export_import`, `branching`. Each file is
-meant to be read and copied on its own. `rustychain-cookbook` is not a library:
+meant to be read and copied on its own. `norte-cookbook` is not a library:
 nothing is shared between recipes on purpose.

@@ -1,0 +1,35 @@
+[package]
+name = "norte-testing"
+description = "Scripted models, fixture replay, request probes and conformance suites for Norte"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "../README.md"
+keywords = ["llm", "testing", "fixtures", "conformance"]
+categories = ["development-tools::testing"]
+
+[dependencies]
+norte-core = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+serde_json = { workspace = true }
+futures-util = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+async-trait = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+norte-http = { workspace = true }
+norte-openai = { workspace = true }
+norte-anthropic = { workspace = true }
+norte-gemini = { workspace = true }
+
+[lints]
+workspace = true

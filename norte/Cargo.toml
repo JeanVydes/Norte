@@ -1,0 +1,53 @@
+[package]
+name = "norte"
+description = "One entrypoint for the whole Norte stack: the core, the provider adapters, the tool suite, media and MCP, re-exported behind features"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "../README.md"
+keywords = ["llm", "agents", "openai", "anthropic", "gemini"]
+categories = ["api-bindings", "asynchronous"]
+
+# Every provider and helper on the docs page, not just the default feature.
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]
+norte-macros = { workspace = true }
+norte-core = { workspace = true }
+norte-http = { workspace = true, optional = true }
+norte-openai = { workspace = true, optional = true }
+norte-anthropic = { workspace = true, optional = true }
+norte-gemini = { workspace = true, optional = true }
+norte-tools = { workspace = true, optional = true }
+norte-media = { workspace = true, optional = true }
+norte-mcp = { workspace = true, optional = true }
+norte-testing = { workspace = true, optional = true }
+
+[features]
+default = ["openai"]
+# The transport is pulled in by any provider, and re-exported as `norte::http`
+# for a host that builds its own profile.
+http = ["dep:norte-http"]
+openai = ["dep:norte-openai", "http"]
+anthropic = ["dep:norte-anthropic", "http"]
+gemini = ["dep:norte-gemini", "http"]
+google = ["gemini"]
+tools = ["dep:norte-tools"]
+media = ["dep:norte-media"]
+mcp = ["dep:norte-mcp"]
+# Test helpers are opt-in: they are not part of what an application ships.
+testing = ["dep:norte-testing"]
+full = ["openai", "anthropic", "gemini", "tools", "media", "mcp"]
+
+[dev-dependencies]
+async-trait = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+
+[lints]
+workspace = true

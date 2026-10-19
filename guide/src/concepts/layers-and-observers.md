@@ -8,7 +8,7 @@ A `Layer` wraps the model call. It receives the assembled `ModelRequest` and a
 continuation, and it may pass the request on, change it, or answer it itself.
 
 ```rust,ignore
-use rustychain_core::{Continuation, Layer, LayerContext, ModelRequest, ModelStream, Result};
+use norte_core::{Continuation, Layer, LayerContext, ModelRequest, ModelStream, Result};
 
 struct PinRoute;
 
@@ -52,7 +52,7 @@ redaction, an offline mode, or replaying a recorded response.
 An `Observer` sees every `EngineEvent`. It cannot change the turn; it watches it.
 
 ```rust,ignore
-use rustychain_core::{EngineEvent, Observer};
+use norte_core::{EngineEvent, Observer};
 
 struct Metrics;
 
@@ -115,6 +115,6 @@ messages, and the provider decides what it honours.
 | `early_tool_execution` | `false` | Start a tool as soon as its call is complete, before the message ends. |
 
 `max_iterations` is a chat turn's 16 by default. A coding agent reads, edits and
-reads back; the cookbook raises it to 32. Note what happens when it is exceeded:
+reads back; a coding agent raises it to 32. Note what happens when it is exceeded:
 the turn errors, **after** every request it made has been committed and billed.
 That is why a cost meter must keep counting past the error.

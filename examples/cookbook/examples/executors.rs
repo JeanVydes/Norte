@@ -8,7 +8,7 @@
 //! evidence — the file on disk is.
 //!
 //! ```sh
-//! cargo run -p rustychain-cookbook --example executors
+//! cargo run -p norte-cookbook --example executors
 //! ```
 //!
 //! No key and no model: `read`, `write`, `edit` and `command` are host tools.
@@ -18,8 +18,8 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use rustychain_core::{FnExecutor, Part, ToolOutput};
-use rustychain_tools::{
+use norte_core::{FnExecutor, Part, ToolOutput};
+use norte_tools::{
     CommandRequest, CommandTool, EditRequest, EditTool, LineRange, ReadRequest, ReadTool,
     WriteRequest, WriteTool,
 };
@@ -43,7 +43,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 /// A directory of its own, with the note file absent: the first write below is
 /// then really a creation, and the second really a refusal.
 fn scratch() -> Result<PathBuf, Box<dyn Error>> {
-    let dir = std::env::temp_dir().join("rustychain-cookbook-executors");
+    let dir = std::env::temp_dir().join("norte-cookbook-executors");
     std::fs::create_dir_all(&dir)?;
     match std::fs::remove_file(dir.join("notes.txt")) {
         Ok(()) => {}

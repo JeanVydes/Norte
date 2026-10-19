@@ -8,8 +8,8 @@ the executor, and commits the result as a `ToolResultPart`.
 ## The registry
 
 ```rust,ignore
-use rustychain_core::ToolRegistry;
-use rustychain_tools::{EditTool, ReadTool};
+use norte_core::ToolRegistry;
+use norte_tools::{EditTool, ReadTool};
 
 let mut tools = ToolRegistry::new();
 tools.register_tool_declaration(ReadTool::new().into_declaration())?;
@@ -35,7 +35,7 @@ Three levels, from most fluent to most explicit.
 **The macro**, on a struct that names the tool and an executor that runs it:
 
 ```rust,ignore
-use rustychain_core::{FnExecutor, Result, ToolOutput};
+use norte_core::{FnExecutor, Result, ToolOutput};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -44,7 +44,7 @@ struct EchoArgs {
     text: String,
 }
 
-#[rustychain_core::tool(name = "echo", description = "Repeat the text back.")]
+#[norte_core::tool(name = "echo", description = "Repeat the text back.")]
 struct Echo;
 
 #[async_trait::async_trait]
@@ -66,7 +66,7 @@ argument type has to be `JsonSchema + Serialize + DeserializeOwned`.
 with `schemars`:
 
 ```rust,ignore
-use rustychain_core::ToolDeclaration;
+use norte_core::ToolDeclaration;
 
 let declaration = ToolDeclaration::new(
     "read",
@@ -106,7 +106,7 @@ of them — a test in this repository fails if one reaches the wire.
 
 ## Shipped executors
 
-`rustychain-tools` ships four, each with `new()`, `with_limits(..)` and
+`norte-tools` ships four, each with `new()`, `with_limits(..)` and
 `into_declaration()`:
 
 | Tool | Arguments | Notes |

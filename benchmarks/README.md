@@ -1,9 +1,8 @@
 # benchmarks
 
-Measurements, not recipes. A benchmark here runs the real engine against a real
-model, prints what happened as it happens, and writes the result down as markdown
-under its own `results/` — so a number can be audited later without replaying the
-run that produced it.
+A benchmark runs the real engine against a real model, prints what happened as it
+happens, and writes the result down as markdown under its own `results/` — so a
+number can be audited later without replaying the run that produced it.
 
 ```
 benchmarks/
@@ -17,19 +16,17 @@ benchmarks/
 
 ## What a benchmark is here
 
-- **Measured, not maintained.** Every figure is the provider's own: the
-  `usage.cost` a response reports, the token counters it reports. No price table
-  lives in this repository, because the route that served a request is the
-  router's decision and a rate written down here would be the list price of a
-  route that may not have been the one used. Every benchmark folder says the same
-  thing in its README: if the payload carries no cost, the benchmark says so
-  instead of pricing it.
+- **The provider's own numbers.** Every figure is the provider's: the `usage.cost`
+  a response reports, the token counters it reports. No price table lives in this
+  repository, because the route that served a request is the router's decision,
+  and a rate written down here would be the list price of a route that may not
+  have been the one used. A request whose payload carries no cost is named and
+  counted, not priced.
 - **Reproducible from its README.** The model, the endpoint and any provider pin
   come from the environment; nothing external is baked into the source. The
   report records the route, the budget and the commit the run started from.
-- **Self-documenting.** Each run leaves a report under `results/`. It is written
-  by the run that produced it, which is the only thing that can be trusted to
-  describe what happened.
+- **Self-documenting.** Each run leaves a report under `results/`, written by the
+  run itself and complete enough to audit the totals.
 - **Not a test.** A benchmark calls a paid model, so it does not run in CI. The
   crates are still built and linted there like everything else.
 
@@ -48,13 +45,11 @@ the model decides how many requests a task takes.
 
 ## Proposed
 
-Written down so the intent is not lost, not yet implemented.
-
 | Benchmark | What it would measure | Why it is worth the money |
 | --- | --- | --- |
 | `cache-hit` | The same long prompt with and without the provider's cache, over several rounds: the bill and the latency of each | The cache is the largest lever on a long transcript, and only the provider's own numbers say what it was worth. |
 | `tool-loop` | How requests and cost grow with the number of declared tools and with the size of the transcript | The tool declarations are re-sent on every request, so they are paid for once per iteration whether or not they are used. |
-| `schema-friction` | How many requests a model spends guessing at a tool schema before it sends a shape the policy accepts | A schema is the cheapest thing to fix and the dearest to leave: the `command` shape cost two to seven requests a task before it named its tag. |
+| `schema-friction` | How many requests a model spends guessing at a tool schema before it sends a shape the policy accepts | A schema is the cheapest thing to fix and the dearest to leave: the shape a tool declares is re-sent and re-read until the model gets it right. |
 | `long-context` | A long session kept whole against the same session with its history compacted | A compaction policy is a claim about money; this is how it is checked. |
 | `latency` | Time to first token and time per turn, streaming against `finish()` | The streaming contract's cost in wall-clock, not money. |
 | `transport-retry` | What a rate limit or a timeout does under the transport policy, and what the retries cost | The route refuses; the engine must not paper over it, and a retry that nobody counted is part of the bill. |

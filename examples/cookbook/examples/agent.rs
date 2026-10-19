@@ -4,7 +4,7 @@
 //! to the registry's executor, the result is committed as a tool message, and
 //! the model is asked again — until it answers without calling anything. The
 //! host here only wires the pieces: the three file executors from
-//! `rustychain-tools`, a policy that decides where a path may land, and the
+//! `norte-tools`, a policy that decides where a path may land, and the
 //! model.
 //!
 //! The policy re-roots the relative paths the prompt names into a scratch
@@ -14,7 +14,7 @@
 //! afterwards: the file on disk is the evidence, not the model's word.
 //!
 //! ```sh
-//! OPENROUTER_API_KEY=sk-or-... cargo run -p rustychain-cookbook --example agent
+//! OPENROUTER_API_KEY=sk-or-... cargo run -p norte-cookbook --example agent
 //! ```
 //!
 //! The prompt asks for one file, one look at it and one change to it, so every
@@ -24,14 +24,14 @@ use std::error::Error;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
-use rustychain_core::{
+use norte_core::{
     Capabilities, Decision, Engine, EngineBuilder, InMemoryBlobStore, InMemoryStore, Message,
     Modality, ModelId, ModelRef, Policy, PolicySet, PolicyView, ProviderId, StreamingGranularity,
     ToolKind, ToolRegistry, ToolResultPart, WireFamily,
 };
-use rustychain_http::{AuthScheme, VendorProfile};
-use rustychain_openai::{OpenAiChat, WIRE_CHAT};
-use rustychain_tools::{EditTool, ReadTool, WriteTool};
+use norte_http::{AuthScheme, VendorProfile};
+use norte_openai::{OpenAiChat, WIRE_CHAT};
+use norte_tools::{EditTool, ReadTool, WriteTool};
 use serde_json::Value;
 
 const SYSTEM: &str = "\
@@ -183,7 +183,7 @@ fn escapes(path: &str) -> bool {
 
 /// A directory of its own, emptied on every run.
 fn scratch() -> Result<PathBuf, Box<dyn Error>> {
-    let root = std::env::temp_dir().join("rustychain-cookbook-agent");
+    let root = std::env::temp_dir().join("norte-cookbook-agent");
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root)?;
     Ok(root)

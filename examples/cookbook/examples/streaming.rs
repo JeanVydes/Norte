@@ -6,19 +6,19 @@
 //! data, read at different times.
 //!
 //! ```sh
-//! OPENROUTER_API_KEY=sk-or-... cargo run -p rustychain-cookbook --example streaming
+//! OPENROUTER_API_KEY=sk-or-... cargo run -p norte-cookbook --example streaming
 //! ```
 
 use std::error::Error;
 use std::sync::Arc;
 
 use futures_util::StreamExt;
-use rustychain_core::{
+use norte_core::{
     Capabilities, Engine, EngineBuilder, EngineEvent, InMemoryBlobStore, InMemoryStore, Message,
     Modality, ModelId, ModelRef, ProviderId, StreamDelta, StreamingGranularity, WireFamily,
 };
-use rustychain_http::{AuthScheme, VendorProfile};
-use rustychain_openai::{OpenAiChat, WIRE_CHAT};
+use norte_http::{AuthScheme, VendorProfile};
+use norte_openai::{OpenAiChat, WIRE_CHAT};
 
 const PROMPT: &str = "Count from one to five, one number per line.";
 

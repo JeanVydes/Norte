@@ -1,9 +1,9 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use rustychain_anthropic::messages::FuzzMessages;
-use rustychain_anthropic::{AnthropicContinuity, WIRE_MESSAGES};
-use rustychain_core::{ModelId, ModelRef, ProviderId, WireFamily};
+use norte_anthropic::messages::FuzzMessages;
+use norte_anthropic::{AnthropicContinuity, WIRE_MESSAGES};
+use norte_core::{ModelId, ModelRef, ProviderId, WireFamily};
 
 fuzz_target!(|data: &[u8]| {
     let Ok(text) = std::str::from_utf8(data) else {

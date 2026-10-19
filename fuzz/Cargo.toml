@@ -1,5 +1,5 @@
 [package]
-name = "rustychain-fuzz"
+name = "norte-fuzz"
 version = "0.0.0"
 edition = "2024"
 publish = false
@@ -9,11 +9,11 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-rustychain-anthropic = { path = "../rustychain-anthropic", features = ["fuzz"] }
-rustychain-core = { path = "../rustychain-core" }
-rustychain-gemini = { path = "../rustychain-gemini", features = ["fuzz"] }
-rustychain-http = { path = "../rustychain-http" }
-rustychain-openai = { path = "../rustychain-openai", features = ["fuzz"] }
+norte-anthropic = { path = "../norte-anthropic", features = ["fuzz"] }
+norte-core = { path = "../norte-core" }
+norte-gemini = { path = "../norte-gemini", features = ["fuzz"] }
+norte-http = { path = "../norte-http" }
+norte-openai = { path = "../norte-openai", features = ["fuzz"] }
 
 [[bin]]
 name = "anthropic_messages"

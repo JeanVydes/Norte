@@ -6,7 +6,7 @@
 //! committed, because the committed message is built from the raw model events.
 //!
 //! ```sh
-//! OPENROUTER_API_KEY=sk-or-... cargo run -p rustychain-cookbook --example observers
+//! OPENROUTER_API_KEY=sk-or-... cargo run -p norte-cookbook --example observers
 //! ```
 
 use std::error::Error;
@@ -14,13 +14,13 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use rustychain_core::{
+use norte_core::{
     Capabilities, EngineBuilder, EngineEvent, InMemoryBlobStore, InMemoryStore, Message, Modality,
     ModelId, ModelRef, Observer, ProviderId, StreamDelta, StreamTransform, StreamingGranularity,
     WireFamily,
 };
-use rustychain_http::{AuthScheme, VendorProfile};
-use rustychain_openai::{OpenAiChat, WIRE_CHAT};
+use norte_http::{AuthScheme, VendorProfile};
+use norte_openai::{OpenAiChat, WIRE_CHAT};
 
 /// Records the kind of every event it is handed. Observers run on a task of their
 /// own, so the state travels behind a mutex.

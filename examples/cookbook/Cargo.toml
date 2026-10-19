@@ -1,17 +1,17 @@
 [package]
-name = "rustychain-cookbook"
+name = "norte-cookbook"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
-description = "Small, runnable recipes for specific RustyChain engine tasks."
+description = "Small, runnable recipes for specific Norte engine tasks."
 
 [dependencies]
-rustychain-core = { workspace = true }
-rustychain-http = { workspace = true }
-rustychain-openai = { workspace = true }
-rustychain-tools = { workspace = true }
+norte-core = { workspace = true }
+norte-http = { workspace = true }
+norte-openai = { workspace = true }
+norte-tools = { workspace = true }
 async-trait = { workspace = true }
 futures-util = { workspace = true }
 schemars = { workspace = true }

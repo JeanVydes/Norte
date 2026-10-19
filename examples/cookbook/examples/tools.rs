@@ -9,16 +9,16 @@
 //! go to the provider.
 //!
 //! ```sh
-//! cargo run -p rustychain-cookbook --example tools
+//! cargo run -p norte-cookbook --example tools
 //! ```
 
-use rustychain_core::{FnExecutor, Result, ToolMetadata, ToolOutput, ToolRegistry};
+use norte_core::{FnExecutor, Result, ToolMetadata, ToolOutput, ToolRegistry};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 // ── 1. The short shape: the `#[tool]` macro states name and description. ──
 
-#[rustychain_core::tool(name = "word_count", description = "Count the words in a document")]
+#[norte_core::tool(name = "word_count", description = "Count the words in a document")]
 struct WordCount;
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]

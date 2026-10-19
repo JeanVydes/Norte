@@ -9,19 +9,19 @@
 //! them — are counted rather than dumped, or the console would be unreadable.
 //!
 //! ```sh
-//! OPENROUTER_API_KEY=sk-or-... cargo run -p rustychain-cookbook --example events
+//! OPENROUTER_API_KEY=sk-or-... cargo run -p norte-cookbook --example events
 //! ```
 
 use std::error::Error;
 use std::sync::Arc;
 
 use futures_util::StreamExt;
-use rustychain_core::{
+use norte_core::{
     Capabilities, EngineBuilder, EngineEvent, InMemoryBlobStore, InMemoryStore, Message, Modality,
     ModelId, ModelRef, ProviderId, StreamDelta, StreamingGranularity, WireFamily,
 };
-use rustychain_http::{AuthScheme, VendorProfile};
-use rustychain_openai::{OpenAiChat, WIRE_CHAT};
+use norte_http::{AuthScheme, VendorProfile};
+use norte_openai::{OpenAiChat, WIRE_CHAT};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {

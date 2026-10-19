@@ -11,26 +11,26 @@
 //! depends on `results` must leave early execution off, which is the default.
 //!
 //! ```sh
-//! OPENROUTER_API_KEY=sk-or-... cargo run -p rustychain-cookbook --example policy_context
+//! OPENROUTER_API_KEY=sk-or-... cargo run -p norte-cookbook --example policy_context
 //! ```
 
 use std::error::Error;
 use std::sync::Arc;
 
-use rustychain_core::{
+use norte_core::{
     Capabilities, Decision, EngineBuilder, FnExecutor, InMemoryBlobStore, InMemoryStore, Message,
     Modality, ModelId, ModelRef, Policy, PolicySet, PolicyView, ProviderId, Role,
     StreamingGranularity, ToolKind, ToolRegistry, WireFamily,
 };
-use rustychain_http::{AuthScheme, VendorProfile};
-use rustychain_openai::{OpenAiChat, WIRE_CHAT};
+use norte_http::{AuthScheme, VendorProfile};
+use norte_openai::{OpenAiChat, WIRE_CHAT};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 const SYSTEM: &str = "You delete files when asked. If asked to delete two files, call the \
                       `delete_file` tool once per file, both in the same message.";
 
-#[rustychain_core::tool(name = "delete_file", description = "Delete a file")]
+#[norte_core::tool(name = "delete_file", description = "Delete a file")]
 struct DeleteFile;
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -46,7 +46,7 @@ struct DeleteFileResult {
 
 #[async_trait::async_trait]
 impl FnExecutor<DeleteFileArgs, DeleteFileResult> for DeleteFile {
-    async fn call(&self, args: DeleteFileArgs) -> rustychain_core::Result<DeleteFileResult> {
+    async fn call(&self, args: DeleteFileArgs) -> norte_core::Result<DeleteFileResult> {
         Ok(DeleteFileResult { deleted: args.path })
     }
 }

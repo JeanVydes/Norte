@@ -8,10 +8,10 @@ the vendor's stream back into `StreamEvent`s. Three ship, plus the generic
 
 | Crate | Type | Wire constant | Surface |
 | --- | --- | --- | --- |
-| `rustychain-openai` | `OpenAiResponses` | `WIRE_RESPONSES` (`openai.responses`) | The primary OpenAI wire. |
-| `rustychain-openai` | `OpenAiChat` | `WIRE_CHAT` (`openai.chat`) | Chat Completions, and every compatible endpoint. |
-| `rustychain-anthropic` | `AnthropicMessages` | `WIRE_MESSAGES` (`anthropic.messages`) | Messages. |
-| `rustychain-gemini` | `GeminiGenerate` | `WIRE_GENERATE` (`google.gemini`) | generateContent, with explicit cached content. |
+| `norte-openai` | `OpenAiResponses` | `WIRE_RESPONSES` (`openai.responses`) | The primary OpenAI wire. |
+| `norte-openai` | `OpenAiChat` | `WIRE_CHAT` (`openai.chat`) | Chat Completions, and every compatible endpoint. |
+| `norte-anthropic` | `AnthropicMessages` | `WIRE_MESSAGES` (`anthropic.messages`) | Messages. |
+| `norte-gemini` | `GeminiGenerate` | `WIRE_GENERATE` (`google.gemini`) | generateContent, with explicit cached content. |
 
 Each is constructed the same way:
 
@@ -27,9 +27,9 @@ exact JSON a request will produce — the fastest way to debug a wire.
 ## Native presets
 
 ```rust,ignore
-use rustychain_anthropic::presets::anthropic;
-use rustychain_gemini::presets::gemini;
-use rustychain_openai::presets::openai;
+use norte_anthropic::presets::anthropic;
+use norte_gemini::presets::gemini;
+use norte_openai::presets::openai;
 
 let a = openai("gpt-5", key, capabilities)?;         // Responses wire
 let b = anthropic("claude-sonnet-4-5", key, capabilities)?;
@@ -44,9 +44,9 @@ you want the profile without the adapter.
 That is a `VendorProfile`, not a preset:
 
 ```rust,ignore
-use rustychain_core::{ModelId, ModelRef, ProviderId, WireFamily};
-use rustychain_http::{AuthScheme, VendorProfile};
-use rustychain_openai::{OpenAiChat, WIRE_CHAT};
+use norte_core::{ModelId, ModelRef, ProviderId, WireFamily};
+use norte_http::{AuthScheme, VendorProfile};
+use norte_openai::{OpenAiChat, WIRE_CHAT};
 
 let provider = ProviderId::new("groq")?;
 let profile = VendorProfile::new(provider.clone(), WireFamily::new(WIRE_CHAT)?, base_url)?
@@ -68,7 +68,7 @@ value }` — the four shapes the field actually uses. Secrets are wrapped in
 
 ## Transport
 
-`rustychain-http` owns the network and is conservative on purpose:
+`norte-http` owns the network and is conservative on purpose:
 
 - **Only connection establishment is retried.** Nothing was sent, so the provider
   cannot have started working and the retry is invisible. A timeout is *not*

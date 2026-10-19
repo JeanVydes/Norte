@@ -4,38 +4,40 @@ exclude = ["fuzz"]
 members = [
     "benchmarks/agent-cost",
     "examples/cookbook",
-    "rustychain-macros",
-    "rustychain-core",
-    "rustychain-http",
-    "rustychain-anthropic",
-    "rustychain-openai",
-    "rustychain-gemini",
-    "rustychain-tools",
-    "rustychain-media",
-    "rustychain-testing",
-    "rustychain-mcp",
+    "norte",
+    "norte-facade-smoke",
+    "norte-macros",
+    "norte-core",
+    "norte-http",
+    "norte-anthropic",
+    "norte-openai",
+    "norte-gemini",
+    "norte-tools",
+    "norte-media",
+    "norte-testing",
+    "norte-mcp",
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.0.1"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
-repository = "https://github.com/JeanVydes/rustychain"
-homepage = "https://github.com/JeanVydes/rustychain"
+repository = "https://github.com/JeanVydes/Norte"
+homepage = "https://github.com/JeanVydes/Norte"
 authors = ["Jean Vides <j@vyde.dev>"]
 
 [workspace.dependencies]
-rustychain-macros = { path = "rustychain-macros", version = "0.1.0" }
-rustychain-core = { path = "rustychain-core", version = "0.1.0" }
-rustychain-http = { path = "rustychain-http", version = "0.1.0" }
-rustychain-anthropic = { path = "rustychain-anthropic", version = "0.1.0" }
-rustychain-openai = { path = "rustychain-openai", version = "0.1.0" }
-rustychain-gemini = { path = "rustychain-gemini", version = "0.1.0" }
-rustychain-tools = { path = "rustychain-tools", version = "0.1.0" }
-rustychain-media = { path = "rustychain-media", version = "0.1.0" }
-rustychain-testing = { path = "rustychain-testing", version = "0.1.0" }
-rustychain-mcp = { path = "rustychain-mcp", version = "0.1.0" }
+norte-macros = { path = "norte-macros", version = "0.0.1" }
+norte-core = { path = "norte-core", version = "0.0.1" }
+norte-http = { path = "norte-http", version = "0.0.1" }
+norte-anthropic = { path = "norte-anthropic", version = "0.0.1" }
+norte-openai = { path = "norte-openai", version = "0.0.1" }
+norte-gemini = { path = "norte-gemini", version = "0.0.1" }
+norte-tools = { path = "norte-tools", version = "0.0.1" }
+norte-media = { path = "norte-media", version = "0.0.1" }
+norte-testing = { path = "norte-testing", version = "0.0.1" }
+norte-mcp = { path = "norte-mcp", version = "0.0.1" }
 
 proc-macro2 = "1"
 quote = "1"

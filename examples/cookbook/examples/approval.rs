@@ -12,19 +12,19 @@
 //! already started during the stream, so they run before the human answers.
 //!
 //! ```sh
-//! OPENROUTER_API_KEY=sk-or-... cargo run -p rustychain-cookbook --example approval
+//! OPENROUTER_API_KEY=sk-or-... cargo run -p norte-cookbook --example approval
 //! ```
 
 use std::error::Error;
 use std::sync::Arc;
 
-use rustychain_core::{
+use norte_core::{
     Capabilities, Engine, EngineBuilder, FnExecutor, GrantScope, InMemoryBlobStore, InMemoryStore,
     Message, Modality, ModelId, ModelRef, PolicySet, ProviderId, Role, SessionId,
     StreamingGranularity, ToolApprovalPolicy, ToolKind, ToolName, ToolRegistry, WireFamily,
 };
-use rustychain_http::{AuthScheme, VendorProfile};
-use rustychain_openai::{OpenAiChat, WIRE_CHAT};
+use norte_http::{AuthScheme, VendorProfile};
+use norte_openai::{OpenAiChat, WIRE_CHAT};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -32,7 +32,7 @@ const SYSTEM: &str =
     "You deploy services. When asked to deploy, call the `deploy` tool instead of answering.";
 
 /// The one tool this recipe gates.
-#[rustychain_core::tool(name = "deploy", description = "Deploy a service to an environment")]
+#[norte_core::tool(name = "deploy", description = "Deploy a service to an environment")]
 struct Deploy;
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -51,7 +51,7 @@ struct DeployResult {
 
 #[async_trait::async_trait]
 impl FnExecutor<DeployArgs, DeployResult> for Deploy {
-    async fn call(&self, args: DeployArgs) -> rustychain_core::Result<DeployResult> {
+    async fn call(&self, args: DeployArgs) -> norte_core::Result<DeployResult> {
         Ok(DeployResult {
             url: format!("https://{}.example.test", args.environment),
             service: args.service,

@@ -8,7 +8,7 @@ the edge of the program, from configuration; everything else sees the port.
 ```rust,ignore
 use std::sync::Arc;
 
-use rustychain_core::{Capabilities, Error, Model, Modality, ToolKind};
+use norte_core::{Capabilities, Error, Model, Modality, ToolKind};
 
 fn model_from_env(capabilities: Capabilities) -> Result<Arc<dyn Model>, Error> {
     let model = std::env::var("MODEL").map_err(|_| Error::InvalidInput {
@@ -23,9 +23,9 @@ fn model_from_env(capabilities: Capabilities) -> Result<Arc<dyn Model>, Error> {
     })?;
 
     Ok(match provider {
-        "openai" => Arc::new(rustychain_openai::presets::openai(id, key, capabilities)?),
-        "anthropic" => Arc::new(rustychain_anthropic::presets::anthropic(id, key, capabilities)?),
-        "gemini" => Arc::new(rustychain_gemini::presets::gemini(id, key, capabilities)?),
+        "openai" => Arc::new(norte_openai::presets::openai(id, key, capabilities)?),
+        "anthropic" => Arc::new(norte_anthropic::presets::anthropic(id, key, capabilities)?),
+        "gemini" => Arc::new(norte_gemini::presets::gemini(id, key, capabilities)?),
         "compatible" => {
             let base = std::env::var("BASE_URL").expect("set BASE_URL");
             Arc::new(compatible(id, base, key, capabilities)?)
@@ -58,7 +58,7 @@ for exactly that: each adapter crate exports it, so a host can keep the
 declaration in a config file or a database.
 
 ```rust,ignore
-let capabilities = rustychain_openai::capabilities_from_json(&json!({
+let capabilities = norte_openai::capabilities_from_json(&json!({
     "input": ["text", "image"],
     "output": ["text"],
     "tool_kind": "function",

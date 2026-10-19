@@ -1,9 +1,9 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use rustychain_core::{ModelId, ModelRef, ProviderId, WireFamily};
-use rustychain_openai::chat::FuzzChat;
-use rustychain_openai::{OpenAiContinuity, WIRE_CHAT};
+use norte_core::{ModelId, ModelRef, ProviderId, WireFamily};
+use norte_openai::chat::FuzzChat;
+use norte_openai::{OpenAiContinuity, WIRE_CHAT};
 
 fuzz_target!(|data: &[u8]| {
     let Ok(text) = std::str::from_utf8(data) else {

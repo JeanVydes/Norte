@@ -9,7 +9,7 @@ The smallest complete tools are a struct plus an executor. The struct carries th
 name and the description the model sees; the executor says what runs.
 
 ```rust,ignore
-use rustychain_core::{FnExecutor, Result, ToolOutput};
+use norte_core::{FnExecutor, Result, ToolOutput};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -19,7 +19,7 @@ struct WordCountArgs {
     text: String,
 }
 
-#[rustychain_core::tool(
+#[norte_core::tool(
     name = "word_count",
     description = "Count the words in text, for example {\"text\": \"the sky is blue\"}."
 )]
@@ -55,7 +55,7 @@ If you would rather build the declaration by hand — parsing arguments yourself
 or supplying a schema you wrote — use one directly:
 
 ```rust,ignore
-use rustychain_core::ToolDeclaration;
+use norte_core::ToolDeclaration;
 
 let declaration = ToolDeclaration::new("word_count", "Count the words in text.", executor);
 tools.register_tool_declaration(declaration)?;
@@ -67,7 +67,7 @@ typed return.
 ## 2. Register it
 
 ```rust,ignore
-use rustychain_core::ToolRegistry;
+use norte_core::ToolRegistry;
 
 let mut tools = ToolRegistry::new();
 tools.register_tool_declaration(declaration)?;
@@ -120,7 +120,7 @@ benchmark in this repository measures exactly that.
 A tool that touches the world gets a policy:
 
 ```rust,ignore
-use rustychain_core::{Decision, Policy, PolicySet, PolicyView};
+use norte_core::{Decision, Policy, PolicySet, PolicyView};
 
 struct WordCountIsHarmless;
 
@@ -152,7 +152,7 @@ be accepted, or the model will guess again — and every guess is a billed reque
 ## 5. Test it without a network
 
 ```rust,ignore
-use rustychain_testing::{model, ScriptedModel, text_capabilities};
+use norte_testing::{model, ScriptedModel, text_capabilities};
 
 let scripted = ScriptedModel::new(model("test/tool-model"))
     .with_capabilities(text_capabilities())

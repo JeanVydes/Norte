@@ -4,7 +4,7 @@ Every message the engine commits carries an origin with a `Usage`. It is the
 provider's report of what the request cost in tokens, kept as reported.
 
 ```rust,ignore
-use rustychain_core::{usage_of, Message};
+use norte_core::{usage_of, Message};
 
 let usage = usage_of(&message);
 println!(
@@ -41,7 +41,7 @@ So the price, when the provider sends one, lands in `Usage::vendor` under the ke
 the provider used — `cost`, on `OpenRouter`. Read it if you want it:
 
 ```rust,ignore
-fn reported_cost(usage: &rustychain_core::Usage) -> Option<f64> {
+fn reported_cost(usage: &norte_core::Usage) -> Option<f64> {
     usage.vendor.get("cost").and_then(serde_json::Value::as_f64)
 }
 ```

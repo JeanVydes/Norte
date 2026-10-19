@@ -57,7 +57,7 @@
 //! BENCH_ENDPOINT=https://openrouter.ai/api/v1 \
 //! BENCH_MODEL=deepseek/deepseek-v4-flash-0731 \
 //! BENCH_PROVIDER=DeepInfra \
-//! cargo run -p rustychain-bench-agent-cost
+//! cargo run -p norte-bench-agent-cost
 //! ```
 //!
 //! `BENCH_PROVIDER` pins the upstream so that two runs stay comparable; it is
@@ -78,15 +78,15 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
-use rustychain_core::{
+use norte_core::{
     Capabilities, Decision, Engine, EngineBuilder, EngineConfig, EngineEvent, InMemoryBlobStore,
     InMemoryStore, Message, Modality, ModelId, ModelRef, Part, Policy, PolicySet, PolicyView,
     ProviderId, SessionId, StreamDelta, StreamingGranularity, ToolKind, ToolRegistry, TurnOptions,
     Usage, WireFamily,
 };
-use rustychain_http::{AuthScheme, VendorProfile};
-use rustychain_openai::{OpenAiChat, WIRE_CHAT};
-use rustychain_tools::{CommandTool, EditTool, ReadTool, WriteTool};
+use norte_http::{AuthScheme, VendorProfile};
+use norte_openai::{OpenAiChat, WIRE_CHAT};
+use norte_tools::{CommandTool, EditTool, ReadTool, WriteTool};
 use serde_json::{Value, json};
 
 /// The workflow every task follows: read what is on disk, change it in place,
@@ -270,11 +270,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let started = Utc::now();
     let model = required("BENCH_MODEL", "deepseek/deepseek-v4-flash-0731")?;
     let endpoint = required("BENCH_ENDPOINT", "https://openrouter.ai/api/v1")?;
-    let provider = std::env::var("BENCH_PROVIDER").unwrap_or_else(|_| ROUTER_PICKS.to_owned());
+    let pin = std::env::var("BENCH_PROVIDER").ok();
+    let provider = pin.clone().unwrap_or_else(|| ROUTER_PICKS.to_owned());
 
     let root = scratch()?;
     seed(&root)?;
-    let (engine, options) = engine(&root, &endpoint, &model)?;
+    let (engine, options) = engine(&root, &endpoint, &model, pin.as_deref())?;
 
     println!("scratch:  {}", root.display());
     println!(
@@ -370,7 +371,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 fn usage() {
     println!(
         "agent-cost — what a coding agent costs, in the provider's own numbers\n\n\
-         usage: rustychain-bench-agent-cost [--report <path>]\n\n\
+         usage: norte-bench-agent-cost [--report <path>]\n\n\
          the report defaults to results/<date>-<provider>-<model>.md beside this crate; \
          `--report` writes it elsewhere\n\n\
          environment:\n  \
@@ -1010,7 +1011,7 @@ impl Report<'_> {
         let _ = writeln!(out, "| model | `{}` |", self.model);
         let _ = writeln!(out, "| provider | {} |", self.provider);
         let _ = writeln!(out, "| endpoint | `{}` |", self.endpoint);
-        let _ = writeln!(out, "| rustychain | {} |", env!("CARGO_PKG_VERSION"));
+        let _ = writeln!(out, "| norte | {} |", env!("CARGO_PKG_VERSION"));
         if let Some(commit) = &self.commit {
             let _ = writeln!(out, "| commit | `{commit}` |");
         }
@@ -1035,7 +1036,7 @@ impl Report<'_> {
         if self.provider != ROUTER_PICKS {
             let _ = writeln!(out, "export BENCH_PROVIDER={}", self.provider);
         }
-        let _ = writeln!(out, "cargo run -p rustychain-bench-agent-cost");
+        let _ = writeln!(out, "cargo run -p norte-bench-agent-cost");
         let _ = writeln!(out, "```");
         out
     }
@@ -1323,19 +1324,20 @@ fn money_cell(reported: Option<f64>) -> String {
     reported.map_or_else(|| "—".to_owned(), |reported| format!("{reported:.6}"))
 }
 
-/// Pins the upstream provider when `COOKBOOK_PROVIDER` names one.
+/// The turn options for a run: the output ceiling, and an explicit route order
+/// when `pin` names an upstream.
 ///
-/// Not for the price — the response carries that. Pinning is what makes two runs
-/// comparable: with `OpenRouter` free to route, "the model" is a different
-/// endpoint from one request to the next, and the timings and the cache behaviour
-/// move with it.
-fn turn_options() -> TurnOptions {
+/// Pinning is not about the price — the response carries that. It is what makes
+/// two runs comparable: with `OpenRouter` free to route, "the model" is a
+/// different endpoint from one request to the next, and the timings and the cache
+/// behaviour move with it.
+fn turn_options(pin: Option<&str>) -> TurnOptions {
     let mut options = TurnOptions::default();
     // Larger than a one-line answer needs: an `edit` call carries the block it
     // replaces and the block it writes, and a 512-token ceiling truncates the
     // arguments of a multi-line change mid-JSON.
     options.params.max_output_tokens = Some(1024);
-    if let Ok(provider) = std::env::var("COOKBOOK_PROVIDER") {
+    if let Some(provider) = pin {
         options.extensions.insert(
             "openai.chat:provider".to_owned(),
             json!({ "order": [provider], "allow_fallbacks": false }),
@@ -1477,7 +1479,7 @@ fn escapes(path: &str) -> bool {
 
 /// A directory of its own, emptied on every run.
 fn scratch() -> Result<PathBuf, Box<dyn Error>> {
-    let root = std::env::temp_dir().join("rustychain-bench-agent-cost");
+    let root = std::env::temp_dir().join("norte-bench-agent-cost");
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root)?;
     Ok(root)
@@ -1490,6 +1492,7 @@ fn engine(
     root: &Path,
     endpoint: &str,
     model: &str,
+    pin: Option<&str>,
 ) -> Result<(Engine, TurnOptions), Box<dyn Error>> {
     let mut tools = ToolRegistry::new();
     tools.register_tool_declaration(ReadTool::new().into_declaration())?;
@@ -1539,7 +1542,7 @@ fn engine(
             ..EngineConfig::default()
         })
         .build()?;
-    Ok((engine, turn_options()))
+    Ok((engine, turn_options(pin)))
 }
 
 /// A variable the benchmark cannot invent a value for: the model and the endpoint

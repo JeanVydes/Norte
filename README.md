@@ -1,46 +1,52 @@
 <p align="center">
-  <img src="assets/banner.jpg" alt="RustyChain" width="100%">
+  <img src="https://raw.githubusercontent.com/JeanVydes/Norte/dev/assets/banner.jpg" alt="Norte" width="100%">
 </p>
 
-# RustyChain
+# Norte
 
 <p align="center">
-  <a href="https://github.com/JeanVydes/rustychain/actions/workflows/rust.yml"><img src="https://github.com/JeanVydes/rustychain/actions/workflows/rust.yml/badge.svg?branch=dev" alt="CI"></a>
+  <a href="https://github.com/JeanVydes/Norte/actions/workflows/rust.yml"><img src="https://github.com/JeanVydes/Norte/actions/workflows/rust.yml/badge.svg?branch=dev" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/MSRV-1.85-blue.svg" alt="MSRV: 1.85">
   <img src="https://img.shields.io/badge/edition-2024-blue.svg" alt="Edition: 2024">
 </p>
 
-**Provider-agnostic infrastructure for LLM agents in Rust.** One core, three
-first-class provider SDKs, and a streaming engine built to ship.
+**Provider-agnostic infrastructure for AI agents in Rust.** One core, three
+first-class provider SDKs, and a streaming, durable engine.
 
-Write your agent once and run it on OpenAI, Anthropic or Gemini — or on any
-OpenAI-compatible endpoint — without touching a line of application code. No
-provider leaks into your application, and no model catalogue is baked in: you
-declare what your models can do and the library does the rest.
+Nothing in your application names a vendor, and no model catalogue is baked in:
+you declare what your models can do, and the engine does the rest — every call
+under a policy you write, every turn in a history you can audit.
 
-## Why RustyChain
+## Why Norte
 
-- **Provider-agnostic, for real.** Point the same agent at OpenAI, Anthropic or
-  Gemini with a config change, not a rewrite.
-- **Streaming from the first token.** Reasoning, answers, tool calls and media
-  arrive live, never batched behind a finished response.
-- **Durable by construction.** Every turn is an atomic commit. Sessions survive
-  restarts, scale across workers and move between processes intact.
-- **Lossless history.** Export a conversation and re-import it byte-for-byte —
-  the provider cache prefix included.
-- **Safe to hand it the keys.** Tool calls follow auditable policies, and an
-  approval is bound to the exact arguments it was granted for.
-- **Production-ready, not a demo.** Typed errors, retries, fuzzed parsers, no
-  unsafe, pinned MSRV.
+- **Scalable.** Sessions live in a store you choose, not in process memory: add
+  workers, restart them mid-turn and share a session — with optimistic
+  concurrency instead of a coordinator.
+- **Extensible at every seam.** Providers, stores, tools, policies, layers and
+  observers are traits. Bring your own model, database, object storage or
+  toolchain; the engine holds no vendor and no persistence of its own.
+- **Governed.** Every tool call passes a policy before it runs — allow, deny,
+  rewrite the arguments or require a human — and an approval is bound to the
+  exact arguments it was granted for.
+- **Auditable.** Every turn is one atomic commit carrying the model, the token
+  counters and the cost the provider reported. A session exports and re-imports
+  byte for byte, for a review, a replay or a hand-off.
+- **Secure.** `unsafe` is forbidden, every wire parser is fuzzed, secrets are
+  redacted from tool output, and failures are typed errors rather than panics.
+- **Observable.** Every request, tool call, token count and cache boundary is an
+  event, streamed as it happens.
+- **Cost you can attribute.** Usage and cost come from the provider's own
+  payloads, per request and per turn: chargeback-ready, with no rate table to
+  maintain.
 
 ## Providers
 
 | Provider | SDK | Wire surface |
 | --- | --- | --- |
-| OpenAI | `rustychain-openai` | Responses (primary) and Chat Completions, including the compatible long tail |
-| Anthropic | `rustychain-anthropic` | Messages |
-| Google Gemini | `rustychain-gemini` | generateContent, with explicit cached content |
+| OpenAI | `norte-openai` | Responses (primary) and Chat Completions, including the compatible long tail |
+| Anthropic | `norte-anthropic` | Messages |
+| Google Gemini | `norte-gemini` | generateContent, with explicit cached content |
 
 Each adapter covers roughly 95 % of that wire's documented surface. What is
 missing is small and named: the Realtime API (out of scope), `logprobs`, and
@@ -52,12 +58,9 @@ endpoint work through the OpenAI SDK with a different base URL.
 
 ## Install
 
-Not published yet; depend on the repository:
-
 ```toml
 [dependencies]
-rustychain-core = { git = "https://github.com/JeanVydes/rustychain", branch = "dev" }
-rustychain-openai = { git = "https://github.com/JeanVydes/rustychain", branch = "dev" }
+norte = "0.0.1"
 ```
 
 ## Quickstart
@@ -65,10 +68,7 @@ rustychain-openai = { git = "https://github.com/JeanVydes/rustychain", branch = 
 ```rust
 use std::sync::Arc;
 
-use rustychain_core::{
-    Capabilities, EngineBuilder, InMemoryBlobStore, InMemoryStore, Message, Modality, ToolRegistry,
-};
-use rustychain_openai::presets::openai;
+use norte::prelude::*;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -76,7 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .input(Modality::Text)
         .output(Modality::Text)
         .build();
-    let model = openai("gpt-5", std::env::var("OPENAI_API_KEY")?, capabilities)?;
+    let model = norte::presets::openai("gpt-5", std::env::var("OPENAI_API_KEY")?, capabilities)?;
 
     let engine = EngineBuilder::new()
         .store(Arc::new(InMemoryStore::new()))
@@ -107,7 +107,7 @@ Runnable, end-to-end programs live in [`examples/`](examples/):
   events, streaming, approval, policies, declaring tools, observers.
 
 Measurements live in [`benchmarks/`](benchmarks/): each one is a folder with the
-program, how to run it, and the results it produced.
+program, how to run it, and the reports it writes.
 
 ## Documentation
 
@@ -127,8 +127,8 @@ program, how to run it, and the results it produced.
   topic, each runnable on its own.
 - **Contributing** — [`CONTRIBUTING.md`](CONTRIBUTING.md) covers the layout, the
   build and the lint policies.
-- **Behavioural spec** — `docs/SRS.md`, kept beside the code and deliberately not
-  committed.
+- **Changelog** — [`CHANGELOG.md`](CHANGELOG.md) records what each version
+  changed.
 
 ## Development
 

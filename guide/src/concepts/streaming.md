@@ -73,7 +73,7 @@ Two things people expect to find in the stream are not in it:
   the accumulator and handed back when the stream ends.
 - **A tool result is not a stream event.** It is produced after the assistant
   message commits, and reaches the host through the store. To render it, read
-  `engine.history(session)` — which is what the cookbook's `agent_cost` does.
+  `engine.history(session)` — which is what `benchmarks/agent-cost` does.
 
 If you write a renderer, the safe pattern is: stream `StreamDelta` for live text,
 and read history when a `RequestReconstructed` tells you the next request is
@@ -90,5 +90,5 @@ deltas before they reach your loop. Both are registered on the builder. See
 An event that is `Err` is a failure of that turn; the stream may end there. Note
 that a turn which runs out of its iteration budget ends with an error *after*
 every request it made has been committed and billed — which is exactly the case a
-cost meter has to keep counting. The cookbook's `agent_cost` drains instead of
-`?`-ing for that reason.
+cost meter has to keep counting. The benchmark drains instead of `?`-ing for that
+reason.

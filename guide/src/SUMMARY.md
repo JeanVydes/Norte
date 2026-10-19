@@ -1,6 +1,6 @@
 # Summary
 
-- [RustyChain](index.md)
+- [Norte](index.md)
 - [Getting started](getting-started.md)
 
 # Concepts

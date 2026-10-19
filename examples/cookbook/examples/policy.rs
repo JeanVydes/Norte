@@ -13,19 +13,19 @@
 //! then no policy ran.
 //!
 //! ```sh
-//! OPENROUTER_API_KEY=sk-or-... cargo run -p rustychain-cookbook --example policy
+//! OPENROUTER_API_KEY=sk-or-... cargo run -p norte-cookbook --example policy
 //! ```
 
 use std::error::Error;
 use std::sync::Arc;
 
-use rustychain_core::{
+use norte_core::{
     Capabilities, Decision, Engine, EngineBuilder, FnExecutor, InMemoryBlobStore, InMemoryStore,
     Message, Modality, ModelId, ModelRef, Part, Policy, PolicySet, PolicyView, ProviderId,
     StreamingGranularity, ToolKind, ToolRegistry, ToolResultPart, WireFamily,
 };
-use rustychain_http::{AuthScheme, VendorProfile};
-use rustychain_openai::{OpenAiChat, WIRE_CHAT};
+use norte_http::{AuthScheme, VendorProfile};
+use norte_openai::{OpenAiChat, WIRE_CHAT};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -36,7 +36,7 @@ const SYSTEM: &str = "You delete files when asked. Call the `delete_file` tool w
                       the call failed, say that it failed and why; never claim a file was deleted \
                       when the tool refused.";
 
-#[rustychain_core::tool(name = "delete_file", description = "Delete a file")]
+#[norte_core::tool(name = "delete_file", description = "Delete a file")]
 struct DeleteFile;
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -52,7 +52,7 @@ struct DeleteFileResult {
 
 #[async_trait::async_trait]
 impl FnExecutor<DeleteFileArgs, DeleteFileResult> for DeleteFile {
-    async fn call(&self, args: DeleteFileArgs) -> rustychain_core::Result<DeleteFileResult> {
+    async fn call(&self, args: DeleteFileArgs) -> norte_core::Result<DeleteFileResult> {
         Ok(DeleteFileResult { deleted: args.path })
     }
 }

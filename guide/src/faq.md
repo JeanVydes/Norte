@@ -35,11 +35,16 @@ So that a dependency rule can be enforced: core depends on nothing internal, and
 no adapter depends on another. `scripts/check-dependencies.sh` fails the build if
 that is violated. It also means you compile one provider, not three.
 
+You do not have to depend on them one by one. `norte` is the entrypoint and
+re-exports all of them — the core at the root, each other crate as a module of its
+own name (`norte::openai`, `norte::tools`, …) — so one line in `Cargo.toml` is
+enough. Depend on the individual crates when you would rather be exact about what
+you compile.
+
 ## Is the behavioural spec in the repository?
 
-It is `docs/SRS.md`, deliberately kept local and not committed. The code is the
-source of truth; the spec is the requirement behind it. `CONTRIBUTING.md` says so,
-and this guide is written against the code.
+It is `docs/SRS.md`, kept local and not committed. The code is the source of
+truth; the spec is the requirement behind it.
 
 ## My turn ended with an error, but the requests were billed. Why?
 
@@ -47,7 +52,7 @@ Two cases, both deliberate:
 
 - **The iteration budget ran out.** `max_iterations` (16 by default) bounds the
   model requests in a turn. A coding agent needs more, so a host raises it — the
-  cookbook uses 32. Every request made before the error was committed and billed,
+  benchmark uses 32. Every request made before the error was committed and billed,
   which is why a cost meter keeps counting past the failure.
 - **The store raced.** A commit built from a stale version fails with
   `CommitConflict` rather than overwriting another worker's turn. Reload and
@@ -59,9 +64,8 @@ Three usual causes: a part of the request changed above the boundary (a
 timestamp, a re-ordered tool list, a different system message), the provider
 simply does not cache on that route, or the route changed between requests. The
 `CacheClass` on messages is where boundaries come from, and
-`cache_boundaries`/`PrefixInvalidated` are how you see what happened. Note that a
-router may serve the same model from different upstreams, and not all of them
-cache.
+`cache_boundaries`/`PrefixInvalidated` are how you see what happened. A router
+may serve the same model from different upstreams, and not all of them cache.
 
 ## Does it stream to a browser?
 
@@ -73,15 +77,15 @@ library on purpose.
 
 No. The engine gives you a durable, streaming, policied turn with tools,
 approval, cache awareness and cost visibility. The loop around it — when to call
-the model again, what to tell it, when to stop — is application code. The
-cookbook's `agent` recipe and `benchmarks/agent-cost` are two small loops built on
-top of it.
+the model again, what to tell it, when to stop — is application code. The `agent`
+recipe in `examples/cookbook` and `benchmarks/agent-cost` are two small loops built
+on top of it.
 
 ## Can I attach an image or audio?
 
 Yes, within what you declared. Media has a `Part`, a `Modality`, a blob store for
 the large bytes (`inline_threshold` decides when they leave the history), and
-`rustychain-media` for preprocessing an image down to the provider's limits
+`norte-media` for preprocessing an image down to the provider's limits
 (`ImagePreprocessor`: max dimension, max bytes, output format, quality).
 
 ## How do I know two runs are comparable?
@@ -89,4 +93,4 @@ the large bytes (`inline_threshold` decides when they leave the history), and
 Record what the run was: model, provider, endpoint, parameters and the commit of
 the code. `benchmarks/agent-cost` writes exactly that into every report, which is
 why its results are readable months later. See
-[benchmarks](https://github.com/JeanVydes/rustychain/tree/dev/benchmarks).
+[benchmarks](https://github.com/JeanVydes/Norte/tree/dev/benchmarks).

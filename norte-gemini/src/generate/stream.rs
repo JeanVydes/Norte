@@ -1,0 +1,1103 @@
+use futures_util::StreamExt;
+use norte_core::{
+    CallId, Citation, CitationSource, Error, ExtensionPart, FinishReason, MediaKind, MediaMetadata,
+    MediaPart, MediaSource, MimeType, ModelStream, Part, ProviderError, ProviderErrorKind,
+    ProviderTool, ReasoningVisibility, Result, SafetyRating, StreamEvent, Usage, VendorUsage,
+};
+use norte_http::SseStream;
+use serde_json::{Value, json};
+
+use crate::continuity::GeminiContinuity;
+use crate::json::{base64_decode, opt_str};
+
+/// Maps the vendor `SSE` stream into core stream events.
+pub(crate) fn map(sse: SseStream, continuity: GeminiContinuity) -> ModelStream {
+    let mut decoder = Decoder::new(continuity);
+    let mut failed = false;
+    let stream = sse.flat_map(move |event| {
+        let mut out: Vec<Result<StreamEvent>> = Vec::new();
+        if !failed {
+            match event {
+                Ok(event) => match decoder.decode(&event.data) {
+                    Ok(events) => out.extend(events.into_iter().map(Ok)),
+                    Err(error) => {
+                        out.push(Err(error));
+                        failed = true;
+                    }
+                },
+                Err(error) => {
+                    out.push(Err(error));
+                    failed = true;
+                }
+            }
+        }
+        futures_util::stream::iter(out)
+    });
+    Box::pin(stream)
+}
+
+#[derive(Clone, Debug)]
+struct Decoder {
+    continuity: GeminiContinuity,
+    next_index: u32,
+    text_index: Option<u32>,
+    reasoning_index: Option<u32>,
+    text: String,
+    reasoning: String,
+    saw_tool_call: bool,
+    finished: bool,
+    pending_finish: Option<FinishReason>,
+    /// The most recent `executableCode` call, so the matching
+    /// `codeExecutionResult` correlates with it.
+    code_call: Option<CallId>,
+}
+
+impl Decoder {
+    fn new(continuity: GeminiContinuity) -> Self {
+        Self {
+            continuity,
+            next_index: 0,
+            text_index: None,
+            reasoning_index: None,
+            text: String::new(),
+            reasoning: String::new(),
+            saw_tool_call: false,
+            finished: false,
+            pending_finish: None,
+            code_call: None,
+        }
+    }
+
+    fn decode(&mut self, data: &str) -> Result<Vec<StreamEvent>> {
+        if data == "[DONE]" {
+            return Ok(Vec::new());
+        }
+        let value: Value = serde_json::from_str(data)?;
+        if let Some(error) = value.get("error").filter(|error| !error.is_null()) {
+            return Err(stream_error(error));
+        }
+        let mut events = Vec::new();
+        self.prompt_feedback(&value);
+        self.candidates(&value, &mut events)?;
+        if let Some(usage) = value.get("usageMetadata").filter(|usage| !usage.is_null()) {
+            events.push(StreamEvent::Usage(usage_of(usage)));
+        }
+        if let Some(reason) = self.pending_finish.take() {
+            events.push(StreamEvent::Finish(reason));
+        }
+        Ok(events)
+    }
+
+    fn prompt_feedback(&mut self, value: &Value) {
+        let blocked = value
+            .get("promptFeedback")
+            .and_then(|feedback| opt_str(feedback, "blockReason"))
+            .is_some_and(|reason| !reason.is_empty() && reason != "BLOCK_REASON_UNSPECIFIED");
+        if blocked && !self.finished {
+            self.finished = true;
+            self.pending_finish = Some(FinishReason::ContentFilter);
+        }
+    }
+
+    fn candidates(&mut self, value: &Value, events: &mut Vec<StreamEvent>) -> Result<()> {
+        let candidates = value
+            .get("candidates")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        for candidate in candidates {
+            if let Some(parts) = candidate
+                .get("content")
+                .and_then(|content| content.get("parts"))
+                .and_then(Value::as_array)
+            {
+                for part in parts {
+                    self.part(part, events)?;
+                }
+            }
+            if let Some(reason) = opt_str(&candidate, "finishReason") {
+                if !matches!(reason, "" | "FINISH_REASON_UNSPECIFIED") && !self.finished {
+                    self.finished = true;
+                    self.pending_finish = Some(self.finish_reason(reason));
+                }
+            }
+            self.grounding(&candidate, events);
+            self.citation_metadata(&candidate, events);
+            safety_ratings(&candidate, events);
+        }
+        Ok(())
+    }
+
+    /// Surfaces search / maps grounding as neutral `URL` citations on the text
+    /// part being streamed, from both `groundingMetadata.groundingChunks` and a
+    /// candidate's `groundingAttributions`.
+    fn grounding(&self, candidate: &Value, events: &mut Vec<StreamEvent>) {
+        let Some(index) = self.text_index else {
+            return;
+        };
+        let chunks = candidate
+            .get("groundingMetadata")
+            .and_then(|metadata| metadata.get("groundingChunks"))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten();
+        let attributed = candidate
+            .get("groundingAttributions")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|attribution| attribution.get("sourceId"))
+            .filter_map(|source| source.get("groundingChunk"));
+        let mut seen = std::collections::BTreeSet::new();
+        for chunk in chunks.chain(attributed) {
+            let context = ["web", "retrievedContext", "maps"]
+                .iter()
+                .find_map(|key| chunk.get(*key));
+            let Some(context) = context else {
+                continue;
+            };
+            let Some(uri) = opt_str(context, "uri") else {
+                continue;
+            };
+            if !seen.insert(uri.to_owned()) {
+                continue;
+            }
+            events.push(StreamEvent::Citation {
+                index,
+                citation: Citation {
+                    source: CitationSource::Url(uri.to_owned()),
+                    title: opt_str(context, "title").map(ToOwned::to_owned),
+                },
+            });
+        }
+    }
+
+    /// Surfaces `citationMetadata` sources as neutral citations on the text part
+    /// being streamed. A source carrying only a URI maps onto a `URL` citation;
+    /// one with ranges or licensing keeps its vendor object, so nothing is lost.
+    fn citation_metadata(&self, candidate: &Value, events: &mut Vec<StreamEvent>) {
+        let Some(index) = self.text_index else {
+            return;
+        };
+        let Some(metadata) = candidate
+            .get("citationMetadata")
+            .filter(|value| !value.is_null())
+        else {
+            return;
+        };
+        let Some(sources) = metadata
+            .get("citationSources")
+            .or_else(|| metadata.get("citations"))
+            .and_then(Value::as_array)
+        else {
+            return;
+        };
+        let mut seen = std::collections::BTreeSet::new();
+        for source in sources {
+            if !seen.insert(source.to_string()) {
+                continue;
+            }
+            let title = opt_str(source, "title").map(ToOwned::to_owned);
+            let citation = match uri_only(source) {
+                Some(uri) => Citation {
+                    source: CitationSource::Url(uri.to_owned()),
+                    title,
+                },
+                None => Citation {
+                    source: CitationSource::Extension {
+                        namespace: "google".to_owned(),
+                        data: source.clone(),
+                    },
+                    title,
+                },
+            };
+            events.push(StreamEvent::Citation { index, citation });
+        }
+    }
+
+    fn part(&mut self, part: &Value, events: &mut Vec<StreamEvent>) -> Result<()> {
+        if let Some(call) = part.get("functionCall").filter(|call| !call.is_null()) {
+            return self.function_call(part, call, events);
+        }
+        if let Some(code) = part.get("executableCode").filter(|code| !code.is_null()) {
+            return self.executable_code(part, code, events);
+        }
+        if let Some(result) = part
+            .get("codeExecutionResult")
+            .filter(|result| !result.is_null())
+        {
+            return self.code_execution_result(part, result, events);
+        }
+        if let Some(data) = part.get("inlineData").filter(|data| !data.is_null()) {
+            return self.inline_data(part, data, events);
+        }
+        if let Some(data) = part.get("fileData").filter(|data| !data.is_null()) {
+            return self.file_data(part, data, events);
+        }
+        if let Some(text) = opt_str(part, "text") {
+            let thought = part
+                .get("thought")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            return self.text(part, text, thought, events);
+        }
+        self.extension(part, events);
+        Ok(())
+    }
+
+    /// A provider-executed `executableCode` block becomes a typed
+    /// `ProviderToolCall`, keeping the verbatim part in continuity so replay
+    /// stays byte-exact (FR-ADP-3).
+    fn executable_code(
+        &mut self,
+        part: &Value,
+        code: &Value,
+        events: &mut Vec<StreamEvent>,
+    ) -> Result<()> {
+        let index = self.alloc();
+        let call_id = CallId::new();
+        self.code_call = Some(call_id);
+        events.push(StreamEvent::Continuity {
+            index,
+            fragment: self.continuity.fragment(part)?,
+        });
+        events.push(StreamEvent::ProviderToolCall {
+            index,
+            call_id,
+            tool: provider_tool(),
+            input: code.clone(),
+        });
+        self.break_text();
+        Ok(())
+    }
+
+    /// The provider-executed `codeExecutionResult` becomes a typed
+    /// `ProviderToolResult`, correlated with the preceding `executableCode`.
+    fn code_execution_result(
+        &mut self,
+        part: &Value,
+        result: &Value,
+        events: &mut Vec<StreamEvent>,
+    ) -> Result<()> {
+        let index = self.alloc();
+        let call_id = self.code_call.take().unwrap_or_default();
+        events.push(StreamEvent::Continuity {
+            index,
+            fragment: self.continuity.fragment(part)?,
+        });
+        events.push(StreamEvent::ProviderToolResult {
+            index,
+            call_id,
+            tool: provider_tool(),
+            output: result.clone(),
+            citations: Vec::new(),
+        });
+        self.break_text();
+        Ok(())
+    }
+
+    /// Captures any part this decoder does not model — including server-side tool
+    /// parts — as an opaque `Extension`, so unknown wire blocks round-trip
+    /// unchanged (FR-ADP-3).
+    fn extension(&mut self, part: &Value, events: &mut Vec<StreamEvent>) {
+        if part.as_object().is_none_or(serde_json::Map::is_empty) {
+            return;
+        }
+        let index = self.alloc();
+        events.push(StreamEvent::Part {
+            index,
+            part: Part::Extension(ExtensionPart {
+                namespace: "google".to_owned(),
+                data: part.clone(),
+            }),
+        });
+        self.break_text();
+    }
+
+    fn text(
+        &mut self,
+        part: &Value,
+        text: &str,
+        thought: bool,
+        events: &mut Vec<StreamEvent>,
+    ) -> Result<()> {
+        let signature = opt_str(part, "thoughtSignature");
+        if thought {
+            let index = self.reasoning_index.unwrap_or_else(|| {
+                let index = self.alloc();
+                self.reasoning_index = Some(index);
+                self.reasoning.clear();
+                events.push(StreamEvent::ReasoningStart {
+                    index,
+                    visibility: ReasoningVisibility::Summary,
+                });
+                index
+            });
+            self.reasoning.push_str(text);
+            events.push(StreamEvent::ReasoningDelta {
+                index,
+                text: text.to_owned(),
+            });
+            if let Some(signature) = signature {
+                let wire = json!({
+                    "text": self.reasoning,
+                    "thought": true,
+                    "thoughtSignature": signature,
+                });
+                events.push(StreamEvent::Continuity {
+                    index,
+                    fragment: self.continuity.fragment(&wire)?,
+                });
+            }
+        } else {
+            let index = self.text_index.unwrap_or_else(|| {
+                let index = self.alloc();
+                self.text_index = Some(index);
+                self.text.clear();
+                index
+            });
+            self.text.push_str(text);
+            events.push(StreamEvent::TextDelta {
+                index,
+                text: text.to_owned(),
+            });
+            if let Some(signature) = signature {
+                let wire = json!({ "text": self.text, "thoughtSignature": signature });
+                events.push(StreamEvent::Continuity {
+                    index,
+                    fragment: self.continuity.fragment(&wire)?,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn function_call(
+        &mut self,
+        part: &Value,
+        call: &Value,
+        events: &mut Vec<StreamEvent>,
+    ) -> Result<()> {
+        let index = self.alloc();
+        let call_id = CallId::new();
+        let name = opt_str(call, "name").unwrap_or_default().to_owned();
+        let arguments = call.get("args").cloned().unwrap_or_else(|| json!({}));
+        self.saw_tool_call = true;
+        events.push(StreamEvent::ToolCallStart {
+            index,
+            call_id,
+            name,
+        });
+        events.push(StreamEvent::ToolCallDelta {
+            index,
+            call_id,
+            name: None,
+            arguments: arguments.to_string(),
+        });
+        events.push(StreamEvent::Continuity {
+            index,
+            fragment: self.continuity.fragment(part)?,
+        });
+        events.push(StreamEvent::ToolCallDone { index });
+        self.break_text();
+        Ok(())
+    }
+
+    fn inline_data(
+        &mut self,
+        part: &Value,
+        data: &Value,
+        events: &mut Vec<StreamEvent>,
+    ) -> Result<()> {
+        let bytes = base64_decode(opt_str(data, "data").unwrap_or_default())?;
+        let mime = mime_of(data)?;
+        let index = self.alloc();
+        events.push(StreamEvent::MediaStart {
+            index,
+            kind: media_kind(mime.as_str()),
+            mime,
+            metadata: media_metadata(part),
+        });
+        events.push(StreamEvent::MediaChunk {
+            index,
+            bytes,
+            last: true,
+        });
+        self.break_text();
+        Ok(())
+    }
+
+    fn file_data(
+        &mut self,
+        part: &Value,
+        data: &Value,
+        events: &mut Vec<StreamEvent>,
+    ) -> Result<()> {
+        let uri = opt_str(data, "fileUri").unwrap_or_default().to_owned();
+        let mime = mime_of(data)?;
+        let index = self.alloc();
+        let mut media = MediaPart::new(media_kind(mime.as_str()), MediaSource::Url(uri), mime);
+        media.metadata = media_metadata(part);
+        events.push(StreamEvent::Part {
+            index,
+            part: Part::Media(media),
+        });
+        self.break_text();
+        Ok(())
+    }
+
+    fn alloc(&mut self) -> u32 {
+        let index = self.next_index;
+        self.next_index += 1;
+        index
+    }
+
+    /// Closes any in-flight text or reasoning part so the next content starts a
+    /// distinct part, matching the vendor's part ordering.
+    fn break_text(&mut self) {
+        self.text_index = None;
+        self.text.clear();
+        self.reasoning_index = None;
+        self.reasoning.clear();
+    }
+
+    fn finish_reason(&self, reason: &str) -> FinishReason {
+        if self.saw_tool_call {
+            return FinishReason::ToolCalls;
+        }
+        match reason {
+            "STOP" => FinishReason::Stop,
+            "MAX_TOKENS" => FinishReason::Length,
+            "SAFETY" | "RECITATION" | "BLOCKLIST" | "PROHIBITED_CONTENT" | "SPII" | "LANGUAGE"
+            | "IMAGE_SAFETY" => FinishReason::ContentFilter,
+            other => FinishReason::Other(other.to_owned()),
+        }
+    }
+}
+
+/// The neutral descriptor for Gemini's provider-executed code execution.
+fn provider_tool() -> ProviderTool {
+    ProviderTool {
+        namespace: "google".to_owned(),
+        name: "code_execution".to_owned(),
+    }
+}
+
+/// Media metadata for a part, carrying `videoMetadata` (clip offsets and frame
+/// rate) in the metadata extension bag so it round-trips without a guess.
+fn media_metadata(part: &Value) -> MediaMetadata {
+    let mut metadata = MediaMetadata::default();
+    if let Some(video) = part.get("videoMetadata").filter(|value| !value.is_null()) {
+        metadata
+            .extension
+            .insert("google.video_metadata".to_owned(), video.clone());
+    }
+    metadata
+}
+
+/// The URI of a citation source when nothing beyond the URI and title is
+/// carried, so it maps losslessly onto a neutral `URL` citation.
+fn uri_only(source: &Value) -> Option<&str> {
+    let extra = ["startIndex", "endIndex", "license", "publicationDate"]
+        .iter()
+        .any(|key| source.get(*key).is_some_and(|value| !value.is_null()));
+    if extra {
+        return None;
+    }
+    opt_str(source, "uri")
+}
+
+/// Surfaces a candidate's moderation labels verbatim (FR-ADP-3).
+fn safety_ratings(candidate: &Value, events: &mut Vec<StreamEvent>) {
+    let Some(ratings) = candidate
+        .get("safetyRatings")
+        .and_then(Value::as_array)
+        .filter(|ratings| !ratings.is_empty())
+    else {
+        return;
+    };
+    events.push(StreamEvent::SafetyRatings {
+        ratings: ratings.iter().map(safety_rating).collect(),
+    });
+}
+
+/// Maps one vendor safety rating, keeping every field the typed ones do not
+/// cover (numeric scores included).
+fn safety_rating(value: &Value) -> SafetyRating {
+    let typed = ["category", "probability", "severity", "blocked"];
+    let mut extension = std::collections::BTreeMap::new();
+    if let Some(object) = value.as_object() {
+        for (key, value) in object {
+            if !typed.contains(&key.as_str()) {
+                extension.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    SafetyRating {
+        category: opt_str(value, "category").unwrap_or_default().to_owned(),
+        probability: opt_str(value, "probability").map(ToOwned::to_owned),
+        severity: opt_str(value, "severity").map(ToOwned::to_owned),
+        blocked: value
+            .get("blocked")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        extension,
+    }
+}
+
+fn mime_of(data: &Value) -> Result<MimeType> {
+    MimeType::new(opt_str(data, "mimeType").unwrap_or("application/octet-stream"))
+}
+
+fn media_kind(mime: &str) -> MediaKind {
+    if mime.starts_with("image/") {
+        MediaKind::Image
+    } else if mime.starts_with("audio/") {
+        MediaKind::Audio
+    } else if mime.starts_with("video/") {
+        MediaKind::Video
+    } else {
+        MediaKind::Document
+    }
+}
+
+fn usage_of(usage: &Value) -> Usage {
+    let mut vendor = VendorUsage::new(usage);
+    let mut mapped = Usage::default();
+    mapped.input_tokens = vendor.take(&["promptTokenCount"]);
+    mapped.output_tokens = vendor.take(&["candidatesTokenCount"]);
+    mapped.reasoning_tokens = vendor.take(&["thoughtsTokenCount"]);
+    mapped.cache_read_tokens = vendor.take(&["cachedContentTokenCount"]);
+    mapped.vendor = vendor.remainder();
+    mapped
+}
+
+fn stream_error(error: &Value) -> Error {
+    let message = opt_str(error, "message").unwrap_or("gemini stream error");
+    let status = opt_str(error, "status");
+    let code = error
+        .get("code")
+        .and_then(Value::as_u64)
+        .and_then(|code| u16::try_from(code).ok());
+    let kind = match (status, code) {
+        (Some("RESOURCE_EXHAUSTED"), _) | (_, Some(429)) => ProviderErrorKind::RateLimited,
+        (Some("UNAVAILABLE"), _) => ProviderErrorKind::ModelOverloaded,
+        (Some("INTERNAL"), _) | (_, Some(500..=599)) => ProviderErrorKind::ServerError,
+        (Some("INVALID_ARGUMENT" | "FAILED_PRECONDITION"), _) => ProviderErrorKind::InvalidRequest,
+        (Some("UNAUTHENTICATED"), _) => ProviderErrorKind::Authentication,
+        (Some("PERMISSION_DENIED"), _) => ProviderErrorKind::Permission,
+        (Some("NOT_FOUND"), _) => ProviderErrorKind::NotFound,
+        _ => ProviderErrorKind::Other,
+    };
+    let mut provider = ProviderError::new(kind, message.to_owned());
+    if let Some(status) = status {
+        provider = provider.with_code(status.to_owned());
+    }
+    if let Some(code) = code {
+        provider = provider.with_status(code);
+    }
+    Error::provider(provider)
+}
+
+/// A stateful entry point the `fuzz` crate drives with arbitrary `SSE` payloads.
+///
+/// Enabled by the `fuzz` feature. It is not part of the supported API.
+#[cfg(feature = "fuzz")]
+#[doc(hidden)]
+pub struct FuzzGenerate {
+    decoder: Decoder,
+}
+
+#[cfg(feature = "fuzz")]
+impl FuzzGenerate {
+    /// Creates a decoder bound to `continuity`.
+    #[must_use]
+    pub fn new(continuity: GeminiContinuity) -> Self {
+        Self {
+            decoder: Decoder::new(continuity),
+        }
+    }
+
+    /// Decodes one raw `SSE` `data` payload.
+    ///
+    /// # Errors
+    ///
+    /// Returns a codec error for malformed input.
+    pub fn decode(&mut self, data: &str) -> Result<Vec<StreamEvent>> {
+        self.decoder.decode(data)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures_util::StreamExt;
+    use norte_core::{ContinuityAdapter, ModelId, ModelRef, ProviderId, WireFamily};
+    use norte_http::SseEvent;
+
+    use crate::WIRE_GENERATE;
+
+    fn continuity() -> GeminiContinuity {
+        let model = ModelRef::new(
+            ProviderId::new("google").expect("provider"),
+            ModelId::new("gemini-2.5-pro").expect("model"),
+        );
+        GeminiContinuity::new(WireFamily::new(WIRE_GENERATE).expect("family"), model)
+    }
+
+    fn stream_of(data: &[&str]) -> SseStream {
+        let events: Vec<Result<SseEvent>> = data
+            .iter()
+            .map(|data| {
+                Ok(SseEvent {
+                    data: (*data).to_owned(),
+                    ..SseEvent::default()
+                })
+            })
+            .collect();
+        Box::pin(futures_util::stream::iter(events))
+    }
+
+    async fn drain(data: &[&str]) -> Vec<StreamEvent> {
+        let mut stream = map(stream_of(data), continuity());
+        let mut events = Vec::new();
+        while let Some(event) = stream.next().await {
+            events.push(event.expect("event"));
+        }
+        events
+    }
+
+    fn decode_continuity(events: &[StreamEvent]) -> Value {
+        let fragment = events
+            .iter()
+            .find_map(|event| match event {
+                StreamEvent::Continuity { fragment, .. } => Some(fragment.clone()),
+                _ => None,
+            })
+            .expect("continuity");
+        let token = continuity().merge(None, fragment).expect("merge");
+        continuity().decode(&token).expect("decode")
+    }
+
+    /// Loads a recorded transcript — a JSON array of SSE `data` payloads — and
+    /// maps it through the wire, so live-provider behaviour is pinned hermetically
+    /// (FR-TEST-2).
+    async fn drain_fixture(fixture: &str) -> Vec<StreamEvent> {
+        let data: Vec<String> = serde_json::from_str(fixture).expect("fixture json");
+        let refs: Vec<&str> = data.iter().map(String::as_str).collect();
+        drain(&refs).await
+    }
+
+    #[tokio::test]
+    async fn recorded_transcript_pins_the_critical_path() {
+        let events = drain_fixture(include_str!("../../fixtures/gemini.generate.json")).await;
+        let text: String = events
+            .iter()
+            .filter_map(|event| match event {
+                StreamEvent::TextDelta { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text, "Hello, world");
+        let usage = events
+            .iter()
+            .find_map(|event| match event {
+                StreamEvent::Usage(usage) => Some(usage),
+                _ => None,
+            })
+            .expect("usage");
+        assert_eq!(usage.input_tokens, Some(7));
+        assert_eq!(usage.output_tokens, Some(2));
+        assert_eq!(usage.cache_read_tokens, Some(3));
+        assert_eq!(
+            events.last(),
+            Some(&StreamEvent::Finish(FinishReason::Stop))
+        );
+    }
+
+    #[tokio::test]
+    async fn text_deltas_and_usage_survive_the_decode() {
+        let events = drain(&[
+            r#"{"candidates":[{"content":{"role":"model","parts":[{"text":"Hel"}]}}]}"#,
+            r#"{"candidates":[{"content":{"role":"model","parts":[{"text":"lo"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":2,"cachedContentTokenCount":3,"totalTokenCount":9,"toolUsePromptTokenCount":1,"promptTokensDetails":[{"modality":"TEXT","tokenCount":7}]}}"#,
+        ])
+        .await;
+        assert_eq!(
+            events[0],
+            StreamEvent::TextDelta {
+                index: 0,
+                text: "Hel".to_owned(),
+            }
+        );
+        assert_eq!(
+            events[1],
+            StreamEvent::TextDelta {
+                index: 0,
+                text: "lo".to_owned(),
+            }
+        );
+        let StreamEvent::Usage(usage) = &events[2] else {
+            panic!("expected usage");
+        };
+        assert_eq!(usage.input_tokens, Some(7));
+        assert_eq!(usage.output_tokens, Some(2));
+        assert_eq!(usage.cache_read_tokens, Some(3));
+        // Gemini breaks tokens down by modality and counts tool prompts: the
+        // neutral vocabulary names none of it, so it survives verbatim.
+        assert_eq!(
+            usage.vendor.get("totalTokenCount").and_then(Value::as_u64),
+            Some(9)
+        );
+        assert_eq!(
+            usage
+                .vendor
+                .get("toolUsePromptTokenCount")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            usage
+                .vendor
+                .get("promptTokensDetails")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(1)
+        );
+        assert_eq!(events[3], StreamEvent::Finish(FinishReason::Stop));
+    }
+
+    #[tokio::test]
+    async fn function_calls_keep_their_signature() {
+        let events = drain(&[
+            r#"{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"lookup","args":{"q":1}},"thoughtSignature":"sig"}]},"finishReason":"STOP"}]}"#,
+        ])
+        .await;
+        let StreamEvent::ToolCallStart { index, name, .. } = &events[0] else {
+            panic!("expected tool call start");
+        };
+        assert_eq!(*index, 0);
+        assert_eq!(name, "lookup");
+        let args = events
+            .iter()
+            .find_map(|event| match event {
+                StreamEvent::ToolCallDelta { arguments, .. } => Some(arguments.clone()),
+                _ => None,
+            })
+            .expect("arguments");
+        assert_eq!(args, r#"{"q":1}"#);
+        let decoded = decode_continuity(&events);
+        assert_eq!(decoded["functionCall"]["name"], "lookup");
+        assert_eq!(decoded["thoughtSignature"], "sig");
+        assert_eq!(
+            events.last(),
+            Some(&StreamEvent::Finish(FinishReason::ToolCalls))
+        );
+    }
+
+    #[tokio::test]
+    async fn thought_summaries_stream_then_settle_with_continuity() {
+        let events = drain(&[
+            r#"{"candidates":[{"content":{"role":"model","parts":[{"text":"plan","thought":true}]}}]}"#,
+            r#"{"candidates":[{"content":{"role":"model","parts":[{"text":"the answer","thoughtSignature":"sig"}]},"finishReason":"STOP"}]}"#,
+        ])
+        .await;
+        assert_eq!(
+            events[0],
+            StreamEvent::ReasoningStart {
+                index: 0,
+                visibility: ReasoningVisibility::Summary,
+            }
+        );
+        assert_eq!(
+            events[1],
+            StreamEvent::ReasoningDelta {
+                index: 0,
+                text: "plan".to_owned(),
+            }
+        );
+        assert_eq!(
+            events[2],
+            StreamEvent::TextDelta {
+                index: 1,
+                text: "the answer".to_owned(),
+            }
+        );
+        assert!(matches!(
+            &events[3],
+            StreamEvent::Continuity { index: 1, .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn text_signature_is_stored_with_the_whole_text() {
+        let events = drain(&[
+            r#"{"candidates":[{"content":{"parts":[{"text":"an "}]}}]}"#,
+            r#"{"candidates":[{"content":{"parts":[{"text":"answer","thoughtSignature":"sig"}]}}]}"#,
+        ])
+        .await;
+        let decoded = decode_continuity(&events);
+        assert_eq!(decoded["text"], "an answer");
+        assert_eq!(decoded["thoughtSignature"], "sig");
+    }
+
+    #[tokio::test]
+    async fn inline_media_is_materialized() {
+        let events = drain(&[
+            r#"{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/png","data":"AQID"}}]}}]}"#,
+        ])
+        .await;
+        let StreamEvent::MediaStart {
+            index, kind, mime, ..
+        } = &events[0]
+        else {
+            panic!("expected media start");
+        };
+        assert_eq!(*index, 0);
+        assert_eq!(*kind, MediaKind::Image);
+        assert_eq!(mime.as_str(), "image/png");
+        assert_eq!(
+            events[1],
+            StreamEvent::MediaChunk {
+                index: 0,
+                bytes: vec![1, 2, 3],
+                last: true,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn audio_output_is_materialized_as_audio() {
+        let events = drain(&[
+            r#"{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"audio/wav","data":"AQID"}}]}}]}"#,
+        ])
+        .await;
+        let StreamEvent::MediaStart { kind, mime, .. } = &events[0] else {
+            panic!("expected media start");
+        };
+        assert_eq!(*kind, MediaKind::Audio);
+        assert_eq!(mime.as_str(), "audio/wav");
+    }
+
+    #[tokio::test]
+    async fn video_output_is_materialized_as_video() {
+        let events = drain(&[
+            r#"{"candidates":[{"content":{"parts":[{"fileData":{"mimeType":"video/mp4","fileUri":"https://example.test/a.mp4"}}]}}]}"#,
+        ])
+        .await;
+        let StreamEvent::Part {
+            part: Part::Media(media),
+            ..
+        } = &events[0]
+        else {
+            panic!("expected media part");
+        };
+        assert_eq!(media.kind, MediaKind::Video);
+    }
+
+    #[tokio::test]
+    async fn vendor_file_output_is_a_url_for_the_engine_to_ingest() {
+        let events = drain(&[
+            r#"{"candidates":[{"content":{"parts":[{"fileData":{"mimeType":"image/jpeg","fileUri":"https://example.test/a.jpg"}}]}}]}"#,
+        ])
+        .await;
+        let StreamEvent::Part {
+            index,
+            part: Part::Media(media),
+        } = &events[0]
+        else {
+            panic!("expected media part");
+        };
+        assert_eq!(*index, 0);
+        assert_eq!(media.kind, MediaKind::Image);
+        assert_eq!(
+            media.source,
+            MediaSource::Url("https://example.test/a.jpg".to_owned())
+        );
+    }
+
+    #[tokio::test]
+    async fn code_execution_parts_become_typed_provider_parts() {
+        let events = drain(&[
+            r#"{"candidates":[{"content":{"parts":[{"executableCode":{"language":"PYTHON","code":"1+1"}}]}}]}"#,
+            r#"{"candidates":[{"content":{"parts":[{"codeExecutionResult":{"outcome":"OUTCOME_OK","output":"2"}}]}}]}"#,
+        ])
+        .await;
+        let StreamEvent::ProviderToolCall {
+            call_id,
+            tool,
+            input,
+            ..
+        } = &events[1]
+        else {
+            panic!("expected a provider tool call, got {events:?}");
+        };
+        assert_eq!(tool.namespace, "google");
+        assert_eq!(tool.name, "code_execution");
+        assert_eq!(input["code"], "1+1");
+        let StreamEvent::ProviderToolResult {
+            call_id: result_id,
+            output,
+            ..
+        } = &events[3]
+        else {
+            panic!("expected a provider tool result, got {events:?}");
+        };
+        assert_eq!(result_id, call_id);
+        assert_eq!(output["outcome"], "OUTCOME_OK");
+        assert_eq!(output["output"], "2");
+    }
+
+    #[tokio::test]
+    async fn unknown_parts_round_trip_as_extensions() {
+        let events = drain(&[
+            r#"{"candidates":[{"content":{"parts":[{"vendorExtension":{"payload":[1,2,3]}}]}}]}"#,
+        ])
+        .await;
+        let StreamEvent::Part {
+            part: Part::Extension(extension),
+            ..
+        } = &events[0]
+        else {
+            panic!("expected extension part");
+        };
+        assert_eq!(extension.namespace, "google");
+        assert_eq!(
+            extension.data["vendorExtension"]["payload"],
+            json!([1, 2, 3])
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_parts_are_ignored() {
+        let events = drain(&[r#"{"candidates":[{"content":{"parts":[{}]}}]}"#]).await;
+        assert!(events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn blocked_prompts_finish_as_content_filter() {
+        let events = drain(&[r#"{"promptFeedback":{"blockReason":"SAFETY"}}"#]).await;
+        assert_eq!(
+            events,
+            vec![StreamEvent::Finish(FinishReason::ContentFilter)]
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_errors_are_classified() {
+        let mut stream = map(
+            stream_of(&[
+                r#"{"error":{"code":429,"message":"quota","status":"RESOURCE_EXHAUSTED"}}"#,
+            ]),
+            continuity(),
+        );
+        let error = stream.next().await.expect("some").expect_err("error");
+        assert_eq!(error.provider_kind(), Some(ProviderErrorKind::RateLimited));
+    }
+
+    #[tokio::test]
+    async fn grounding_metadata_becomes_url_citations() {
+        let events = drain(&[
+            r#"{"candidates":[{"content":{"parts":[{"text":"Rust is fast"}]},"groundingMetadata":{"groundingChunks":[{"web":{"uri":"https://example.test/rust","title":"Rust"}}],"groundingSupports":[{"segment":{"startIndex":0,"endIndex":4},"groundingChunkIndices":[0]}]},"finishReason":"STOP"}]}"#,
+        ])
+        .await;
+        let StreamEvent::Citation { index, citation } = &events[1] else {
+            panic!("expected a citation");
+        };
+        assert_eq!(*index, 0);
+        assert_eq!(
+            citation.source,
+            CitationSource::Url("https://example.test/rust".to_owned())
+        );
+        assert_eq!(citation.title.as_deref(), Some("Rust"));
+    }
+
+    #[tokio::test]
+    async fn video_metadata_is_carried_on_the_media_part() {
+        let events = drain(&[
+            r#"{"candidates":[{"content":{"parts":[{"fileData":{"mimeType":"video/mp4","fileUri":"https://example.test/a.mp4"},"videoMetadata":{"startOffset":"1s","endOffset":"10s","fps":5}}]}}]}"#,
+        ])
+        .await;
+        let StreamEvent::Part {
+            part: Part::Media(media),
+            ..
+        } = &events[0]
+        else {
+            panic!("expected media part");
+        };
+        assert_eq!(media.kind, MediaKind::Video);
+        assert_eq!(
+            media.metadata.extension["google.video_metadata"],
+            json!({"startOffset": "1s", "endOffset": "10s", "fps": 5})
+        );
+    }
+
+    #[tokio::test]
+    async fn citation_metadata_sources_become_citations() {
+        let events = drain(&[
+            r#"{"candidates":[{"content":{"parts":[{"text":"Rust"}]},"citationMetadata":{"citationSources":[{"uri":"https://example.test/a","title":"A"},{"uri":"https://example.test/b","title":"B","startIndex":0,"endIndex":4,"license":"CC"}]}}]}"#,
+        ])
+        .await;
+        let StreamEvent::Citation { citation, .. } = &events[1] else {
+            panic!("expected a citation");
+        };
+        assert_eq!(
+            citation.source,
+            CitationSource::Url("https://example.test/a".to_owned())
+        );
+        assert_eq!(citation.title.as_deref(), Some("A"));
+        let StreamEvent::Citation { citation, .. } = &events[2] else {
+            panic!("expected a citation");
+        };
+        assert_eq!(
+            citation.source,
+            CitationSource::Extension {
+                namespace: "google".to_owned(),
+                data: json!({
+                    "uri": "https://example.test/b",
+                    "title": "B",
+                    "startIndex": 0,
+                    "endIndex": 4,
+                    "license": "CC",
+                }),
+            }
+        );
+        assert_eq!(citation.title.as_deref(), Some("B"));
+    }
+
+    #[tokio::test]
+    async fn safety_ratings_are_surfaced_verbatim() {
+        let events = drain(&[
+            r#"{"candidates":[{"content":{"parts":[{"text":"hi"}]},"safetyRatings":[{"category":"HARM_CATEGORY_HATE_SPEECH","probability":"NEGLIGIBLE","probabilityScore":0.1,"blocked":false}]}]}"#,
+        ])
+        .await;
+        let StreamEvent::SafetyRatings { ratings } = &events[1] else {
+            panic!("expected safety ratings, got {events:?}");
+        };
+        assert_eq!(ratings[0].category, "HARM_CATEGORY_HATE_SPEECH");
+        assert_eq!(ratings[0].probability.as_deref(), Some("NEGLIGIBLE"));
+        assert!(!ratings[0].blocked);
+        assert_eq!(ratings[0].extension["probabilityScore"], json!(0.1));
+    }
+
+    #[tokio::test]
+    async fn grounding_attributions_become_citations() {
+        let events = drain(&[
+            r#"{"candidates":[{"content":{"parts":[{"text":"Rust"}]},"groundingAttributions":[{"sourceId":{"groundingChunk":{"web":{"uri":"https://example.test/a","title":"A"}}},"content":{"parts":[{"text":"Rust"}]}}]}]}"#,
+        ])
+        .await;
+        let StreamEvent::Citation { citation, .. } = &events[1] else {
+            panic!("expected a citation, got {events:?}");
+        };
+        assert_eq!(
+            citation.source,
+            CitationSource::Url("https://example.test/a".to_owned())
+        );
+        assert_eq!(citation.title.as_deref(), Some("A"));
+    }
+
+    #[tokio::test]
+    async fn done_and_empty_chunks_are_ignored() {
+        let events = drain(&["[DONE]", r#"{"candidates":[]}"#]).await;
+        assert!(events.is_empty());
+    }
+}

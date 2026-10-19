@@ -1,19 +1,18 @@
-# RustyChain
+# Norte
 
-**Provider-agnostic infrastructure for LLM agents in Rust.** One core, three
-first-class provider SDKs, and a streaming engine built to ship.
+**Provider-agnostic infrastructure for AI agents in Rust.** One core, three
+first-class provider SDKs, and a streaming, durable engine.
 
-Write your agent once and run it on OpenAI, Anthropic or Gemini — or on any
-`OpenAI`-compatible endpoint — without touching a line of application code. No
-provider leaks into your application, and no model catalogue is baked in: you
-declare what your models can do and the library does the rest.
+Nothing in your application names a vendor, and no model catalogue is baked in:
+you declare what your models can do, and the engine does the rest — every call
+under a policy you write, every turn in a history you can audit.
 
 ## The mental model
 
-Five ideas, and everything else in this guide is a detail of one of them.
+Five ideas hold the whole library together.
 
 - **A model is a port.** `Arc<dyn Model>` is the only thing the engine knows how
-  to call. A wire adapter (`rustychain-openai`, `-anthropic`, `-gemini`) is one
+  to call. A wire adapter (`norte-openai`, `-anthropic`, `-gemini`) is one
   implementation; a scripted model in a test is another. Swapping the provider is
   swapping one `Arc`, not rewriting the application.
 - **A session is durable, a turn is atomic.** A `Session` is a tree of commits in

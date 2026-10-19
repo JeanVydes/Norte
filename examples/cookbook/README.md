@@ -10,7 +10,7 @@ can be read — and copied — without the rest of the crate.
 OPENROUTER_API_KEY=sk-or-... \
 COOKBOOK_MODEL=deepseek/deepseek-v4-flash-0731 \
 COOKBOOK_ENDPOINT=https://openrouter.ai/api/v1 \
-cargo run -p rustychain-cookbook --example approval
+cargo run -p norte-cookbook --example approval
 ```
 
 The key comes from the environment; a local `.env` works with
@@ -63,5 +63,5 @@ The wiring is ~10 lines of [OpenRouter](https://openrouter.ai) — a
 `VendorProfile` with a bearer key, plus the generic `OpenAiChat::new` — because
 an `OpenAI`-compatible vendor needs no preset, only a base `URL`. Any other
 compatible endpoint is the same code with a different `URL` and key; the native
-vendors use their own adapters (`rustychain-openai::presets`,
-`rustychain-anthropic`, `rustychain-gemini`).
+vendors use their own adapters (`norte-openai::presets`,
+`norte-anthropic`, `norte-gemini`).

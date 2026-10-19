@@ -52,10 +52,11 @@ under a policy you write, every turn in a history you can audit.
 | Google Gemini | `norte-gemini` | generateContent, cached content | `███████████████████░` 95 % |
 
 Coverage is the share of each vendor's documented API the adapter implements.
-What is missing is small and named: the Realtime API (out of scope) and unary
-`stream: false` delivery (`collect()` already covers blocking callers). A modality
-an API cannot express is a typed error, never a silent drop, and a documented
-block with no neutral form is kept verbatim and replayed unchanged.
+Two directions are out of scope by decision and will not be implemented: the
+Realtime API and unary `stream: false` delivery (deprecated as a direction —
+`collect()` already covers blocking callers). A modality an API cannot express
+is a typed error, never a silent drop, and a documented block with no neutral
+form is kept verbatim and replayed unchanged.
 
 Anything OpenAI-compatible works through the OpenAI adapter with your own base
 `URL`: OpenRouter, Groq, Together, vLLM, an internal gateway or a self-hosted

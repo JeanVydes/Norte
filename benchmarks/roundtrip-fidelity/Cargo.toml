@@ -1,0 +1,24 @@
+[package]
+name = "norte-bench-roundtrip-fidelity"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Export/import over many generated sessions, byte-for-byte, across four wires."
+
+[dependencies]
+norte-core = { workspace = true }
+norte-openai = { workspace = true }
+norte-anthropic = { workspace = true }
+norte-gemini = { workspace = true }
+norte-testing = { workspace = true }
+norte-bench-support = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+uuid = { workspace = true }
+
+[lints]
+workspace = true

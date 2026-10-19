@@ -126,6 +126,12 @@ async fn assert_wire_stable(model: Arc<dyn Model>, body_of: impl Fn(&ModelReques
         seed,
         "history must round-trip losslessly"
     );
+    let reexported = engine_b.export(imported.id).await.expect("re-export");
+    assert_eq!(
+        json,
+        reexported.to_json().expect("to_json"),
+        "export -> import -> export must be byte-identical"
+    );
 
     // Both engines reconstruct the same next turn.
     engine_a

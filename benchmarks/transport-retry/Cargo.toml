@@ -1,0 +1,23 @@
+[package]
+name = "norte-bench-transport-retry"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "429/5xx/timeout under a host retry policy: what the library surfaces and what the host pays."
+
+[dependencies]
+norte-core = { workspace = true }
+norte-http = { workspace = true }
+norte-testing = { workspace = true }
+norte-bench-support = { workspace = true }
+async-trait = { workspace = true }
+futures-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+
+[lints]
+workspace = true

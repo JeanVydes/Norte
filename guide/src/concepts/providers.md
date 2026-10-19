@@ -85,6 +85,38 @@ value }` — the four shapes the field actually uses. Secrets are wrapped in
 `HttpClient`, `TransportPolicy`, `SseDecoder` and `parse_retry_after` are public
 if you want them directly.
 
+### What the host does with a `429`
+
+The transport stops at the typed error; the decision is the host's. The error
+carries the provider's `retry_after` when it sent one, and
+`norte_http::is_transient` says whether the same request may succeed later
+(`RateLimited`, `ServerError`, `ModelOverloaded`, and `Transport` — a connection
+that never reached the provider). Everything else — a bad key, a malformed
+request, a content filter — is final, and retrying it only burns time.
+
+```rust
+let mut stream = engine.send(session, message);
+let mut attempt = 1;
+loop {
+    match stream.finish().await {
+        Ok(outcome) => break outcome,
+        Err(error) if is_transient(&error) && attempt < 3 => {
+            let wait = error.retry_after().unwrap_or(Duration::from_secs(2 * attempt));
+            tokio::time::sleep(wait).await;
+            attempt += 1;
+            stream = engine.resume(session);
+        }
+        Err(error) => return Err(error.into()),
+    }
+}
+```
+
+A failed turn leaves the session `Streaming` and the user message committed, so
+`resume` continues from the head instead of re-sending it (FR-ERR-5). Bound the
+loop: a provider that keeps answering `429` must eventually surface the error.
+The `rate_limit` cookbook recipe runs exactly this policy against a real
+provider.
+
 ## What is missing, honestly
 
 | Adapter | Coverage |
@@ -93,9 +125,9 @@ if you want them directly.
 | `norte-anthropic` | `███████████████████░` 95 % |
 | `norte-gemini` | `███████████████████░` 95 % |
 
-Coverage is the share of the vendor's documented API the adapter implements. The
-missing part is small and named: the Realtime API (out of scope) and unary
-`stream: false` delivery (`finish()` already covers blocking callers).
+Coverage is the share of the vendor's documented API the adapter implements. The two remaining gaps are out of scope by decision and will not be implemented:
+the Realtime API and unary `stream: false` delivery (deprecated as a direction —
+`finish()` already covers blocking callers).
 
 Two rules the adapters do keep:
 

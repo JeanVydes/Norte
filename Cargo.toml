@@ -3,6 +3,14 @@ resolver = "3"
 exclude = ["fuzz"]
 members = [
     "benchmarks/agent-cost",
+    "benchmarks/cache-hit",
+    "benchmarks/latency",
+    "benchmarks/roundtrip-fidelity",
+    "benchmarks/schema-friction",
+    "benchmarks/support",
+    "benchmarks/token-counting",
+    "benchmarks/tool-loop",
+    "benchmarks/transport-retry",
     "examples/cookbook",
     "norte",
     "norte-facade-smoke",
@@ -38,6 +46,7 @@ norte-tools = { path = "norte-tools", version = "0.0.1" }
 norte-media = { path = "norte-media", version = "0.0.1" }
 norte-testing = { path = "norte-testing", version = "0.0.1" }
 norte-mcp = { path = "norte-mcp", version = "0.0.1" }
+norte-bench-support = { path = "benchmarks/support", version = "0.0.1" }
 
 proc-macro2 = "1"
 quote = "1"

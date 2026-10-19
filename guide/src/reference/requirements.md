@@ -77,7 +77,7 @@ Library authors integrating providers, agent-framework developers, and operators
 - **Vendor detail stays in adapters.** The neutral model carries opaque continuity tokens, never vendor fields.
 - **Decide once, persist, never re-decide.** Policy and approval outcomes are stored together with the policy identity.
 - **Typed end to end.** Typed identifiers, typed tool arguments and outputs, exhaustive matching, no stringly-typed control flow.
-- **Full provider fidelity, with a named ceiling.** Adapters expose every documented capability of each provider's chat surface; the surface that is deliberately out of scope is named rather than implied away (the Realtime API), and every other gap is a typed error or a value kept verbatim, never a silent omission.
+- **Full provider fidelity, with a named ceiling.** Adapters expose every documented capability of each provider's chat surface; the surface that is deliberately out of scope is named rather than implied away (the Realtime API and unary `stream: false` delivery, both permanent scope decisions and not pending items), and every other gap is a typed error or a value kept verbatim, never a silent omission.
 
 **Verified by:** CI jobs **Format Check**, **Clippy**, **MSRV**, **Documentation** and **Security Audit**; the properties are asserted across the workspace suites.
 
@@ -243,7 +243,7 @@ Streaming is the only primitive. A blocking call is obtained by collecting the s
 
 **FR-STREAM-2.** Stream accumulation is bounded; partial parts are held in a fixed-capacity buffer and flushed to the store only on part completion or explicit checkpoint.
 
-**FR-STREAM-3.** Cancellation of the stream is safe: the engine commits any completed parts, marks the assistant message `Interrupted`, and leaves the session resumable.
+**FR-STREAM-3.** Cancellation of the stream is safe: the engine commits any completed parts, marks the assistant message `Interrupted`, and leaves the session resumable. The turn's cancellation token reaches every running tool through `ToolContext`, including a call started early, so a cooperative tool stops instead of running to completion; a turn cancelled while tools run commits no tool result and stays `AwaitingTool`, ready to resume.
 
 **FR-STREAM-4.** Tool calls may begin execution as soon as their arguments are complete, before the assistant message has finished streaming, under the control of the host’s tool policy. A wire whose tool blocks have an explicit boundary signals completion with a `ToolCallDone` stream event. When the host enables early tool execution (`EngineConfig::early_tool_execution`), the engine evaluates the tool policy against the assistant message as known so far and starts the call in a background task that runs while the remainder of the message streams; the results feed the normal tool turn without re-evaluation. Calls that need approval, are denied or are rate limited are always deferred to the normal path, and a call that did start early is recorded as a completed result of the message, so a later park for approval does not run it twice (FR-APPR-8). The capability is off by default, so default behaviour is unchanged.
 
@@ -299,11 +299,11 @@ Providers cache the request prefix and bill cached input tokens at a fraction of
 
 **FR-RECON-1 — Determinism.** Reconstruction of the message sequence is a pure function of `(session head, model reference, capability descriptor, materialization policy, continuity decisions)`. It must not depend on wall-clock time, locale, randomness, process identity, request ids or any state that changes between turns. Given the same inputs it yields a byte-equivalent sequence.
 
-**Where it lives:** `examples/cookbook/examples/cache.rs`, `norte-core/src/domain/conversation.rs`, `norte-testing/tests/properties.rs`.
+**Where it lives:** `benchmarks/cache-hit/src/main.rs`, `norte-core/src/domain/conversation.rs`, `norte-testing/tests/properties.rs`.
 
 **FR-RECON-2 — Prefix stability.** Appending new nodes must not alter the reconstruction of any previously committed message. Adding turn *N+1* must produce a sequence whose first *N* turns are byte-identical to the previous request. The cached prefix is preserved.
 
-**Where it lives:** `examples/cookbook/examples/cache.rs`, `norte-core/src/domain/conversation.rs`, `norte-core/src/engine.rs` (`steer`), `norte-testing/tests/history.rs` (`seeded_history_round_trips_and_keeps_the_prefix`), `norte-testing/tests/properties.rs`.
+**Where it lives:** `benchmarks/cache-hit/src/main.rs`, `norte-core/src/domain/conversation.rs`, `norte-core/src/engine.rs` (`steer`), `norte-testing/tests/history.rs` (`seeded_history_round_trips_and_keeps_the_prefix`), `norte-testing/tests/properties.rs`.
 
 **FR-RECON-3 — No per-request identifiers in the prefix.** Nothing inside the cache-critical prefix may embed values that change per request: signed URLs, freshly minted vendor file ids, nonces, timestamps or request ids. Any such value must either be persisted and reused, or placed only in the ephemeral tail.
 
@@ -344,7 +344,7 @@ Providers cache the request prefix and bill cached input tokens at a fraction of
 
 **FR-RECON-12 — Auditable wire projection.** Each adapter exposes the exact JSON body it would `POST` for a reconstructed request as a pure, side-effect-free function of `(model reference, continuity state, request)`, without opening a connection. The projection is the same function used by the live send path, so a host or a test can diff the bytes a request would produce and attribute any cache-relevant change (FR-CACHE-1..4, FR-RECON-2) without spending tokens.
 
-**Where it lives:** `examples/cookbook/examples/branching.rs` (`stream`), `examples/cookbook/examples/cache.rs` (`stream`), `examples/cookbook/examples/export_import.rs` (`stream`), `norte-anthropic/src/messages/mod.rs` (`profile`), `norte-gemini/src/generate/mod.rs` (`profile`), `norte-openai/src/chat/mod.rs` (`profile`), `norte-openai/src/responses/mod.rs` (`profile`), `norte-testing/src/probe.rs` (`guard`), `norte-testing/tests/export.rs`.
+**Where it lives:** `examples/cookbook/examples/branching.rs` (`stream`), `benchmarks/cache-hit/src/main.rs` (`stream`), `examples/cookbook/examples/export_import.rs` (`stream`), `norte-anthropic/src/messages/mod.rs` (`profile`), `norte-gemini/src/generate/mod.rs` (`profile`), `norte-openai/src/chat/mod.rs` (`profile`), `norte-openai/src/responses/mod.rs` (`profile`), `norte-testing/src/probe.rs` (`guard`), `norte-testing/tests/export.rs`.
 
 ### 8.2 Conversation Export & Import
 
@@ -582,6 +582,8 @@ Adapters must expose the documented public surface of their respective providers
 
 A host-executed function tool is declared by its JSON-schema `parameters`. A tool the provider itself executes or defines (a built-in such as web search, computer use, code execution or URL context) is declared by the `ToolSpec::declaration` field, which holds the provider’s declaration object and is re-emitted verbatim on the wire: OpenAI Responses and Anthropic place it as an entry in the same `tools` array, Gemini places it as a separate entry alongside `functionDeclarations`, and Chat Completions, which cannot express it, returns a typed capability error. A provider tool whose `declaration` is absent is a typed capability error on every wire.
 
+The declaration is deliberately untyped — a `Value`, not a per-vendor type. A provider's built-in surface is open-ended (web search, computer use, code execution, MCP, shell, apply-patch, and whatever is added next), and modelling each entry would make the library chase the vendor's schema and reject a field it has not seen yet. Passing the object through verbatim keeps the adapter faithful to the wire; a host that wants type safety around one declaration builds it at its own edge.
+
 Request fields with no neutral equivalent are supplied as **vendor extras** on `TurnOptions` (FR-ENG-7), keyed `<wire-family>:<dotted.field>` — for example `google.gemini:safetySettings` or `google.gemini:generationConfig.responseModalities`. The adapter whose wire family matches splices the field into its request body (creating intermediate objects for a dotted path); a key targeting another wire is ignored, and a path that collides with a field the adapter already set is a typed capability error, so a host can never silently override adapter-owned wire state.
 
 Input media map onto each wire as follows; a kind a wire cannot express is a typed error, so a modality a descriptor advertises but the wire cannot carry is never sent silently.
@@ -638,6 +640,8 @@ Model-generated media streams back through the same events: audio output arrives
 **Where it lives:** `norte-openai/src/chat/request.rs`, `norte-openai/src/chat/stream.rs`, `norte-openai/src/responses/request.rs`, `norte-openai/src/responses/stream.rs`, `norte-gemini/src/generate/request.rs`, `norte-gemini/src/generate/stream.rs`.
 
 **Verified by:** Adapter fixture suites; CI jobs **Live Provider Smoke (FR-TEST-2)** and **Parser Fuzzing (FR-TEST-3)**.
+
+**§13 is intentionally absent.** The section numbered 13 in the original document was the Realtime API. It is out of scope by decision and will not be implemented, so it is neither implemented nor tracked as a requirement; the numbering is preserved here so the ledger stays comparable with the original.
 
 ## 14. Storage Contracts
 

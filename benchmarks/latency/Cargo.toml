@@ -1,0 +1,19 @@
+[package]
+name = "norte-bench-latency"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Time to first token and turn time, streaming against finish(), over a live provider."
+
+[dependencies]
+norte-core = { workspace = true }
+norte-bench-support = { workspace = true }
+futures-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+
+[lints]
+workspace = true

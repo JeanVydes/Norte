@@ -1,0 +1,22 @@
+[package]
+name = "norte-bench-cache-hit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "What the provider cache was worth across a turn, a tool call, a park and an export."
+
+[dependencies]
+norte-core = { workspace = true }
+norte-http = { workspace = true }
+norte-openai = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+
+[lints]
+workspace = true

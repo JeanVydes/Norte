@@ -821,6 +821,12 @@ impl Engine {
                         .run_tools(&session, &sender, &cancellation, &early_results)
                         .await?;
                     early_results.clear();
+                    if cancellation.is_cancelled() {
+                        return Ok(TurnOutcome {
+                            session,
+                            message: last,
+                        });
+                    }
                 }
                 Phase::Idle | Phase::Streaming => {
                     let Some(head) = session.head else {
@@ -1151,9 +1157,14 @@ impl Engine {
                 };
                 completed.push(part);
                 if let Some(call) = ready {
-                    if let Some(handle) =
-                        self.dispatch_early(session, sender, &call, &completed, history)
-                    {
+                    if let Some(handle) = self.dispatch_early(
+                        session,
+                        sender,
+                        &call,
+                        &completed,
+                        history,
+                        cancellation,
+                    ) {
                         early.push((call.call_id, handle));
                     }
                 }
@@ -1167,6 +1178,7 @@ impl Engine {
         }
 
         let mut results = Vec::with_capacity(early.len());
+        let interrupted = interrupted || cancellation.is_cancelled();
         for (call_id, handle) in early {
             match handle.await {
                 Ok(result) => results.push(result),
@@ -1194,6 +1206,7 @@ impl Engine {
         call: &ToolCallPart,
         completed: &[Part],
         history: &[Message],
+        cancellation: &CancellationToken,
     ) -> Option<JoinHandle<ToolResultPart>> {
         if !(self.config.early_tool_execution && self.config.auto_execute_tools) {
             return None;
@@ -1238,6 +1251,7 @@ impl Engine {
                 arguments,
                 metadata,
             },
+            cancellation.clone(),
         )))
     }
 
@@ -1372,7 +1386,7 @@ impl Engine {
         &self,
         session: &Session,
         sender: &mpsc::Sender<EngineEvent>,
-        _cancellation: &CancellationToken,
+        cancellation: &CancellationToken,
         early: &[ToolResultPart],
     ) -> Result<Session> {
         let Some(head) = session.head else {
@@ -1411,8 +1425,17 @@ impl Engine {
             if results.iter().any(|result| result.call_id == call.call_id) {
                 continue;
             }
-            if let Some(parked) = self.run_one_tool(&turn, call, &mut results).await? {
+            if cancellation.is_cancelled() {
+                return Ok(session.clone());
+            }
+            if let Some(parked) = self
+                .run_one_tool(&turn, call, &mut results, cancellation)
+                .await?
+            {
                 return Ok(parked);
+            }
+            if cancellation.is_cancelled() {
+                return Ok(session.clone());
             }
         }
 
@@ -1466,6 +1489,7 @@ impl Engine {
         turn: &ToolTurn<'_>,
         call: &ToolCallPart,
         results: &mut Vec<ToolResultPart>,
+        cancellation: &CancellationToken,
     ) -> Result<Option<Session>> {
         let ToolTurn {
             session,
@@ -1550,6 +1574,7 @@ impl Engine {
                 arguments,
                 metadata,
             },
+            cancellation.clone(),
         )
         .await;
         results.push(result);
@@ -1797,6 +1822,7 @@ async fn execute_call(
     sender: mpsc::Sender<EngineEvent>,
     site: CallSite,
     prepared: PreparedCall,
+    cancellation: CancellationToken,
 ) -> ToolResultPart {
     let PreparedCall {
         call,
@@ -1815,7 +1841,8 @@ async fn execute_call(
 
     let mut context = ToolContext::new()
         .with_session(site.session)
-        .with_call(call.call_id);
+        .with_call(call.call_id)
+        .with_cancellation(cancellation);
     for (key, value) in metadata {
         context = context.with_metadata(key, value);
     }

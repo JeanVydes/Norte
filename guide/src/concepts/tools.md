@@ -145,9 +145,12 @@ error: the next request contains the failure and the turn continues.
 
 ## Context
 
-`ToolContext` is handed to an executor and carries the session, the call id, a
-cancellation token, a progress sink and free-form metadata. It is how a long
-tool cancels cleanly when the turn is cancelled.
+`ToolContext` is handed to an executor and carries the session, the call id, the
+turn's cancellation token, an optional progress sink and free-form metadata. The
+engine supplies the token for inline and early calls alike, so a tool that awaits
+`context.cancelled()` stops when the host cancels the turn; a turn cancelled
+while tools run commits no result and stays resumable. The progress sink is only
+populated when a host builds a context itself — the engine does not wire one.
 
 ## Host context for a call
 

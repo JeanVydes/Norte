@@ -31,12 +31,13 @@ the second calls the shipped executors directly.
 | `agent` | An agent turn: the model edits a file through the host tools |
 | `executors` | Calling `read`, `write`, `edit` and `command` directly |
 | `observers` | Observers and stream transforms |
-| `cache` | What the provider really read: cache hits across a turn, a tool call, a park and an export |
 | `export_import` | A byte-identical restore: the same request before and after a round trip |
 | `branching` | Rewind to an ancestor and branch: the shared prefix stays cached |
 
 The cost of an agentic session is a measurement rather than a recipe, and it
-lives in [`benchmarks/agent-cost`](../../benchmarks/agent-cost).
+lives in [`benchmarks/agent-cost`](../../benchmarks/agent-cost). What the
+provider's cache was worth across a turn, a tool call, a park and an export is
+also a measurement: [`benchmarks/cache-hit`](../../benchmarks/cache-hit).
 
 ## Configuration
 
@@ -45,19 +46,20 @@ lives in [`benchmarks/agent-cost`](../../benchmarks/agent-cost).
 | `OPENROUTER_API_KEY` | *required* | The key every recipe that calls a model uses (`tools` and `executors` need none). |
 | `COOKBOOK_MODEL` | *required* | The model the recipes call. |
 | `COOKBOOK_ENDPOINT` | *required* | The `OpenAI`-compatible base `URL` the recipes call. |
-| `COOKBOOK_PROVIDER` | OpenRouter decides | Pins the upstream provider for `cache` and `branching`, so two runs of the same recipe stay comparable. |
+| `COOKBOOK_PROVIDER` | OpenRouter decides | Pins the upstream provider for `branching`, so two runs of the same recipe stay comparable. |
 
 Every recipe that calls a model talks to a real one, so the model decides what
 it does with a prompt: the tool recipes say, in a system message, which tool to
 call.
 
 OpenRouter serves a model from one of several upstream providers, and they do
-not all implement prompt caching or report it. The cache-read numbers in `cache`
-and `branching` therefore describe the route the run actually got, and the same
+not all implement prompt caching or report it. The cache-read numbers in
+`branching` therefore describe the route the run actually got, and the same
 model id can report a hit on one run and nothing on the next. `COOKBOOK_PROVIDER`
 names the route instead of leaving it to the router; a run that pins one gets a
 hard failure when that provider refuses it (a 429 of its own, not a fallback),
-which is the honest outcome for a measurement.
+which is the honest outcome for a measurement. The `cache-hit` benchmark pins it
+for the same reason.
 
 The wiring is ~10 lines of [OpenRouter](https://openrouter.ai) — a
 `VendorProfile` with a bearer key, plus the generic `OpenAiChat::new` — because

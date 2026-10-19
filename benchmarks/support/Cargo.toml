@@ -1,0 +1,20 @@
+[package]
+name = "norte-bench-support"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Shared reporting, audit, route and measurement support for the Norte benchmarks."
+
+[dependencies]
+norte-core = { workspace = true }
+norte-http = { workspace = true }
+norte-openai = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

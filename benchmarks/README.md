@@ -7,12 +7,15 @@ number can be audited later without replaying the run that produced it.
 ```
 benchmarks/
   README.md            # this file
+  support/             # shared reporting, route and measurement support (norte-bench-support)
   agent-cost/          # one folder per benchmark
-    Cargo.toml
-    src/main.rs
-    README.md          # what it measures, how to run it, how to read it
-    results/           # one file per run, written by the run
+  cache-hit/           # Cargo.toml, src/main.rs, README.md, results/
+  ...
 ```
+
+Every benchmark is built on `norte-bench-support`: the markdown report, the JSONL
+trail, the CSV tables, the run manifest, the route and the size accounting all
+come from there, so two benchmarks write their results the same way.
 
 ## What a benchmark is here
 
@@ -42,16 +45,20 @@ the model decides how many requests a task takes.
 | Benchmark | What it measures | State |
 | --- | --- | --- |
 | [`agent-cost`](agent-cost) | What a coding agent costs on an existing crate, per request, per task and in total | runs |
+| [`cache-hit`](cache-hit) | What survives a turn, a tool call, a park and an export: cache reads, the bill and the latency of each request | runs |
+| [`latency`](latency) | Time to first token and time per turn, streaming against `finish()` | runs |
+| [`roundtrip-fidelity`](roundtrip-fidelity) | Export and import over many sessions, four wires, byte for byte | runs |
+| [`schema-friction`](schema-friction) | How many requests a model spends getting a tool call the schema accepts | runs |
+| [`token-counting`](token-counting) | The provider's counters against the engine's accounting | runs |
+| [`tool-loop`](tool-loop) | How requests and cost grow with declared tools and transcript size | runs |
+| [`transport-retry`](transport-retry) | What a rate limit or a timeout does under a host retry policy, and what the retries cost | runs |
+
+`latency`, `schema-friction`, `token-counting` and `tool-loop` call a live
+provider and need a key. `roundtrip-fidelity` and `transport-retry` are offline
+and deterministic, and run in CI.
 
 ## Proposed
 
 | Benchmark | What it would measure | Why it is worth the money |
 | --- | --- | --- |
-| `cache-hit` | The same long prompt with and without the provider's cache, over several rounds: the bill and the latency of each | The cache is the largest lever on a long transcript, and only the provider's own numbers say what it was worth. |
-| `tool-loop` | How requests and cost grow with the number of declared tools and with the size of the transcript | The tool declarations are re-sent on every request, so they are paid for once per iteration whether or not they are used. |
-| `schema-friction` | How many requests a model spends guessing at a tool schema before it sends a shape the policy accepts | A schema is the cheapest thing to fix and the dearest to leave: the shape a tool declares is re-sent and re-read until the model gets it right. |
 | `long-context` | A long session kept whole against the same session with its history compacted | A compaction policy is a claim about money; this is how it is checked. |
-| `latency` | Time to first token and time per turn, streaming against `finish()` | The streaming contract's cost in wall-clock, not money. |
-| `transport-retry` | What a rate limit or a timeout does under the transport policy, and what the retries cost | The route refuses; the engine must not paper over it, and a retry that nobody counted is part of the bill. |
-| `roundtrip-fidelity` | Export and import over many sessions, byte for byte | Not money: the byte-identity claim, measured at scale instead of asserted. |
-| `token-counting` | The provider's counters against what the engine reports | The meters have to agree before any bill built on them means anything. |

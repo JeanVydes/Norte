@@ -62,6 +62,11 @@ Draft. Not published.
 - `read` and `edit` refuse a FIFO, socket or device instead of opening it. A
   FIFO with no writer blocked `File::open` forever, and the blocking read was
   not cancellable, so one tool call could wedge the whole turn.
+- Policy precedence no longer depends on registration order. A `Transform`
+  after a `RequireApproval` used to replace the approval and run the call
+  without a human; approval now wins in either order, carries the last rewritten
+  arguments, and the engine runs exactly those. `ApprovalRecord::arguments`
+  stores them for the host to display and for restart-resume.
 
 ## [0.0.1]
 

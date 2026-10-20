@@ -69,6 +69,24 @@ impl FnExecutor<EchoArgs, EchoResult> for Guarded {
     }
 }
 
+struct Rewrite;
+
+impl Policy for Rewrite {
+    fn name(&self) -> &'static str {
+        "rewrite"
+    }
+
+    fn decide(&self, view: &PolicyView<'_>) -> Decision {
+        let text = view
+            .call
+            .arguments
+            .get("text")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        Decision::Transform(json!({ "text": format!("{text}!") }))
+    }
+}
+
 #[derive(Debug)]
 #[norte_core::tool(
     name = "contextual",
@@ -628,6 +646,136 @@ async fn a_required_approval_blocks_then_resumes() {
         !outcome.session.grants.is_empty(),
         "the approval leaves a grant"
     );
+}
+
+#[tokio::test]
+async fn a_later_transform_cannot_bypass_an_earlier_approval() {
+    let call_id = CallId::new();
+    let hits = Arc::new(AtomicUsize::new(0));
+    let scripted = Arc::new(
+        ScriptedModel::new(model("test/echo"))
+            .turn_tool_call(call_id, "plain", &json!({ "text": "secret" }))
+            .turn_text("finished"),
+    );
+    let mut tools = ToolRegistry::new();
+    tools
+        .register_declarator(&Plain {
+            hits: Arc::clone(&hits),
+        })
+        .expect("register plain");
+    let policies = PolicySet::new(vec![
+        Arc::new(ToolApprovalPolicy::new(
+            "guard",
+            vec![ToolName::new("plain").expect("tool")],
+            "plain touches the world",
+        )),
+        Arc::new(Rewrite),
+    ]);
+    let harness = harness(scripted, tools, policies);
+
+    let session = harness.engine.create().await.expect("create");
+    let outcome = harness
+        .engine
+        .send(session.id, Message::user("go"))
+        .finish()
+        .await
+        .expect("turn");
+    assert_eq!(outcome.session.phase, Phase::AwaitingApproval);
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        0,
+        "a transform after an approval must not run the call"
+    );
+
+    let pending = harness
+        .engine
+        .pending_approvals(session.id)
+        .await
+        .expect("pending");
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].arguments, Some(json!({ "text": "secret!" })));
+
+    harness
+        .engine
+        .approve(
+            pending[0].id,
+            norte_core::GrantScope::Call(call_id),
+            "tester",
+        )
+        .await
+        .expect("approve");
+    let outcome = harness
+        .engine
+        .resume(session.id)
+        .finish()
+        .await
+        .expect("resume");
+    assert_eq!(outcome.session.phase, Phase::Idle);
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    let history = harness
+        .store
+        .history(outcome.session.head)
+        .await
+        .expect("history");
+    let result = history[2].tool_results()[0];
+    assert_eq!(result.structured, Some(json!({ "echoed": "secret!" })));
+}
+
+#[tokio::test]
+async fn an_earlier_transform_is_what_the_human_approves_and_runs() {
+    let call_id = CallId::new();
+    let hits = Arc::new(AtomicUsize::new(0));
+    let scripted = Arc::new(
+        ScriptedModel::new(model("test/echo"))
+            .turn_tool_call(call_id, "plain", &json!({ "text": "secret" }))
+            .turn_text("finished"),
+    );
+    let mut tools = ToolRegistry::new();
+    tools
+        .register_declarator(&Plain {
+            hits: Arc::clone(&hits),
+        })
+        .expect("register plain");
+    let policies = PolicySet::new(vec![
+        Arc::new(Rewrite),
+        Arc::new(ToolApprovalPolicy::new(
+            "guard",
+            vec![ToolName::new("plain").expect("tool")],
+            "plain touches the world",
+        )),
+    ]);
+    let harness = harness(scripted, tools, policies);
+
+    let session = harness.engine.create().await.expect("create");
+    let outcome = harness
+        .engine
+        .send(session.id, Message::user("go"))
+        .finish()
+        .await
+        .expect("turn");
+    assert_eq!(outcome.session.phase, Phase::AwaitingApproval);
+    let pending = harness
+        .engine
+        .pending_approvals(session.id)
+        .await
+        .expect("pending");
+    assert_eq!(pending[0].arguments, Some(json!({ "text": "secret!" })));
+    harness
+        .engine
+        .approve(
+            pending[0].id,
+            norte_core::GrantScope::Call(call_id),
+            "tester",
+        )
+        .await
+        .expect("approve");
+    harness
+        .engine
+        .resume(session.id)
+        .finish()
+        .await
+        .expect("resume");
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

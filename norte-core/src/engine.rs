@@ -1536,9 +1536,16 @@ impl Engine {
                 return Ok(None);
             }
             PolicyOutcome::Transform { arguments, .. } => arguments,
-            PolicyOutcome::RequireApproval { .. } => {
-                match self.authorize(session, call, &tool_name, sender).await? {
-                    Authorization::Granted => call.arguments.clone(),
+            PolicyOutcome::RequireApproval {
+                arguments: rewritten,
+                ..
+            } => {
+                let arguments = rewritten.unwrap_or_else(|| call.arguments.clone());
+                match self
+                    .authorize(session, call, &tool_name, sender, &arguments)
+                    .await?
+                {
+                    Authorization::Granted => arguments,
                     Authorization::Pending => {
                         return Ok(Some(
                             self.await_approval(session, sender, results.as_slice())
@@ -1616,6 +1623,7 @@ impl Engine {
         call: &ToolCallPart,
         tool: &ToolName,
         sender: &mpsc::Sender<EngineEvent>,
+        arguments: &Value,
     ) -> Result<Authorization> {
         let records = self.store.approvals(session.id).await?;
         let decided = records.iter().find(|record| record.call_id == call.call_id);
@@ -1626,7 +1634,7 @@ impl Engine {
             if record.status == ApprovalStatus::Denied {
                 return Ok(Authorization::Denied(denial_reason(record)));
             }
-            match record.authorize(Utc::now(), &call.arguments) {
+            match record.authorize(Utc::now(), arguments) {
                 Ok(()) => return Ok(Authorization::Granted),
                 Err(Error::ApprovalDenied(reason)) if record.status == ApprovalStatus::Granted => {
                     // A grant that was revoked, or arguments that no longer
@@ -1657,7 +1665,7 @@ impl Engine {
             session.id,
             call.call_id,
             tool.clone(),
-            &call.arguments,
+            arguments,
             chrono::Duration::from_std(self.config.approval_ttl)
                 .unwrap_or_else(|_| chrono::Duration::hours(1)),
         );

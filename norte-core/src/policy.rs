@@ -139,6 +139,9 @@ pub enum PolicyOutcome {
         policy: String,
         /// The prompt the human reads.
         reason: String,
+        /// The arguments to run once approved, when an earlier policy rewrote
+        /// them. `None` means the model's original arguments.
+        arguments: Option<Value>,
     },
     /// The call runs with rewritten arguments.
     Transform {
@@ -158,9 +161,17 @@ pub enum PolicyOutcome {
 
 /// Folds the evaluated decisions with a fixed precedence: a denial always wins,
 /// then approval, then argument rewriting, then rate limiting.
+///
+/// The precedence does not depend on the order the policies are registered in.
+/// In particular, a later `Transform` must not erase an earlier
+/// `RequireApproval`: doing so would run a call a human was supposed to gate.
+/// When both apply, the approval carries the last rewritten arguments, so the
+/// human approves exactly what will run.
 #[must_use]
 pub fn combine(decisions: &[PolicyDecision]) -> PolicyOutcome {
-    let mut outcome = PolicyOutcome::Allow;
+    let mut approval: Option<(String, String)> = None;
+    let mut transform: Option<(String, Value)> = None;
+    let mut rate_limit: Option<(String, Duration)> = None;
     for PolicyDecision { policy, decision } in decisions {
         match decision {
             Decision::Deny(reason) => {
@@ -170,29 +181,36 @@ pub fn combine(decisions: &[PolicyDecision]) -> PolicyOutcome {
                 };
             }
             Decision::RequireApproval(reason) => {
-                outcome = PolicyOutcome::RequireApproval {
-                    policy: policy.clone(),
-                    reason: reason.clone(),
-                };
+                approval = Some((policy.clone(), reason.clone()));
             }
             Decision::Transform(arguments) => {
-                outcome = PolicyOutcome::Transform {
-                    policy: policy.clone(),
-                    arguments: arguments.clone(),
-                };
+                transform = Some((policy.clone(), arguments.clone()));
             }
             Decision::RateLimit(retry_after) => {
-                if outcome == PolicyOutcome::Allow {
-                    outcome = PolicyOutcome::RateLimit {
-                        policy: policy.clone(),
-                        retry_after: *retry_after,
-                    };
+                if rate_limit.is_none() {
+                    rate_limit = Some((policy.clone(), *retry_after));
                 }
             }
             Decision::Allow => {}
         }
     }
-    outcome
+    if let Some((policy, reason)) = approval {
+        return PolicyOutcome::RequireApproval {
+            policy,
+            reason,
+            arguments: transform.map(|(_, arguments)| arguments),
+        };
+    }
+    if let Some((policy, arguments)) = transform {
+        return PolicyOutcome::Transform { policy, arguments };
+    }
+    if let Some((policy, retry_after)) = rate_limit {
+        return PolicyOutcome::RateLimit {
+            policy,
+            retry_after,
+        };
+    }
+    PolicyOutcome::Allow
 }
 
 /// Convenience for the common "approve everything that names this tool" policy.
@@ -337,5 +355,56 @@ mod tests {
             },
         ];
         assert!(matches!(combine(&decisions), PolicyOutcome::Deny { .. }));
+    }
+
+    #[test]
+    fn approval_wins_over_a_later_transform() {
+        let rewritten = serde_json::json!({"path": "/workspace/rewritten"});
+        let decisions = vec![
+            PolicyDecision {
+                policy: "approval".to_owned(),
+                decision: Decision::RequireApproval("ask".to_owned()),
+            },
+            PolicyDecision {
+                policy: "workspace".to_owned(),
+                decision: Decision::Transform(rewritten.clone()),
+            },
+        ];
+        match combine(&decisions) {
+            PolicyOutcome::RequireApproval {
+                policy,
+                reason,
+                arguments,
+            } => {
+                assert_eq!(policy, "approval");
+                assert_eq!(reason, "ask");
+                assert_eq!(arguments, Some(rewritten));
+            }
+            other => panic!("approval must survive a later transform, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn approval_carries_an_earlier_transform() {
+        let rewritten = serde_json::json!({"path": "/workspace/rewritten"});
+        let decisions = vec![
+            PolicyDecision {
+                policy: "workspace".to_owned(),
+                decision: Decision::Transform(rewritten.clone()),
+            },
+            PolicyDecision {
+                policy: "approval".to_owned(),
+                decision: Decision::RequireApproval("ask".to_owned()),
+            },
+        ];
+        match combine(&decisions) {
+            PolicyOutcome::RequireApproval {
+                policy, arguments, ..
+            } => {
+                assert_eq!(policy, "approval");
+                assert_eq!(arguments, Some(rewritten));
+            }
+            other => panic!("approval must carry the rewritten arguments, got {other:?}"),
+        }
     }
 }

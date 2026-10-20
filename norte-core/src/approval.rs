@@ -149,6 +149,13 @@ pub struct ApprovalRecord {
     pub tool: ToolName,
     /// The digest of the exact arguments being authorized.
     pub argument_digest: Digest,
+    /// The exact arguments being authorized, after any policy transform.
+    ///
+    /// This is what the host should show and what the engine runs on a grant.
+    /// It is `None` only for records written before the field existed; a host
+    /// should then fall back to the call in history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<Value>,
     /// When the decision was requested.
     pub requested_at: DateTime<Utc>,
     /// When the request stops being decidable.
@@ -186,6 +193,7 @@ impl ApprovalRecord {
             call_id,
             tool,
             argument_digest: Digest::of_json(arguments),
+            arguments: Some(arguments.clone()),
             requested_at: now,
             expires_at: now + lifetime,
             status: ApprovalStatus::Pending,
@@ -253,6 +261,7 @@ impl ApprovalRecord {
         let actor = actor.into();
         let digest = Digest::of_json(&arguments);
         self.argument_digest = digest;
+        self.arguments = Some(arguments.clone());
         self.edits.push(ApprovalEdit {
             at: Utc::now(),
             actor: actor.clone(),
@@ -328,6 +337,12 @@ mod tests {
             Duration::minutes(10),
         );
         (record, arguments)
+    }
+
+    #[test]
+    fn a_record_keeps_the_arguments_it_approves() {
+        let (record, arguments) = record();
+        assert_eq!(record.arguments, Some(arguments));
     }
 
     #[test]

@@ -42,10 +42,13 @@ nothing, and the model will guess again — an expensively recurring mistake.
 
 `PolicySet::new(vec![Arc::new(p1), Arc::new(p2)])`. Every policy is evaluated, and
 the outcomes are combined: a `Deny` wins, then `RequireApproval`, then the last
-`Transform`, then `Allow`. `PolicyView::prior` lets a later policy see what the
-earlier ones decided, and `PolicyView::results` shows the tool results produced
-so far in this turn, which is how a policy can react to what the request has
-already done rather than only to what it asks next.
+`Transform`, then `Allow`. The precedence does not depend on registration
+order: a `Transform` after a `RequireApproval` cannot erase the approval. When
+both apply, the approval carries the last rewritten arguments, so the human
+approves exactly what will run. `PolicyView::prior` lets a later policy see what
+the earlier ones decided, and `PolicyView::results` shows the tool results
+produced so far in this turn, which is how a policy can react to what the
+request has already done rather than only to what it asks next.
 
 The view carries: `session`, `model`, `capabilities`, `call` (the
 `ToolCallPart`), `message` (the assistant message it came in), `prior`,
@@ -78,6 +81,11 @@ Two notes from doing exactly that:
 2. `ApprovalRequested { session, approval, call_id, tool }` is emitted.
 3. The turn ends. The process may exit; the session is durable.
 
+The record stores the exact arguments being approved in
+`ApprovalRecord::arguments`, after any policy transform, so a host shows what
+will run rather than what the model originally wrote. A record written by an
+older Norte version has `None` there; fall back to the call in history.
+
 A host then decides, using the recorded id:
 
 ```rust,ignore
@@ -96,9 +104,9 @@ Then `engine.resume(session.id)` continues the turn from the durable phase.
 ### What a grant is bound to
 
 An `ApprovalRecord` stores the `argument_digest` of the call it was requested
-for, and `authorize(now, arguments)` checks the arguments against it. A grant is
-therefore for *those* arguments, not for "edit something". `GrantScope` decides
-how wide it reaches:
+for, the arguments themselves in `arguments`, and `authorize(now, arguments)`
+checks the arguments against the digest. A grant is therefore for *those*
+arguments, not for "edit something". `GrantScope` decides how wide it reaches:
 
 | Scope | Covers |
 | --- | --- |

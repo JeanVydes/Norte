@@ -17,9 +17,15 @@ const TEMPORARY_ATTEMPTS: usize = 8;
 
 /// Reads `path`, refusing anything larger than `max_bytes`.
 ///
+/// The path must be a regular file. Opening a FIFO with no writer blocks
+/// forever, and a socket or device can block or produce unbounded input, so
+/// those are refused by type before the open: a tool call must not be able to
+/// wedge the turn.
+///
 /// The size check is taken from the bytes actually read, not from metadata, so a
 /// file that grows between the stat and the read cannot slip past the limit.
 pub(crate) fn read_bytes(path: &Path, max_bytes: usize) -> Result<Vec<u8>> {
+    require_regular_file(path)?;
     let file = std::fs::File::open(path).map_err(|error| io_error(path, &error))?;
     let cap = u64::try_from(max_bytes)
         .unwrap_or(u64::MAX)
@@ -35,6 +41,23 @@ pub(crate) fn read_bytes(path: &Path, max_bytes: usize) -> Result<Vec<u8>> {
         });
     }
     Ok(bytes)
+}
+
+/// Refuses a path that is not a regular file.
+///
+/// `metadata` follows symbolic links, so a link to a FIFO is refused too. The
+/// check is deliberately before the open: checking after would already be
+/// blocked inside `open(2)`.
+fn require_regular_file(path: &Path) -> Result<()> {
+    let metadata = std::fs::metadata(path).map_err(|error| io_error(path, &error))?;
+    if metadata.file_type().is_file() {
+        return Ok(());
+    }
+    Err(Error::InvalidInput(format!(
+        "{} is not a regular file; FIFOs, sockets and devices are refused because they can block \
+         a tool indefinitely",
+        path.display()
+    )))
 }
 
 /// Reads `path` as UTF-8 text, refusing anything larger than `max_bytes` and
@@ -255,6 +278,21 @@ mod tests {
         let path = directory.join("absent.txt");
         let error = read_text(&path, 1024).expect_err("missing");
         assert!(error.to_string().contains("absent.txt"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_is_refused_instead_of_blocking_the_read() {
+        let directory = scratch("fifo");
+        let path = directory.join("pipe");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&path)
+            .status()
+            .expect("mkfifo");
+        assert!(status.success());
+        let error = read_text(&path, 1024).expect_err("a FIFO must be refused");
+        assert!(error.to_string().contains("not a regular file"), "{error}");
+        let _ = std::fs::remove_dir_all(&directory);
     }
 
     #[test]

@@ -57,6 +57,12 @@ Draft. Not published.
   with a host-side idempotency recipe in
   `examples/cookbook/examples/idempotent_tool.rs`.
 
+### Fixed
+
+- `read` and `edit` refuse a FIFO, socket or device instead of opening it. A
+  FIFO with no writer blocked `File::open` forever, and the blocking read was
+  not cancellable, so one tool call could wedge the whole turn.
+
 ## [0.0.1]
 
 First release.

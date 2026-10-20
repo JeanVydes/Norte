@@ -283,7 +283,8 @@ fn denial_reason(record: &ApprovalRecord) -> String {
         .iter()
         .rev()
         .find(|entry| entry.action == AuditAction::Denied)
-        .and_then(|entry| entry.detail.clone());
+        .and_then(|entry| entry.detail.clone())
+        .filter(|reason| !reason.trim().is_empty());
     match reason {
         Some(reason) => format!("the operator denied this call: {reason}"),
         None => "the operator denied this call".to_owned(),

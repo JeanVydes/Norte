@@ -67,6 +67,8 @@ Draft. Not published.
   without a human; approval now wins in either order, carries the last rewritten
   arguments, and the engine runs exactly those. `ApprovalRecord::arguments`
   stores them for the host to display and for restart-resume.
+- A denial with an empty reason now reports the plain "the operator denied this
+  call" message instead of a dangling colon.
 
 ## [0.0.1]
 

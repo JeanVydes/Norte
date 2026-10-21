@@ -302,44 +302,54 @@ impl EditTool {
         let before = read_text(&request.path, self.limits.max_file_bytes)?;
         let before_digest = Digest::of(before.as_bytes());
         let request_digest = Digest::of_json(&serde_json::to_value(request)?);
-        let outcome = match self.apply(&before, request) {
+        let (outcome, hint) = match self.apply(&before, request) {
             Ok((content, matches)) => {
                 let changed = content != before;
                 if changed {
                     ensure_unchanged(&request.path, &before_digest, self.limits.max_file_bytes)?;
                     write_atomic(&request.path, content.as_bytes())?;
                 }
-                EditOutcome {
-                    code: if changed {
-                        EditCode::Applied
-                    } else {
-                        EditCode::Unchanged
+                (
+                    EditOutcome {
+                        code: if changed {
+                            EditCode::Applied
+                        } else {
+                            EditCode::Unchanged
+                        },
+                        path: request.path.clone(),
+                        matches,
+                        failure: None,
+                        written: changed,
+                        total_lines: content.lines().count(),
+                        bytes: content.len(),
+                        before_digest,
+                        content_digest: Digest::of(content.as_bytes()),
+                        request_digest,
                     },
-                    path: request.path.clone(),
-                    matches,
-                    failure: None,
-                    written: changed,
-                    total_lines: content.lines().count(),
-                    bytes: content.len(),
-                    before_digest,
-                    content_digest: Digest::of(content.as_bytes()),
-                    request_digest,
-                }
+                    None,
+                )
             }
-            Err(Rejection { applied, failure }) => EditOutcome {
-                code: code_of(failure.reason),
-                path: request.path.clone(),
-                matches: applied,
-                failure: Some(failure),
-                written: false,
-                total_lines: before.lines().count(),
-                bytes: before.len(),
-                content_digest: before_digest,
-                before_digest,
-                request_digest,
-            },
+            Err(Rejection {
+                applied,
+                failure,
+                hint,
+            }) => (
+                EditOutcome {
+                    code: code_of(failure.reason),
+                    path: request.path.clone(),
+                    matches: applied,
+                    failure: Some(failure),
+                    written: false,
+                    total_lines: before.lines().count(),
+                    bytes: before.len(),
+                    content_digest: before_digest,
+                    before_digest,
+                    request_digest,
+                },
+                hint,
+            ),
         };
-        render(&outcome)
+        render(&outcome, hint.as_deref())
     }
 
     /// Applies every edit to an in-memory copy, or reports the first one that
@@ -356,9 +366,15 @@ impl EditTool {
             match apply_one(&mut content, index, spec, &self.limits, &budget) {
                 Ok(entry) => matches.push(entry),
                 Err(failure) => {
+                    let hint = if failure.reason == EditFailureReason::NoMatch {
+                        escape_hint(&spec.search, &content)
+                    } else {
+                        None
+                    };
                     return Err(Rejection {
                         applied: matches,
                         failure,
+                        hint,
                     });
                 }
             }
@@ -390,6 +406,9 @@ pub fn edit_tool() -> Arc<dyn norte_core::AnyFunction> {
 struct Rejection {
     applied: Vec<EditMatch>,
     failure: EditFailure,
+    /// A retry hint that does not belong in the serialized failure, such as a
+    /// literal `\n` that probably meant a line break.
+    hint: Option<String>,
 }
 
 /// The engine's own result for one edit.
@@ -1125,16 +1144,16 @@ fn shown_line(line: &str) -> String {
     escape(&text)
 }
 
-fn render(outcome: &EditOutcome) -> Result<ToolOutput> {
+fn render(outcome: &EditOutcome, hint: Option<&str>) -> Result<ToolOutput> {
     audit(outcome);
     Ok(ToolOutput {
-        parts: vec![Part::text(describe(outcome))],
+        parts: vec![Part::text(describe(outcome, hint))],
         structured: Some(serde_json::to_value(outcome)?),
         is_error: !matches!(outcome.code, EditCode::Applied | EditCode::Unchanged),
     })
 }
 
-fn describe(outcome: &EditOutcome) -> String {
+fn describe(outcome: &EditOutcome, hint: Option<&str>) -> String {
     use std::fmt::Write as _;
 
     let mut text = String::new();
@@ -1184,11 +1203,26 @@ fn describe(outcome: &EditOutcome) -> String {
     }
     match failure.reason {
         EditFailureReason::Ambiguous => {
-            let _ = writeln!(
-                text,
-                "edit {} matches {} place(s); make the block unique by widening it",
-                failure.edit, failure.occurrences
-            );
+            if failure.confidence.is_none() {
+                let at_least = if failure.occurrences > MAX_OCCURRENCES {
+                    "at least "
+                } else {
+                    ""
+                };
+                let _ = writeln!(
+                    text,
+                    "edit {} matches {at_least}{} exact occurrence(s); same-line and overlapping \
+                     hits count separately, so widen the block until only one place matches",
+                    failure.edit, failure.occurrences
+                );
+            } else {
+                let _ = writeln!(
+                    text,
+                    "edit {} has {} plausible region(s) and no single one is clearly best; widen \
+                     the block until one is",
+                    failure.edit, failure.occurrences
+                );
+            }
         }
         EditFailureReason::NoMatch => {
             let _ = writeln!(
@@ -1199,6 +1233,9 @@ fn describe(outcome: &EditOutcome) -> String {
                 closeness(failure)
             );
         }
+    }
+    if let Some(hint) = hint {
+        let _ = writeln!(text, "{hint}");
     }
     for candidate in &failure.candidates {
         let last = candidate.start_line + candidate.lines.len().saturating_sub(1);
@@ -1228,6 +1265,84 @@ fn closeness(failure: &EditFailure) -> String {
             confidence.clamp(0.0, 1.0) * 100.0
         )
     })
+}
+
+/// A retry hint for the most common escaping mistake: a JSON string that was
+/// meant to contain a line break but arrived as the two characters `\n` (or the
+/// reverse), so a block that looks identical in a chat window does not exist in
+/// the file. The hint is text only; matching stays literal and unchanged.
+fn escape_hint(search: &str, content: &str) -> Option<String> {
+    if let Some(literal) = literal_escape(search) {
+        let unescaped = unescape_breaks(search);
+        if contains_text(content, &unescaped) {
+            return Some(format!(
+                "hint: the search contains the two characters `{literal}`, but the file has the \
+                 real character there; send it directly. The search is literal text, not a regex."
+            ));
+        }
+    }
+    if let Some(real) = real_break(search) {
+        let escaped = escape_breaks(search);
+        if contains_text(content, &escaped) {
+            return Some(format!(
+                "hint: the file contains the two characters `{real}` on one line, not the real \
+                 character; if you meant that text, send a backslash followed by the letter."
+            ));
+        }
+    }
+    None
+}
+
+/// The first escaped line break or tab in a block, if the block has one.
+fn literal_escape(text: &str) -> Option<&'static str> {
+    ["\\n", "\\r", "\\t"]
+        .into_iter()
+        .find(|needle| text.contains(*needle))
+}
+
+/// The first real line break or tab in a block, if the block has one.
+fn real_break(text: &str) -> Option<&'static str> {
+    [('\n', "\\n"), ('\r', "\\r"), ('\t', "\\t")]
+        .into_iter()
+        .find_map(|(needle, label)| text.contains(needle).then_some(label))
+}
+
+/// Turns the two-character escapes a JSON caller may have meant into the real
+/// characters. A backslash before anything else is left exactly as written, so
+/// a Windows path is not mistaken for an escape sequence.
+fn unescape_breaks(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            out.push(ch);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some('t') => out.push('\t'),
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
+    out
+}
+
+fn escape_breaks(text: &str) -> String {
+    text.replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t")
+}
+
+/// Whether `content` has `needle`, treating a CRLF file as also having the LF
+/// form so a hint is not lost to a line-ending difference.
+fn contains_text(content: &str, needle: &str) -> bool {
+    content.contains(needle)
+        || (content.contains('\r') && content.replace("\r\n", "\n").contains(needle))
 }
 
 /// Records what an edit did where a trail can find it: the versions it worked
@@ -1602,11 +1717,71 @@ mod tests {
         assert_eq!(read(&path), before);
 
         let text = output.parts.first().and_then(Part::as_text).expect("text");
-        assert!(text.contains("matches 2 place(s)"), "{text}");
+        assert!(text.contains("matches 2 exact occurrence(s)"), "{text}");
+        assert!(text.contains("same-line and overlapping hits"), "{text}");
         assert!(
             text.contains("    3 |") && text.contains("   13 |"),
             "{text}"
         );
+    }
+
+    #[tokio::test]
+    async fn same_line_occurrences_are_counted_separately() {
+        let (path, request) = seeded("same-line", "bar bar\n", vec![("bar", "baz")]);
+        let output = run(&request).await;
+        assert!(output.is_error);
+        let structured = structured(&output);
+        assert_eq!(structured["code"], "ambiguous");
+        assert_eq!(structured["failure"]["occurrences"], 2);
+        let text = describe_failure(&output);
+        assert!(text.contains("matches 2 exact occurrence(s)"), "{text}");
+        assert!(text.contains("same-line and overlapping hits"), "{text}");
+        assert_eq!(read(&path), "bar bar\n");
+    }
+
+    #[tokio::test]
+    async fn a_literal_escape_is_called_out_when_the_file_has_a_line_break() {
+        let (path, request) = seeded(
+            "escape-literal",
+            "alpha\nbeta\n",
+            vec![(r"alpha\nbeta", "gamma")],
+        );
+        let output = run(&request).await;
+        assert!(output.is_error);
+        assert_eq!(structured(&output)["code"], "no_match");
+        let text = describe_failure(&output);
+        assert!(text.contains("hint:"), "{text}");
+        assert!(text.contains("two characters `\\n`"), "{text}");
+        assert!(text.contains("send it directly"), "{text}");
+        assert_eq!(read(&path), "alpha\nbeta\n");
+    }
+
+    #[tokio::test]
+    async fn a_real_line_break_is_called_out_when_the_file_has_a_literal_escape() {
+        let (path, request) = seeded(
+            "escape-real",
+            "alpha\\nbeta\n",
+            vec![("alpha\nbeta", "gamma")],
+        );
+        let output = run(&request).await;
+        assert!(output.is_error);
+        assert_eq!(structured(&output)["code"], "no_match");
+        let text = describe_failure(&output);
+        assert!(text.contains("hint:"), "{text}");
+        assert!(text.contains("two characters `\\n` on one line"), "{text}");
+        assert_eq!(read(&path), "alpha\\nbeta\n");
+    }
+
+    #[tokio::test]
+    async fn a_literal_escape_that_matches_applies_without_a_hint() {
+        let (path, request) = seeded(
+            "escape-exact",
+            "alpha\\nbeta\n",
+            vec![(r"alpha\nbeta", "gamma")],
+        );
+        let output = run(&request).await;
+        assert!(!output.is_error);
+        assert_eq!(read(&path), "gamma\n");
     }
 
     #[tokio::test]
@@ -1624,6 +1799,8 @@ mod tests {
         let structured = structured(&output);
         assert_eq!(structured["code"], "ambiguous");
         assert_eq!(structured["failure"]["occurrences"], 2);
+        let text = describe_failure(&output);
+        assert!(text.contains("plausible region(s)"), "{text}");
         assert_eq!(read(&path), content, "neither block was rewritten");
     }
 

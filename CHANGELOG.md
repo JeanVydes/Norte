@@ -69,6 +69,12 @@ Draft. Not published.
   stores them for the host to display and for restart-resume.
 - A denial with an empty reason now reports the plain "the operator denied this
   call" message instead of a dangling colon.
+- An `edit` failure now names the most common escaping mistake: a search that
+  contains a literal `\n`, `\r` or `\t` while the file has the real character,
+  or the reverse, gets a hint in the report. An ambiguous exact match also
+  reports occurrences rather than "places", saying that same-line and
+  overlapping hits count separately, so the count cannot be mistaken for a line
+  count (FR-TOOL-EDIT-4).
 
 ## [0.0.1]
 

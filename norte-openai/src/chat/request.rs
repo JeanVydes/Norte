@@ -128,6 +128,8 @@ fn build_effort(request: ReasoningRequest) -> Option<&'static str> {
         ReasoningRequest::Effort(ReasoningEffort::Low) => Some("low"),
         ReasoningRequest::Effort(ReasoningEffort::Medium) => Some("medium"),
         ReasoningRequest::Effort(ReasoningEffort::High) => Some("high"),
+        ReasoningRequest::Effort(ReasoningEffort::XHigh) => Some("xhigh"),
+        ReasoningRequest::Effort(ReasoningEffort::Max) => Some("max"),
         _ => None,
     }
 }
@@ -722,6 +724,23 @@ mod tests {
         assert_eq!(body["tools"][0]["type"], "function");
         assert_eq!(body["tools"][0]["function"]["name"], "lookup");
         assert_eq!(body["tools"][0]["function"]["strict"], false);
+    }
+
+    #[test]
+    fn every_reasoning_effort_maps_to_its_wire_name() {
+        for (effort, name) in [
+            (ReasoningEffort::Minimal, "minimal"),
+            (ReasoningEffort::Low, "low"),
+            (ReasoningEffort::Medium, "medium"),
+            (ReasoningEffort::High, "high"),
+            (ReasoningEffort::XHigh, "xhigh"),
+            (ReasoningEffort::Max, "max"),
+        ] {
+            let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
+            request.reasoning = ReasoningRequest::Effort(effort);
+            let body = build(&model(), &continuity(), &Quirks::new(), &request).expect("build");
+            assert_eq!(body["reasoning_effort"], name);
+        }
     }
 
     #[test]

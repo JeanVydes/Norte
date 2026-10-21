@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 
 use norte_core::{
     CallId, Error, MediaKind, MediaPart, MediaSource, Message, ModelRef, ModelRequest, Part,
-    Result, Role, ToolKind, ToolResultPart, ToolSpec, splice_vendor_extensions,
+    ReasoningEffort, ReasoningRequest, Result, Role, ToolKind, ToolResultPart, ToolSpec,
+    splice_vendor_extensions,
 };
 use serde_json::{Value, json};
 
@@ -118,9 +119,25 @@ fn build_body(
                 ),
             );
         }
+        if let Some(effort) = effort_name(request.reasoning) {
+            body.insert("output_config".to_owned(), json!({ "effort": effort }));
+        }
     }
     splice_vendor_extensions(model, WIRE_MESSAGES, &request.extensions, &mut body)?;
     Ok(Value::Object(body))
+}
+
+fn effort_name(request: ReasoningRequest) -> Option<&'static str> {
+    match request {
+        // Anthropic's lowest documented level is `low`; a host that overrides
+        // the capability set with `minimal` still gets the closest level.
+        ReasoningRequest::Effort(ReasoningEffort::Minimal | ReasoningEffort::Low) => Some("low"),
+        ReasoningRequest::Effort(ReasoningEffort::Medium) => Some("medium"),
+        ReasoningRequest::Effort(ReasoningEffort::High) => Some("high"),
+        ReasoningRequest::Effort(ReasoningEffort::XHigh) => Some("xhigh"),
+        ReasoningRequest::Effort(ReasoningEffort::Max) => Some("max"),
+        _ => None,
+    }
 }
 
 fn instruction_count(messages: &[Message]) -> usize {
@@ -455,6 +472,31 @@ mod tests {
         let request = ModelRequest::new(model(), vec![Message::user("hi")]);
         let body = build(&model(), &continuity(), &request).expect("build");
         assert_eq!(body["max_tokens"], DEFAULT_MAX_TOKENS);
+    }
+
+    #[test]
+    fn every_reasoning_effort_maps_to_output_config() {
+        for (effort, name) in [
+            (ReasoningEffort::Minimal, "low"),
+            (ReasoningEffort::Low, "low"),
+            (ReasoningEffort::Medium, "medium"),
+            (ReasoningEffort::High, "high"),
+            (ReasoningEffort::XHigh, "xhigh"),
+            (ReasoningEffort::Max, "max"),
+        ] {
+            let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
+            request.reasoning = ReasoningRequest::Effort(effort);
+            let body = build(&model(), &continuity(), &request).expect("build");
+            assert_eq!(body["output_config"]["effort"], name);
+        }
+    }
+
+    #[test]
+    fn a_count_request_omits_the_effort() {
+        let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
+        request.reasoning = ReasoningRequest::Effort(ReasoningEffort::Max);
+        let body = build_count(&model(), &continuity(), &request).expect("build");
+        assert!(body.get("output_config").is_none());
     }
 
     #[test]

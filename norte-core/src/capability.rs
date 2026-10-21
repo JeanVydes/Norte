@@ -131,6 +131,11 @@ pub enum ReasoningEffort {
     Medium,
     /// A high effort level.
     High,
+    /// An extended high effort, above [`Self::High`], where the model offers it.
+    #[serde(rename = "xhigh")]
+    XHigh,
+    /// The greatest effort a model offers.
+    Max,
 }
 
 /// A reasoning request in neutral terms. The host resolves it against the
@@ -566,6 +571,18 @@ mod tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn the_top_efforts_use_their_provider_names() {
+        assert_eq!(
+            serde_json::to_string(&ReasoningEffort::XHigh).expect("xhigh"),
+            "\"xhigh\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ReasoningEffort::Max).expect("max"),
+            "\"max\""
+        );
     }
 
     #[test]

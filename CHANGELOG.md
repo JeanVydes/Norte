@@ -13,6 +13,10 @@ Draft. Not published.
 
 ### Added
 
+- Reasoning efforts `XHigh` and `Max`, matching the levels OpenAI and Anthropic
+  now document. The OpenAI Responses and Chat adapters serialize them as
+  `xhigh` and `max`, and the Anthropic adapter sends `output_config.effort`.
+  Gemini, whose ceiling is `HIGH`, maps both to `HIGH`.
 - Turn cancellation. `EngineStream::cancel()` asks the turn to stop, and dropping
   the stream cancels it. The token reaches every running tool through
   `ToolContext` (`cancellation()`, `cancelled()`, `is_cancelled()`), including a

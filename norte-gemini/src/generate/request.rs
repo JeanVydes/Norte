@@ -426,7 +426,8 @@ fn effort_name(effort: ReasoningEffort) -> &'static str {
     match effort {
         ReasoningEffort::Minimal => "MINIMAL",
         ReasoningEffort::Low => "LOW",
-        ReasoningEffort::High => "HIGH",
+        // Gemini has no level above `HIGH`, so the top ends use its ceiling.
+        ReasoningEffort::High | ReasoningEffort::XHigh | ReasoningEffort::Max => "HIGH",
         // `Medium` and any future level default to the balanced depth.
         _ => "MEDIUM",
     }
@@ -861,6 +862,19 @@ mod tests {
             body["generationConfig"]["thinkingConfig"]["includeThoughts"],
             true
         );
+    }
+
+    #[test]
+    fn top_efforts_use_geminies_highest_level() {
+        for effort in [ReasoningEffort::XHigh, ReasoningEffort::Max] {
+            let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
+            request.reasoning = ReasoningRequest::Effort(effort);
+            let body = build(&model(), &continuity(), &request).expect("build");
+            assert_eq!(
+                body["generationConfig"]["thinkingConfig"]["thinkingLevel"],
+                "HIGH"
+            );
+        }
     }
 
     #[test]

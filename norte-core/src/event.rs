@@ -177,6 +177,13 @@ pub enum EngineEvent {
         /// How many messages were appended.
         messages: usize,
     },
+    /// The engine applied the messages an interceptor returned (FR-ENG-10).
+    InterceptionApplied {
+        /// The session.
+        session: SessionId,
+        /// How many messages were appended.
+        messages: usize,
+    },
     /// A commit landed.
     CommitSucceeded {
         /// The session.
@@ -260,6 +267,7 @@ impl EngineEvent {
             | EngineEvent::ApprovalGranted { session, .. }
             | EngineEvent::ApprovalRevoked { session, .. }
             | EngineEvent::HistoryAppended { session, .. }
+            | EngineEvent::InterceptionApplied { session, .. }
             | EngineEvent::CommitSucceeded { session, .. }
             | EngineEvent::CommitConflict { session, .. }
             | EngineEvent::LayerShortCircuited { session, .. }

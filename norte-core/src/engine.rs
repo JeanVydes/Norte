@@ -972,7 +972,7 @@ impl Engine {
             .await?;
         self.emit(
             sender,
-            EngineEvent::HistoryAppended {
+            EngineEvent::InterceptionApplied {
                 session: session.id,
                 messages: count,
             },

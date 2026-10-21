@@ -1,4 +1,4 @@
-//! The `OpenAI` Files API, as a [`ProviderFiles`] port.
+//! The `OpenAI` Files API, as a [`ProviderFiles`](norte_core::ProviderFiles) port.
 
 use chrono::DateTime;
 use norte_core::{BlobId, Error, MediaKind, MimeType, ProviderFileRef, ProviderFiles, Result};

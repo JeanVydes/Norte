@@ -1,4 +1,4 @@
-//! The `Google` Gemini Files API, as a [`ProviderFiles`] port.
+//! The `Google` Gemini Files API, as a [`ProviderFiles`](norte_core::ProviderFiles) port.
 
 use chrono::{DateTime, Utc};
 use norte_core::{BlobId, Error, MediaKind, MimeType, ProviderFileRef, ProviderFiles, Result};
@@ -20,7 +20,7 @@ const DOWNLOAD_SUFFIX: &str = ":download?alt=media";
 /// `expirationTime`, which becomes the reference's `expires_at` so the engine
 /// re-uploads from the fallback blob before it lapses. As on the other
 /// vendors, only files the service *generated* are downloadable —
-/// [`download`](ProviderFiles::download) of an uploaded reference is refused
+/// [`download`](norte_core::ProviderFiles::download) of an uploaded reference is refused
 /// server-side.
 ///
 /// The port assumes the profile's base `URL` ends in the API version segment,

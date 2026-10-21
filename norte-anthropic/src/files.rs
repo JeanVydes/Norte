@@ -1,4 +1,4 @@
-//! The `Anthropic` Files API, as a [`ProviderFiles`] port.
+//! The `Anthropic` Files API, as a [`ProviderFiles`](norte_core::ProviderFiles) port.
 
 use chrono::{DateTime, Utc};
 use norte_core::{BlobId, Error, MediaKind, MimeType, ProviderFileRef, ProviderFiles, Result};
@@ -10,8 +10,8 @@ const COLLECTION: &str = "files";
 /// The `Anthropic` Files API as a [`ProviderFiles`] port.
 ///
 /// It uploads bytes (`POST /files`) and fetches them back
-/// (`GET /files/{id}/content`). Like [`OpenAiFiles`](crate::OpenAiFiles) it is
-/// not part of the request path: the host attaches it to
+/// (`GET /files/{id}/content`). Like the `OpenAI` port, it is not part of the
+/// request path: the host attaches it to
 /// [`AnthropicMedia`](crate::AnthropicMedia) with `with_provider_files` so
 /// output files are durable-ized and expired references revived.
 ///
@@ -20,7 +20,7 @@ const COLLECTION: &str = "files";
 ///
 /// `Anthropic` only serves `GET /files/{id}/content` for files it generated
 /// itself — a file the host uploaded is not downloadable and the endpoint
-/// answers `400`. [`download`](ProviderFiles::download) therefore fails for an
+/// answers `400`. [`download`](norte_core::ProviderFiles::download) therefore fails for an
 /// uploaded reference; the fallback blob on the reference is what makes such a
 /// reference revivable.
 #[derive(Clone)]

@@ -13,6 +13,13 @@ Draft. Not published.
 
 ### Added
 
+- Turn interceptors. A host may register an interceptor the engine consults
+  before every model request of a running turn; the messages it returns are
+  chained onto the session's head and committed by the engine, so they are
+  durable, part of the request digest, visible to the policies and free of a
+  version race. The steering queue cannot do this: it is a session field, so a
+  message written to it while a turn runs cannot be committed without racing
+  that turn (FR-ENG-3, FR-ENG-10).
 - Reasoning efforts `XHigh` and `Max`, matching the levels OpenAI and Anthropic
   now document. The OpenAI Responses and Chat adapters serialize them as
   `xhigh` and `max`, and the Anthropic adapter sends `output_config.effort`.

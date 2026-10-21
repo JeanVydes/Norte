@@ -28,6 +28,7 @@ use crate::event::{EngineEvent, EventSink, StreamDelta};
 use crate::id::{
     ApprovalId, CallId, Digest, GenerationId, GrantId, ModelRef, NodeId, SessionId, ToolName,
 };
+use crate::interceptor::{InterceptionContext, InterceptorSet, TurnInterceptor};
 use crate::layer::{LayerContext, LayerStack, ModelContinuation};
 use crate::media_adapter::MediaAdapter;
 use crate::model::{
@@ -302,6 +303,7 @@ pub struct Engine {
     tools: Arc<ToolRegistry>,
     policies: Arc<PolicySet>,
     layers: Arc<LayerStack>,
+    interceptors: Arc<InterceptorSet>,
     observers: Arc<ObserverSet>,
     config: Arc<EngineConfig>,
     media: Option<Arc<dyn MediaPreprocessor>>,
@@ -352,6 +354,10 @@ impl Engine {
         session.metadata.insert(
             "transforms".to_owned(),
             serde_json::json!(self.observers.transform_names()),
+        );
+        session.metadata.insert(
+            "interceptors".to_owned(),
+            serde_json::json!(self.interceptors.names()),
         );
         let commit = Commit {
             session_id: session.id,
@@ -830,6 +836,8 @@ impl Engine {
                     }
                 }
                 Phase::Idle | Phase::Streaming => {
+                    // The host may add messages before this request is built.
+                    session = self.intercept(&session, &sender).await?;
                     let Some(head) = session.head else {
                         return Ok(TurnOutcome {
                             session,
@@ -904,6 +912,73 @@ impl Engine {
             return Ok(true);
         }
         Ok(self.pending_approvals(session.id).await?.is_empty())
+    }
+
+    /// Asks the host interceptors for messages to append before the next
+    /// request, and commits them when there are any.
+    ///
+    /// The engine is the only writer while a turn runs, so the commit carries
+    /// the version the turn already holds: an interceptor never races the
+    /// turn, and what it adds lands in the graph, in the request digest and in
+    /// the history the policies read.
+    async fn intercept(
+        &self,
+        session: &Session,
+        sender: &mpsc::Sender<EngineEvent>,
+    ) -> Result<Session> {
+        if self.interceptors.is_empty() {
+            return Ok(session.clone());
+        }
+        let sink = ChannelSink {
+            sender: sender.clone(),
+        };
+        let context = InterceptionContext {
+            session: session.id,
+            turn: session.turn,
+            head: session.head,
+            phase: session.phase,
+            events: &sink,
+        };
+        let mut messages = Vec::new();
+        for interceptor in self.interceptors.interceptors() {
+            messages.extend(interceptor.intercept(&context).await?);
+        }
+        if messages.is_empty() {
+            return Ok(session.clone());
+        }
+        let count = messages.len();
+        let mut parent = session.head;
+        let mut nodes = Vec::with_capacity(count);
+        for message in messages {
+            let node = Node::message(message, parent);
+            parent = Some(node.id);
+            nodes.push(node);
+        }
+        let committed = self
+            .commit(
+                Commit {
+                    session_id: session.id,
+                    expected_version: Some(session.version),
+                    nodes,
+                    head: parent,
+                    phase: session.phase,
+                    turn: session.turn,
+                    queue: session.queue.clone(),
+                    grants: session.grants.clone(),
+                    metadata: None,
+                },
+                sender,
+            )
+            .await?;
+        self.emit(
+            sender,
+            EngineEvent::HistoryAppended {
+                session: session.id,
+                messages: count,
+            },
+        )
+        .await;
+        Ok(committed)
     }
 
     async fn append_turn(
@@ -2048,6 +2123,7 @@ pub struct EngineBuilder {
     tools: ToolRegistry,
     policies: PolicySet,
     layers: LayerStack,
+    interceptors: Vec<Arc<dyn TurnInterceptor>>,
     observers: Vec<Arc<dyn Observer>>,
     transforms: Vec<Arc<dyn StreamTransform>>,
     config: EngineConfig,
@@ -2282,6 +2358,18 @@ impl EngineBuilder {
         self
     }
 
+    /// Sets the interceptors the engine consults before every model request of
+    /// a turn (FR-ENG-10).
+    ///
+    /// Empty by default. An interceptor may return messages to append to the
+    /// session's history; the engine appends them itself, so they are durable
+    /// and visible to the policies.
+    #[must_use]
+    pub fn interceptors(mut self, interceptors: Vec<Arc<dyn TurnInterceptor>>) -> Self {
+        self.interceptors = interceptors;
+        self
+    }
+
     /// Sets the observers that see every [`EngineEvent`].
     ///
     /// Empty by default. A slow observer never stalls a turn: the set buffers
@@ -2374,6 +2462,7 @@ impl EngineBuilder {
             tools: Arc::new(self.tools),
             policies: Arc::new(self.policies),
             layers: Arc::new(self.layers),
+            interceptors: Arc::new(InterceptorSet::new(self.interceptors)),
             observers: Arc::new(ObserverSet::with_transforms(
                 self.observers,
                 self.transforms,

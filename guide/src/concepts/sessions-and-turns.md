@@ -103,6 +103,35 @@ applied at the next turn boundary, inside the same turn, which is how a UI can
 correct an agent mid-loop without racing it. The queue is visible as
 `Session::queue` and is part of the session that gets committed.
 
+## Reaching the request in flight
+
+The queue is a session field, so a message written to it while a turn runs
+cannot be committed without racing that turn. A host that must reach the
+request already in flight registers a **turn interceptor** instead:
+
+```rust
+#[async_trait::async_trait]
+impl TurnInterceptor for Steer {
+    fn name(&self) -> &'static str {
+        "steer"
+    }
+
+    async fn intercept(&self, _context: &InterceptionContext<'_>) -> Result<Vec<Message>> {
+        Ok(self.take())
+    }
+}
+```
+
+The engine consults it before every model request of a turn and commits what it
+returns, so the message lands in the history, in the request digest and in
+what the policies read. The consultation point is a safe one: the message
+arrives after the tool results of the previous step, never between a tool call
+and its result.
+
+A layer is not a substitute. A layer wraps the model call and sees the request
+after it was built, so what it adds is neither durable nor visible to the
+policies.
+
 ## Nothing here is provider-specific
 
 A session records what the model said and what the tools returned. The provider

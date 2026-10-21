@@ -268,7 +268,7 @@ The engine is a pure state machine over the session. It never holds long-lived n
 
 **Where it lives:** `norte-core/src/engine.rs` (`steer`).
 
-**FR-ENG-3.** Steering messages may be enqueued at any time; they are drained at the next safe point (after the current assistant turn completes or is interrupted).
+**FR-ENG-3.** Steering messages may be enqueued at any time; they are drained at the next safe point (after the current assistant turn completes or is interrupted). A host that must reach the request already in flight uses an interceptor (FR-ENG-10) instead: the queue is a durable session field, and a message written to it while a turn runs cannot be committed without racing that turn (FR-ENG-2).
 
 **FR-ENG-4.** The engine records a request digest with every assistant generation so that policy and approval decisions can be audited against the exact inputs. The digest is computed over the reconstructed request (Section 8), so it changes exactly when the wire changes.
 
@@ -287,6 +287,10 @@ The engine is a pure state machine over the session. It never holds long-lived n
 **Where it lives:** `examples/cookbook/examples/branching.rs` (`capabilities`), `norte-core/src/engine.rs` (`default_turn_options`, `drop`, `reasoning`, `resume`), `norte-core/src/model.rs` (`over`), `norte-testing/tests/turn_options.rs`.
 
 **FR-ENG-9 — Auditable effective request.** Every reconstructed request reports its effective request configuration — generation parameters, reasoning request and the ordered exposed tool names — together with its digest and cache boundaries (FR-EVT-4). A host or observer can therefore inspect, per send, exactly which parameters were used and which tools were enabled without re-deriving the layer merge.
+
+**FR-ENG-10 — Turn interceptor.** A host may register an interceptor the engine consults before every model request of a running turn. An interceptor returns messages to append to the session's history; the engine chains them onto the current head and commits them itself, so they are durable, part of the request digest (FR-ENG-4), visible to the policies, and free of a version race (FR-ENG-2): while a turn runs, the engine is the only writer. The consultation point is a safe one — the messages land after the tool results of the previous step, never between a tool call and its result. An interceptor that returns nothing changes nothing, and the turn continues as it would have. A layer (FR-LAYER-1) cannot serve this purpose: it sees the request after it was built, so what it adds is neither durable nor visible to the policies.
+
+**Where it lives:** `norte-core/src/interceptor.rs`, `norte-core/src/engine.rs` (`intercept`), `norte-testing/tests/interceptor.rs`.
 
 **Where it lives:** `norte-core/src/engine.rs` (`generate`), `norte-core/src/event.rs`, `norte-core/src/model.rs` (`over`), `norte-testing/tests/turn_options.rs`.
 

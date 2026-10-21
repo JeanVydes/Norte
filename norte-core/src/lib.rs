@@ -19,6 +19,8 @@ pub mod error;
 pub mod event;
 /// Typed identifiers, digests and wire families.
 pub mod id;
+/// Host hooks the engine consults at the safe points of a running turn.
+pub mod interceptor;
 /// The layer trait that wraps one model call.
 pub mod layer;
 /// The provider-file seam for media parts.
@@ -76,6 +78,7 @@ pub use id::{
     ApprovalId, BlobId, CallId, Digest, GenerationId, GrantId, ModelId, ModelRef, NodeId,
     ProviderId, SessionId, ToolName, WireFamily,
 };
+pub use interceptor::{InterceptionContext, InterceptorSet, TurnInterceptor};
 pub use layer::{
     Continuation, Layer, LayerContext, LayerStack, ModelContinuation, ShortCircuitReason,
     synthetic_stream,

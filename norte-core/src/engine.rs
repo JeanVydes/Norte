@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context as TaskContext, Poll};
 use std::time::{Duration, Instant};
 
@@ -29,7 +29,7 @@ use crate::id::{
     ApprovalId, CallId, Digest, GenerationId, GrantId, ModelRef, NodeId, SessionId, ToolName,
 };
 use crate::interceptor::{InterceptionContext, InterceptorSet, TurnInterceptor};
-use crate::layer::{LayerContext, LayerStack, ModelContinuation};
+use crate::layer::{Continuation, LayerContext, LayerStack};
 use crate::media_adapter::MediaAdapter;
 use crate::model::{
     GenerationParams, Model, ModelRequest, ModelStream, PARTIAL_TOOLS_KEY, SESSION_EXTENSION,
@@ -792,6 +792,12 @@ impl Engine {
             options.over(&session_turn_options(&session).over(&self.default_turn_options()));
         if let Some(message) = input {
             session = self.append_turn(&session, message, &sender).await?;
+        } else if !session.queue.is_empty() && session.phase == Phase::Idle {
+            // A turn that starts without an input still drains the steering
+            // queue: the queued messages are the context it answers. The drain
+            // waits for an idle session, because a parked one still owes a tool
+            // result and the messages must not come between the call and it.
+            session = self.append_queued(&session, &sender).await?;
         }
 
         let mut last = None;
@@ -981,6 +987,41 @@ impl Engine {
         Ok(committed)
     }
 
+    /// Chains the steering queue onto the head without a new input.
+    ///
+    /// The queued messages become the context the turn answers, in arrival
+    /// order. The turn counter moves, because a turn starts here.
+    async fn append_queued(
+        &self,
+        session: &Session,
+        sender: &mpsc::Sender<EngineEvent>,
+    ) -> Result<Session> {
+        let mut nodes = Vec::new();
+        let mut parent = session.head;
+        for steering in &session.queue {
+            let node = Node::message(steering.clone(), parent);
+            parent = Some(node.id);
+            nodes.push(node);
+        }
+        let committed = self
+            .commit(
+                Commit {
+                    session_id: session.id,
+                    expected_version: Some(session.version),
+                    nodes,
+                    head: parent,
+                    phase: Phase::Streaming,
+                    turn: session.turn + 1,
+                    queue: VecDeque::default(),
+                    grants: session.grants.clone(),
+                    metadata: None,
+                },
+                sender,
+            )
+            .await?;
+        Ok(committed)
+    }
+
     async fn append_turn(
         &self,
         session: &Session,
@@ -1081,8 +1122,30 @@ impl Engine {
             cache_boundaries: reconstructed.cache_boundaries,
             extensions,
         };
-        let request_digest =
-            Digest::of_json(&serde_json::to_value(&request).unwrap_or(Value::Null));
+        // A layer may alter the request, so the digest must describe the one the
+        // model receives (FR-ENG-4). The clone is the fallback for a layer that
+        // answers without the model: the request it received is what the digest
+        // describes then.
+        let reconstructed = request.clone();
+        let wire_digest = Mutex::new(None);
+        let sink = ChannelSink {
+            sender: sender.clone(),
+        };
+        let context = LayerContext {
+            session: session.id,
+            turn: session.turn,
+            events: &sink,
+        };
+        let continuation = Digesting {
+            model: &*self.model,
+            digest: &wire_digest,
+        };
+        let mut stream = self.layers.run(&context, request, &continuation).await?;
+        let request_digest = wire_digest
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+            .unwrap_or_else(|| digest_of(&reconstructed));
         self.emit(
             sender,
             EngineEvent::RequestReconstructed {
@@ -1096,19 +1159,6 @@ impl Engine {
             },
         )
         .await;
-
-        let sink = ChannelSink {
-            sender: sender.clone(),
-        };
-        let context = LayerContext {
-            session: session.id,
-            turn: session.turn,
-            events: &sink,
-        };
-        let continuation = ModelContinuation {
-            model: &*self.model,
-        };
-        let mut stream = self.layers.run(&context, request, &continuation).await?;
         let (accumulated, interrupted, early_results) = self
             .drain_stream(
                 session,
@@ -2014,6 +2064,33 @@ impl EventSink for ChannelSink {
         if self.sender.try_send(event).is_err() {
             tracing::debug!("layer event dropped: engine channel full or closed");
         }
+    }
+}
+
+/// The digest of a request, over its canonical JSON text.
+fn digest_of(request: &ModelRequest) -> Digest {
+    Digest::of_json(&serde_json::to_value(request).unwrap_or(Value::Null))
+}
+
+/// The terminal that reports the request the model actually received.
+///
+/// A layer may alter the request before it reaches the model, so the digest
+/// the generation records is the one of the wire, not of the reconstruction
+/// (FR-ENG-4).
+struct Digesting<'a> {
+    model: &'a dyn Model,
+    digest: &'a Mutex<Option<Digest>>,
+}
+
+#[async_trait::async_trait]
+impl Continuation for Digesting<'_> {
+    async fn call(
+        &self,
+        _context: &LayerContext<'_>,
+        request: ModelRequest,
+    ) -> Result<ModelStream> {
+        *self.digest.lock().unwrap_or_else(PoisonError::into_inner) = Some(digest_of(&request));
+        self.model.stream(request).await
     }
 }
 

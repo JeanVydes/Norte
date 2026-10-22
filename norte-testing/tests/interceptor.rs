@@ -165,3 +165,62 @@ async fn an_interceptor_that_answers_nothing_leaves_the_turn_untouched() {
     assert_eq!(history[0].role, Role::User);
     assert_eq!(history[1].role, Role::Assistant);
 }
+
+#[tokio::test]
+async fn a_resume_without_input_drains_the_steering_queue() {
+    let scripted = Arc::new(
+        ScriptedModel::new(model("test/echo"))
+            .turn_text("first")
+            .turn_text("second"),
+    );
+    let mut tools = ToolRegistry::new();
+    tools.register_declarator(&Echo).expect("register echo");
+    let store = Arc::new(InMemoryStore::new());
+    let engine = EngineBuilder::new()
+        .store(store.clone())
+        .blobs(Arc::new(InMemoryBlobStore::new()))
+        .model(scripted.clone())
+        .tools(tools)
+        .build()
+        .expect("build engine");
+
+    let session = engine.create().await.expect("create");
+    engine
+        .send(session.id, Message::user("go"))
+        .finish()
+        .await
+        .expect("turn");
+
+    engine
+        .steer(session.id, Message::user("a"))
+        .await
+        .expect("steer");
+    engine
+        .steer(session.id, Message::user("b"))
+        .await
+        .expect("steer");
+
+    let outcome = engine.resume(session.id).finish().await.expect("resume");
+
+    let requests = scripted.requests();
+    assert_eq!(requests.len(), 2, "the resume made one request");
+    let users: Vec<String> = requests[1]
+        .messages
+        .iter()
+        .filter(|message| message.role == Role::User)
+        .map(Message::text)
+        .collect();
+    assert_eq!(
+        users,
+        ["go", "a", "b"],
+        "both queued messages reach the turn, in order"
+    );
+
+    let history = store.history(outcome.session.head).await.expect("history");
+    let texts: Vec<String> = history
+        .iter()
+        .filter(|message| message.role == Role::User)
+        .map(Message::text)
+        .collect();
+    assert_eq!(texts, ["go", "a", "b"]);
+}

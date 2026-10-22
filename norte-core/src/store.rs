@@ -16,7 +16,7 @@ pub trait Store: Send + Sync {
     /// [`crate::Error::StoreConflict`] when the version does not match.
     async fn commit(&self, commit: Commit) -> Result<Session>;
 
-    /// Loads a session, including its head, phase and queue.
+    /// Loads a session, including its head and phase.
     async fn load(&self, session: SessionId) -> Result<Session>;
 
     /// Loads one node by id.

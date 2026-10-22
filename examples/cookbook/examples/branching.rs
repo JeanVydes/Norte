@@ -170,7 +170,6 @@ async fn branch_from(
             head: Some(head),
             phase: Phase::Idle,
             turn: session.turn,
-            queue: session.queue.clone(),
             grants: session.grants.clone(),
             metadata: None,
         })

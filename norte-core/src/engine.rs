@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context as TaskContext, Poll};
@@ -366,7 +366,6 @@ impl Engine {
             head: None,
             phase: Phase::Idle,
             turn: 0,
-            queue: VecDeque::default(),
             grants: Vec::new(),
             metadata: Some(session.metadata.clone()),
         };
@@ -413,28 +412,6 @@ impl Engine {
             .into_iter()
             .filter(|record| record.status == ApprovalStatus::Pending && !record.is_expired_at(now))
             .collect())
-    }
-
-    /// Enqueues a steering message, drained at the next safe point.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::StoreConflict`] when the session advanced under us.
-    pub async fn steer(&self, session: SessionId, message: Message) -> Result<Session> {
-        let mut current = self.store.load(session).await?;
-        current.queue.push_back(message);
-        let commit = Commit {
-            session_id: current.id,
-            expected_version: Some(current.version),
-            nodes: Vec::new(),
-            head: None,
-            phase: current.phase,
-            turn: current.turn,
-            queue: current.queue.clone(),
-            grants: current.grants.clone(),
-            metadata: None,
-        };
-        self.store.commit(commit).await
     }
 
     /// Appends `messages` to the session as durable history, in order, without
@@ -489,7 +466,6 @@ impl Engine {
                 head: parent,
                 phase: current.phase,
                 turn: current.turn,
-                queue: current.queue.clone(),
                 grants: current.grants.clone(),
                 metadata: None,
             })
@@ -524,7 +500,6 @@ impl Engine {
             phase: state.phase,
             turn: state.turn,
             metadata,
-            queue: state.queue,
             options,
             messages,
         })
@@ -582,7 +557,6 @@ impl Engine {
                 head: parent,
                 phase: conversation.phase,
                 turn: conversation.turn,
-                queue: conversation.queue,
                 grants: Vec::new(),
                 metadata: Some(metadata),
             })
@@ -688,7 +662,6 @@ impl Engine {
             head: None,
             phase: Phase::AwaitingTool,
             turn: session.turn,
-            queue: session.queue.clone(),
             grants,
             metadata: None,
         };
@@ -766,7 +739,6 @@ impl Engine {
                 head: None,
                 phase: current.phase,
                 turn: current.turn,
-                queue: current.queue.clone(),
                 grants,
                 metadata: None,
             })
@@ -806,12 +778,6 @@ impl Engine {
                 }
             }
             session = self.append_turn(&session, message, &sender).await?;
-        } else if !session.queue.is_empty() && session.phase == Phase::Idle {
-            // A turn that starts without an input still drains the steering
-            // queue: the queued messages are the context it answers. The drain
-            // waits for an idle session, because a parked one still owes a tool
-            // result and the messages must not come between the call and it.
-            session = self.append_queued(&session, &sender).await?;
         }
 
         let mut last = None;
@@ -957,7 +923,6 @@ impl Engine {
                     head: Some(node_id),
                     phase,
                     turn: session.turn,
-                    queue: session.queue.clone(),
                     grants: session.grants.clone(),
                     metadata: Some(turn_metadata(session, options)),
                 },
@@ -1081,7 +1046,6 @@ impl Engine {
                     head: parent,
                     phase: session.phase,
                     turn: session.turn,
-                    queue: session.queue.clone(),
                     grants: session.grants.clone(),
                     metadata: None,
                 },
@@ -1103,57 +1067,16 @@ impl Engine {
         })
     }
 
-    /// Chains the steering queue onto the head without a new input.
-    ///
-    /// The queued messages become the context the turn answers, in arrival
-    /// order. The turn counter moves, because a turn starts here.
-    async fn append_queued(
-        &self,
-        session: &Session,
-        sender: &mpsc::Sender<EngineEvent>,
-    ) -> Result<Session> {
-        let mut nodes = Vec::new();
-        let mut parent = session.head;
-        for steering in &session.queue {
-            let node = Node::message(steering.clone(), parent);
-            parent = Some(node.id);
-            nodes.push(node);
-        }
-        let committed = self
-            .commit(
-                Commit {
-                    session_id: session.id,
-                    expected_version: Some(session.version),
-                    nodes,
-                    head: parent,
-                    phase: Phase::Streaming,
-                    turn: session.turn + 1,
-                    queue: VecDeque::default(),
-                    grants: session.grants.clone(),
-                    metadata: None,
-                },
-                sender,
-            )
-            .await?;
-        Ok(committed)
-    }
-
+    /// Chains the turn's input onto the head.
     async fn append_turn(
         &self,
         session: &Session,
         message: Message,
         sender: &mpsc::Sender<EngineEvent>,
     ) -> Result<Session> {
-        let mut nodes = Vec::new();
-        let mut parent = session.head;
-        for steering in &session.queue {
-            let node = Node::message(steering.clone(), parent);
-            parent = Some(node.id);
-            nodes.push(node);
-        }
-        let node = Node::message(message, parent);
+        let node = Node::message(message, session.head);
         let head = node.id;
-        nodes.push(node);
+        let nodes = vec![node];
 
         let previous_phase = session.phase;
         let committed = self
@@ -1165,7 +1088,6 @@ impl Engine {
                     head: Some(head),
                     phase: Phase::Streaming,
                     turn: session.turn + 1,
-                    queue: VecDeque::default(),
                     grants: session.grants.clone(),
                     metadata: None,
                 },
@@ -1692,7 +1614,6 @@ impl Engine {
                 head: Some(node_id),
                 phase: Phase::Idle,
                 turn: session.turn,
-                queue: session.queue.clone(),
                 grants: session.grants.clone(),
                 metadata: Some(metadata),
             },
@@ -1944,7 +1865,6 @@ impl Engine {
                 head: None,
                 phase: Phase::AwaitingApproval,
                 turn: session.turn,
-                queue: session.queue.clone(),
                 grants: session.grants.clone(),
                 metadata: Some(metadata),
             },

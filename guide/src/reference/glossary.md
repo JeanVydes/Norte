@@ -71,7 +71,7 @@ transform the arguments, require approval, or rate-limit.
 history, announced by `RequestReconstructed` once per model request.
 
 **Session** — the durable unit: a tree of commits, a phase, a version, a turn
-counter, a steering queue, grants and metadata.
+counter, grants and metadata.
 
 **Store / BlobStore** — the two persistence ports. `Store` holds sessions, nodes
 and approvals; `BlobStore` holds content-addressed bytes.

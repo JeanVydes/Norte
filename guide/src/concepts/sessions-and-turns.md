@@ -11,7 +11,6 @@ A `Session` is the durable unit. It carries:
 | `phase` | `Phase` — where the session currently is. |
 | `version` | `u64` — bumped by every commit; the optimistic-concurrency token. |
 | `turn` | `u64` — how many turns have run. |
-| `queue` | `VecDeque<Message>` — messages enqueued by `steer`, applied at the next turn boundary. |
 | `grants` | `Vec<Grant>` — live tool approvals. |
 | `metadata` | Free-form `BTreeMap<String, Value>` for the host (observer names land here, for instance). |
 | `created_at` / `updated_at` | `DateTime<Utc>`. |
@@ -98,20 +97,11 @@ What a commit writes:
 
 ## Steering
 
-`engine.steer(session, message)` enqueues a message without starting a turn. It is
-applied at the next turn boundary, inside the same turn, which is how a UI can
-correct an agent mid-loop without racing it. The queue is visible as
-`Session::queue` and is part of the session that gets committed.
-
-The queue is the durable path: it survives a restart, and a host that wants
-the message to reach the request that is already running registers a turn
-interceptor instead.
-
-## Reaching the request in flight
-
-The queue is a session field, so a message written to it while a turn runs
-cannot be committed without racing that turn. A host that must reach the
-request already in flight registers a **turn interceptor** instead:
+A host that wants to correct an agent mid-loop registers a **turn
+interceptor**. The engine consults it before the turn's input, before every
+model request and before the turn ends, and commits what it returns, so the
+message lands in the history, in the request digest and in what the policies
+read.
 
 ```rust
 #[async_trait::async_trait]

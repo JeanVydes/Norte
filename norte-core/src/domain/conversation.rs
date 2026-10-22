@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -45,9 +45,6 @@ pub struct Conversation {
     /// Host metadata attached to the session.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub metadata: BTreeMap<String, Value>,
-    /// Steering messages not yet drained, restored on import.
-    #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
-    pub queue: VecDeque<Message>,
     /// The effective request options of the last turn, when the exporting engine
     /// knows them (FR-EXP-7). Restored on import as the session’s defaults so a
     /// later resume reproduces the complete request.
@@ -114,7 +111,6 @@ mod tests {
             phase: Phase::Idle,
             turn: 3,
             metadata: BTreeMap::from([("host".to_owned(), Value::String("x".to_owned()))]),
-            queue: VecDeque::new(),
             options: None,
             messages: vec![
                 Message::system("be terse"),

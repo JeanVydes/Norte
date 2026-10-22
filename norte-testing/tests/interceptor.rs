@@ -293,23 +293,39 @@ async fn a_message_the_host_holds_keeps_the_turn_alive() {
     );
 }
 
+/// An interceptor that speaks once, the first time it is consulted.
+struct SteerOnce {
+    injected: Mutex<bool>,
+}
+
+impl SteerOnce {
+    fn new() -> Self {
+        Self {
+            injected: Mutex::new(false),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl TurnInterceptor for SteerOnce {
+    fn name(&self) -> &'static str {
+        "steer-once"
+    }
+
+    async fn intercept(&self, _context: &InterceptionContext<'_>) -> Result<Interception> {
+        let mut injected = self.injected.lock().expect("lock");
+        if *injected {
+            return Ok(Interception::Continue);
+        }
+        *injected = true;
+        Ok(Interception::Inject(vec![Message::user("steer")]))
+    }
+}
+
 #[tokio::test]
-async fn a_resume_without_input_drains_the_steering_queue() {
-    let scripted = Arc::new(
-        ScriptedModel::new(model("test/echo"))
-            .turn_text("first")
-            .turn_text("second"),
-    );
-    let mut tools = ToolRegistry::new();
-    tools.register_declarator(&Echo).expect("register echo");
-    let store = Arc::new(InMemoryStore::new());
-    let engine = EngineBuilder::new()
-        .store(store.clone())
-        .blobs(Arc::new(InMemoryBlobStore::new()))
-        .model(scripted.clone())
-        .tools(tools)
-        .build()
-        .expect("build engine");
+async fn a_host_message_lands_before_the_turn_input() {
+    let scripted = Arc::new(ScriptedModel::new(model("test/echo")).turn_text("ok"));
+    let (engine, _store) = engine_with(scripted.clone(), Arc::new(SteerOnce::new()));
 
     let session = engine.create().await.expect("create");
     engine
@@ -318,20 +334,9 @@ async fn a_resume_without_input_drains_the_steering_queue() {
         .await
         .expect("turn");
 
-    engine
-        .steer(session.id, Message::user("a"))
-        .await
-        .expect("steer");
-    engine
-        .steer(session.id, Message::user("b"))
-        .await
-        .expect("steer");
-
-    let outcome = engine.resume(session.id).finish().await.expect("resume");
-
     let requests = scripted.requests();
-    assert_eq!(requests.len(), 2, "the resume made one request");
-    let users: Vec<String> = requests[1]
+    assert_eq!(requests.len(), 1);
+    let users: Vec<String> = requests[0]
         .messages
         .iter()
         .filter(|message| message.role == Role::User)
@@ -339,8 +344,31 @@ async fn a_resume_without_input_drains_the_steering_queue() {
         .collect();
     assert_eq!(
         users,
-        ["go", "a", "b"],
-        "both queued messages reach the turn, in order"
+        ["steer", "go"],
+        "the message the host held lands before the turn's own input"
+    );
+}
+
+#[tokio::test]
+async fn a_resume_without_input_delivers_what_the_host_holds() {
+    let scripted = Arc::new(ScriptedModel::new(model("test/echo")).turn_text("ok"));
+    let (engine, store) = engine_with(scripted.clone(), Arc::new(SteerOnce::new()));
+
+    let session = engine.create().await.expect("create");
+    let outcome = engine.resume(session.id).finish().await.expect("resume");
+
+    let requests = scripted.requests();
+    assert_eq!(requests.len(), 1, "the resume made one request");
+    let users: Vec<String> = requests[0]
+        .messages
+        .iter()
+        .filter(|message| message.role == Role::User)
+        .map(Message::text)
+        .collect();
+    assert_eq!(
+        users,
+        ["steer"],
+        "the message the host held is the only input the turn has"
     );
 
     let history = store.history(outcome.session.head).await.expect("history");
@@ -349,5 +377,5 @@ async fn a_resume_without_input_drains_the_steering_queue() {
         .filter(|message| message.role == Role::User)
         .map(Message::text)
         .collect();
-    assert_eq!(texts, ["go", "a", "b"]);
+    assert_eq!(texts, ["steer"]);
 }

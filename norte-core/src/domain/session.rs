@@ -1,11 +1,10 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::approval::Grant;
-use crate::domain::message::Message;
 use crate::id::{NodeId, SessionId};
 
 /// Durable position of a session in the turn loop. Unknown phases fail to
@@ -54,9 +53,6 @@ pub struct Session {
     pub version: u64,
     /// How many turns the session has run.
     pub turn: u64,
-    /// Steering messages, drained at the next safe point.
-    #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
-    pub queue: VecDeque<Message>,
     /// Grants in force for this session.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub grants: Vec<Grant>,
@@ -80,7 +76,6 @@ impl Session {
             phase: Phase::Idle,
             version: 0,
             turn: 0,
-            queue: VecDeque::new(),
             grants: Vec::new(),
             metadata: BTreeMap::new(),
             created_at: now,

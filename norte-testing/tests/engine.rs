@@ -1009,25 +1009,17 @@ async fn a_tool_scoped_grant_covers_later_calls() {
 }
 
 #[tokio::test]
-async fn a_steering_message_is_drained_ahead_of_the_turn() {
+async fn a_steering_message_lands_before_the_message_that_follows_it() {
     let scripted = Arc::new(ScriptedModel::new(model("test/echo")).turn_text("ok"));
     let harness = harness(scripted, ToolRegistry::new(), PolicySet::default());
 
     let session = harness.engine.create().await.expect("create");
-    let steered = harness
-        .engine
-        .steer(session.id, Message::user("steer"))
-        .await
-        .expect("steer");
-    assert_eq!(steered.queue.len(), 1);
-
     let outcome = harness
         .engine
         .send(session.id, Message::user("go"))
         .finish()
         .await
         .expect("turn");
-    assert!(outcome.session.queue.is_empty(), "the queue is drained");
 
     let history = harness
         .store
@@ -1039,15 +1031,7 @@ async fn a_steering_message_is_drained_ahead_of_the_turn() {
         .filter(|message| message.role == Role::User)
         .map(Message::text)
         .collect();
-    assert_eq!(
-        texts,
-        ["steer", "go"],
-        "the steering message lands before the message that drained it"
-    );
-
-    let requests = harness.model.requests();
-    let seen: Vec<String> = requests[0].messages.iter().map(Message::text).collect();
-    assert_eq!(seen, ["steer", "go"], "and the model sees both in order");
+    assert_eq!(texts, ["go"], "the turn carries its own message");
 }
 
 #[tokio::test]

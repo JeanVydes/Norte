@@ -25,6 +25,16 @@ Draft. Not published.
   result; a parked session keeps waiting, because the messages must not come
   between a tool call and its result.
 
+### Removed
+
+- The steering queue of the session. `Session::queue`, `Commit::queue` and the
+  `queue` of the exported envelope are gone, and so is `Engine::steer`. A
+  message written to the session while a turn runs could not be committed
+  without racing that turn, so it would have had to wait for the next turn
+  instead of reaching the request already in flight. Steering now goes through
+  the turn interceptor, which the engine consults before the turn's input,
+  before every model request and before the turn ends (FR-ENG-3, FR-ENG-10).
+
 ### Added
 
 - Turn interceptors. A host may register an interceptor the engine consults at

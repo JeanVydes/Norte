@@ -231,8 +231,6 @@ impl BlobStore for InMemoryBlobStore {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
-
     use super::*;
     use crate::Phase;
 
@@ -244,7 +242,6 @@ mod tests {
             head: None,
             phase: Phase::Idle,
             turn: 0,
-            queue: VecDeque::default(),
             grants: Vec::new(),
             metadata: None,
         }

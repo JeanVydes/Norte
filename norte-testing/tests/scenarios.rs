@@ -1,7 +1,6 @@
 //! Dedicated integration scenarios (FR-TEST-4): cancellation, concurrent writers
 //! and process death are exercised on their own, not buried in unit tests.
 
-use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -29,7 +28,6 @@ fn session_commit(session_id: SessionId) -> Commit {
         head: None,
         phase: Phase::Idle,
         turn: 0,
-        queue: VecDeque::default(),
         grants: Vec::new(),
         metadata: None,
     }
@@ -272,7 +270,6 @@ async fn concurrent_writers_commit_exactly_one() {
                     head: None,
                     phase: Phase::Idle,
                     turn: 1,
-                    queue: VecDeque::default(),
                     grants: Vec::new(),
                     metadata: None,
                 })

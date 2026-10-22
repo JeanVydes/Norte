@@ -192,9 +192,9 @@ A continuity token is an opaque envelope: wire family, scope (exact model, model
 
 **Node.** id, optional parent, kind (`Message` only in core), message, `created_at`, host-owned metadata, and a `schema_version`. A message additionally carries a typed **cache class** (`Critical`, the default, or `Ephemeral`); an ephemeral message is materialized after the cache-critical prefix (Section 8). Ephemerality is per message: a part that must stay out of the prefix travels in an ephemeral message.
 
-**Session.** id, `head` (leaf of the active branch), phase, version (concurrency token, +1 per commit), turn counter, a queue of steering messages, approval grants, host metadata, timestamps.
+**Session.** id, `head` (leaf of the active branch), phase, version (concurrency token, +1 per commit), turn counter, approval grants, host metadata, timestamps.
 
-**Commit.** `session_id`, `expected_version` (`None` = create), nodes (parent first), new `head`, phase, turn, queue, grants, optional metadata.
+**Commit.** `session_id`, `expected_version` (`None` = create), nodes (parent first), new `head`, phase, turn, grants, optional metadata.
 
 **FR-GRAPH-1.** The graph is a tree. Branches share a parent. Nodes belong to no session, so sessions may share ancestors.
 
@@ -268,13 +268,13 @@ The engine is a pure state machine over the session. It never holds long-lived n
 
 **Where it lives:** `norte-core/src/engine.rs` (`steer`).
 
-**FR-ENG-3.** Steering messages may be enqueued at any time; they are drained at the next safe point (after the current assistant turn completes or is interrupted). The queue is the durable path: a host that wants the message to reach the request already in flight registers a turn interceptor (FR-ENG-10), which is the path a message takes while a turn runs.
+**FR-ENG-3.** Steering messages reach the turn through a turn interceptor (FR-ENG-10), never through a field of the session: a message written to the session while a turn runs cannot be committed without racing that turn (FR-ENG-2), and the message would have to wait for the next turn instead of reaching the request already in flight.
 
 **FR-ENG-4.** The engine records a request digest with every assistant generation so that policy and approval decisions can be audited against the exact inputs. The digest is computed over the reconstructed request (Section 8), so it changes exactly when the wire changes.
 
 **FR-ENG-5.** Reconstruction of the request from the graph is an explicit, ordered step that runs before the model call. It applies continuity replay, then media materialization, in a fixed order. No reconstruction step reads the tail to decide the prefix.
 
-**FR-ENG-6.** A host may append an ordered sequence of messages to a session as durable history **without generating**, bridging a host-held message array (a loaded or imported transcript, or one built in memory) onto the graph. The append is a single version-checked commit (FR-ENG-2) that chains the messages onto the current head and leaves phase, turn, queue and grants unchanged. It is append-only (FR-GRAPH-4) and prefix-stable (FR-RECON-2), so the next generation sees the seeded prefix byte-identical. It is only valid from `Idle`: a running turn owns the head. The engine reports the append (FR-EVT-1).
+**FR-ENG-6.** A host may append an ordered sequence of messages to a session as durable history **without generating**, bridging a host-held message array (a loaded or imported transcript, or one built in memory) onto the graph. The append is a single version-checked commit (FR-ENG-2) that chains the messages onto the current head and leaves phase, turn and grants unchanged. It is append-only (FR-GRAPH-4) and prefix-stable (FR-RECON-2), so the next generation sees the seeded prefix byte-identical. It is only valid from `Idle`: a running turn owns the head. The engine reports the append (FR-EVT-1).
 
 **Where it lives:** `norte-core/src/engine.rs` (`steer`), `norte-core/src/event.rs`, `norte-testing/tests/history.rs`.
 
@@ -355,7 +355,7 @@ Providers cache the request prefix and bill cached input tokens at a fraction of
 
 A conversation is portable data. A host can export a session as a self-contained value, persist or ship it as JSON, and import it elsewhere — possibly in another process — and keep generation, tool loops and the provider cache behaving exactly as before. This is the "hand the chat over" path: the transcript is the artifact, the store is just where it currently lives.
 
-**FR-EXP-1 — Self-contained envelope (approval ledger excluded).** Export yields a `Conversation`: the session identity, its durable phase and turn, host metadata, the pending steering queue, the ordered message history (oldest first) and, optionally, the effective request options of the last turn (FR-EXP-7). It contains no store-internal detail — node ids, session/node versions and timestamps are store bookkeeping, not conversation content (FR-GRAPH-4). The message list is the array form.
+**FR-EXP-1 — Self-contained envelope (approval ledger excluded).** Export yields a `Conversation`: the session identity, its durable phase and turn, host metadata, the ordered message history (oldest first) and, optionally, the effective request options of the last turn (FR-EXP-7). It contains no store-internal detail — node ids, session/node versions and timestamps are store bookkeeping, not conversation content (FR-GRAPH-4). The message list is the array form.
 
 **Where it lives:** `norte-core/src/domain/conversation.rs`, `norte-core/src/engine.rs` (`append_history`), `norte-testing/tests/export.rs` (`a_parked_approval_survives_export_import`).
 
@@ -718,7 +718,7 @@ The engine emits a typed event stream that observers and host code may subscribe
 
 **NFR-SEC-2.** Execution is not authorization. The executors check arguments and limits, never intent (FR-POL-1, §10.4): a request that says a path is safe is a request, and whether the process may reach it is the sandbox's. Neither a path nor a program is confined here, and no executor in `norte-tools` is a privilege boundary.
 
-**NFR-SEC-3.** The export envelope is trusted at the host's level and unauthenticated. It is versioned and rejected wholesale when the version is unknown (FR-EXP-3), and it restores what it carries: the messages, the phase and turn, the host metadata, the queue, the last turn's request options as an explicit field (FR-EXP-7) and — when the exported session was parked — the engine's own `norte.partial_tools` entry inside that metadata, so a message whose calls had already run does not run them again after a restore (FR-GRAPH-2, FR-APPR-8). It is not signed and carries no message authentication code, so an envelope is exactly as trustworthy as the place the host kept it. Approvals and grants never travel in it (FR-EXP-1): a restored session re-derives a pending approval from its head message's calls rather than trusting a record from the file.
+**NFR-SEC-3.** The export envelope is trusted at the host's level and unauthenticated. It is versioned and rejected wholesale when the version is unknown (FR-EXP-3), and it restores what it carries: the messages, the phase and turn, the host metadata, the last turn's request options as an explicit field (FR-EXP-7) and — when the exported session was parked — the engine's own `norte.partial_tools` entry inside that metadata, so a message whose calls had already run does not run them again after a restore (FR-GRAPH-2, FR-APPR-8). It is not signed and carries no message authentication code, so an envelope is exactly as trustworthy as the place the host kept it. Approvals and grants never travel in it (FR-EXP-1): a restored session re-derives a pending approval from its head message's calls rather than trusting a record from the file.
 
 **Verified by:** CI jobs **MSRV**, **Security Audit** and **Documentation** (`-D warnings`); `unsafe_code = "forbid"` in the workspace lints.
 
@@ -745,7 +745,7 @@ The engine emits a typed event stream that observers and host code may subscribe
 **Where it lives:** `norte-testing/tests/media.rs`, `norte-http/src/media.rs` (`an_expired_provider_file_is_revived_from_its_blob_once`, `an_expired_provider_file_without_a_port_is_a_typed_error`), `norte-openai/src/files.rs` (`a_file_round_trips_through_the_files_api`, `a_vendor_without_a_files_api_surfaces_the_provider_error`), `norte-anthropic/src/files.rs`, `norte-gemini/src/files.rs`.
 
 **FR-TEST-6 — Exhaustive byte-identity matrix.** Byte identity is asserted at every level and on every vector, and any failing vector fails the build:
-- **Envelope.** `Conversation` JSON serialize → deserialize → serialize over generated histories, metadata, queue and phase, including empty and maximal shapes; deserialize must not lose information and re-serialization must be byte-stable.
+- **Envelope.** `Conversation` JSON serialize → deserialize → serialize over generated histories, metadata and phase, including empty and maximal shapes; deserialize must not lose information and re-serialization must be byte-stable.
 - **Export/import.** Export → import → re-export reproduces the conversation exactly, and import preserves the session identity (FR-EXP-4).
 - **Request.** The reconstructed request is byte-identical before and after export/import, including the session-derived cache key (FR-RECON-12, FR-EXP-4).
 - **Wire.** The adapter wire projection (FR-RECON-12) is byte-identical for every shipped wire family (Section 12).

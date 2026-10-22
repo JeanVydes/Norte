@@ -1,5 +1,3 @@
-use std::collections::VecDeque;
-
 use chrono::Duration;
 
 use norte_core::{
@@ -103,7 +101,6 @@ pub async fn store_conformance(store: &dyn Store) {
             head: Some(assistant.id),
             phase: Phase::Idle,
             turn: 1,
-            queue: VecDeque::default(),
             grants: Vec::new(),
             metadata: None,
         })
@@ -134,7 +131,6 @@ pub async fn store_conformance(store: &dyn Store) {
             head: None,
             phase: Phase::Idle,
             turn: 1,
-            queue: VecDeque::default(),
             grants: Vec::new(),
             metadata: None,
         })
@@ -183,7 +179,6 @@ fn create_commit(session_id: SessionId) -> Commit {
         head: None,
         phase: Phase::Idle,
         turn: 0,
-        queue: VecDeque::default(),
         grants: Vec::new(),
         metadata: None,
     }

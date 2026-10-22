@@ -1,7 +1,6 @@
 //! Tests for the array-to-graph bridge (FR-ENG-6): a host-held `Vec<Message>`
 //! is committed as durable history without generating.
 
-use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -118,7 +117,6 @@ async fn appending_outside_idle_is_rejected() {
             head: None,
             phase: Phase::Streaming,
             turn: 0,
-            queue: VecDeque::default(),
             grants: Vec::new(),
             metadata: None,
         })

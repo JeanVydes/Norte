@@ -1,10 +1,9 @@
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::approval::Grant;
-use crate::domain::message::Message;
 use crate::domain::node::Node;
 use crate::domain::session::{Phase, Session};
 use crate::error::{Error, Result};
@@ -28,9 +27,6 @@ pub struct Commit {
     pub phase: Phase,
     /// The turn counter after the commit.
     pub turn: u64,
-    /// The steering messages queued for the next turn.
-    #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
-    pub queue: VecDeque<Message>,
     /// The grants in force after the commit.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub grants: Vec<Grant>,
@@ -76,7 +72,6 @@ impl Commit {
         session.head = self.head.or(session.head);
         session.phase = self.phase;
         session.turn = self.turn;
-        session.queue = self.queue;
         session.grants = self.grants;
         session.version = session.version.saturating_add(1);
         session.updated_at = chrono::Utc::now();

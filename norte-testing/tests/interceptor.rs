@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use norte_core::{
-    CallId, Engine, EngineBuilder, FnExecutor, Interception, InterceptionContext, Message, Result,
-    Role, Store, ToolRegistry, TurnInterceptor,
+    CallId, Engine, EngineBuilder, EngineEvent, FnExecutor, Interception, InterceptionContext,
+    Message, Result, Role, Store, ToolRegistry, TurnInterceptor,
 };
 use norte_testing::{InMemoryBlobStore, InMemoryStore, ScriptedModel, model};
 use schemars::JsonSchema;
@@ -346,6 +346,56 @@ async fn a_host_message_lands_before_the_turn_input() {
         users,
         ["steer", "go"],
         "the message the host held lands before the turn's own input"
+    );
+}
+
+/// An interceptor that stops the turn the first time it is consulted.
+struct Stopper {
+    stopped: Mutex<bool>,
+}
+
+#[async_trait::async_trait]
+impl TurnInterceptor for Stopper {
+    fn name(&self) -> &'static str {
+        "stopper"
+    }
+
+    async fn intercept(&self, _context: &InterceptionContext<'_>) -> Result<Interception> {
+        let mut stopped = self.stopped.lock().expect("lock");
+        if *stopped {
+            return Ok(Interception::Continue);
+        }
+        *stopped = true;
+        Ok(Interception::Stop {
+            reason: "the host said no".to_owned(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn a_turn_the_host_stopped_is_reported_as_such() {
+    let scripted = Arc::new(ScriptedModel::new(model("test/echo")).turn_text("never"));
+    let (engine, _store) = engine_with(
+        scripted.clone(),
+        Arc::new(Stopper {
+            stopped: Mutex::new(false),
+        }),
+    );
+
+    let session = engine.create().await.expect("create");
+    let mut stopped = false;
+    let mut events = engine.turn(session.id).start();
+    while let Some(event) = futures_util::StreamExt::next(&mut events).await {
+        if let Ok(EngineEvent::TurnStopped { reason, .. }) = event {
+            assert_eq!(reason, "the host said no");
+            stopped = true;
+        }
+    }
+    assert!(stopped, "the engine reported the stop");
+    assert_eq!(
+        scripted.request_count(),
+        0,
+        "a turn the host stopped makes no request"
     );
 }
 

@@ -1,8 +1,9 @@
 # cookbook
 
 Small recipes for specific engine tasks. Each one is a single file, runnable on
-its own, and wires its own engine: nothing is shared between them, so a recipe
-can be read — and copied — without the rest of the crate.
+its own, and wires its own engine — or, in the `direct_*` recipes, only the
+model: nothing is shared between them, so a recipe can be read — and copied —
+without the rest of the crate.
 
 ## Run
 
@@ -23,6 +24,8 @@ is the host-side idempotency pattern for a tool with an external effect.
 
 | Example | Topic |
 | --- | --- |
+| `direct_model` | The `Model` port without the engine: one request, every event |
+| `direct_turn` | The turn loop without the engine: accumulate the stream, keep the transcript |
 | `events` | Reading a turn's event stream |
 | `streaming` | Streaming live vs collecting with `finish()` |
 | `approval` | Human approval: park the turn, decide, resume |

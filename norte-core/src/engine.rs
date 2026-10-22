@@ -843,42 +843,29 @@ impl Engine {
                 }
                 Phase::Idle | Phase::Streaming => {
                     // The host may add messages before this request is built.
-                    session = self.intercept(&session, &sender).await?;
-                    let Some(head) = session.head else {
+                    // The history is read once and the request reuses it.
+                    let Some((next, head, history)) =
+                        self.prepare_request(&session, &sender).await?
+                    else {
                         return Ok(TurnOutcome {
                             session,
                             message: last,
                         });
                     };
+                    session = next;
                     let (message, interrupted, pending) = self
-                        .generate(&session, head, &effective, &sender, &cancellation)
+                        .generate(&session, history, &effective, &sender, &cancellation)
                         .await?;
                     early_results = pending;
-                    let node = Node::message(message.clone(), Some(head));
-                    let node_id = node.id;
-                    let phase = if interrupted {
-                        Phase::Idle
-                    } else if message.has_tool_calls() {
-                        Phase::AwaitingTool
-                    } else {
-                        Phase::Idle
-                    };
-                    session = self
-                        .commit(
-                            Commit {
-                                session_id,
-                                expected_version: Some(session.version),
-                                nodes: vec![node],
-                                head: Some(node_id),
-                                phase,
-                                turn: session.turn,
-                                queue: session.queue.clone(),
-                                grants: session.grants.clone(),
-                                metadata: Some(turn_metadata(&session, &effective)),
-                            },
-                            &sender,
-                        )
-                        .await?;
+                    self.commit_answer(
+                        &mut session,
+                        &message,
+                        head,
+                        interrupted,
+                        &effective,
+                        &sender,
+                    )
+                    .await?;
                     last = Some(message);
                     if interrupted {
                         return Ok(TurnOutcome {
@@ -920,6 +907,75 @@ impl Engine {
         Ok(self.pending_approvals(session.id).await?.is_empty())
     }
 
+    /// Commits the answer the model produced.
+    ///
+    /// The phase follows the answer: an interrupted one leaves the session
+    /// idle, an answer with tool calls waits for them, and a final answer ends
+    /// the turn.
+    async fn commit_answer(
+        &self,
+        session: &mut Session,
+        message: &Message,
+        head: NodeId,
+        interrupted: bool,
+        options: &TurnOptions,
+        sender: &mpsc::Sender<EngineEvent>,
+    ) -> Result<()> {
+        let node = Node::message(message.clone(), Some(head));
+        let node_id = node.id;
+        let phase = if interrupted {
+            Phase::Idle
+        } else if message.has_tool_calls() {
+            Phase::AwaitingTool
+        } else {
+            Phase::Idle
+        };
+        *session = self
+            .commit(
+                Commit {
+                    session_id: session.id,
+                    expected_version: Some(session.version),
+                    nodes: vec![node],
+                    head: Some(node_id),
+                    phase,
+                    turn: session.turn,
+                    queue: session.queue.clone(),
+                    grants: session.grants.clone(),
+                    metadata: Some(turn_metadata(session, options)),
+                },
+                sender,
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Prepares the next request.
+    ///
+    /// The host may add messages to the session first. An interceptor reads
+    /// the history the request carries, so the store is read once and the
+    /// request reuses it.
+    async fn prepare_request(
+        &self,
+        session: &Session,
+        sender: &mpsc::Sender<EngineEvent>,
+    ) -> Result<Option<(Session, NodeId, Vec<Message>)>> {
+        let before = session.head;
+        let history = if self.interceptors.is_empty() {
+            None
+        } else {
+            Some(self.store.history(before).await?)
+        };
+        let session = self.intercept(session, sender, history.as_deref()).await?;
+        let Some(head) = session.head else {
+            return Ok(None);
+        };
+        let history = match history {
+            Some(previous) if session.head == before => previous,
+            _ => self.store.history(Some(head)).await?,
+        };
+        Ok(Some((session, head, history)))
+    }
+
     /// Asks the host interceptors for messages to append before the next
     /// request, and commits them when there are any.
     ///
@@ -931,6 +987,7 @@ impl Engine {
         &self,
         session: &Session,
         sender: &mpsc::Sender<EngineEvent>,
+        history: Option<&[Message]>,
     ) -> Result<Session> {
         if self.interceptors.is_empty() {
             return Ok(session.clone());
@@ -943,6 +1000,7 @@ impl Engine {
             turn: session.turn,
             head: session.head,
             phase: session.phase,
+            messages: history.unwrap_or_default(),
             events: &sink,
         };
         let mut messages = Vec::new();
@@ -1071,16 +1129,14 @@ impl Engine {
     async fn generate(
         &self,
         session: &Session,
-        head: NodeId,
+        history: Vec<Message>,
         options: &TurnOptions,
         sender: &mpsc::Sender<EngineEvent>,
         cancellation: &CancellationToken,
     ) -> Result<(Message, bool, Vec<ToolResultPart>)> {
         let model_ref = self.model.reference().clone();
         let capabilities = self.model.capabilities();
-        let (history, invalidated) = self
-            .preprocess_history(self.store.history(Some(head)).await?)
-            .await?;
+        let (history, invalidated) = self.preprocess_history(history).await?;
         if invalidated {
             self.emit(
                 sender,

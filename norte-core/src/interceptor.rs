@@ -18,6 +18,12 @@ pub struct InterceptionContext<'a> {
     pub head: Option<NodeId>,
     /// The phase the turn is in.
     pub phase: Phase,
+    /// The history the next request carries, oldest first.
+    ///
+    /// This is what the model will see, so an interceptor can decide on the
+    /// conversation itself: the call the model just asked for, the tool that
+    /// answered it, the instruction the human gave.
+    pub messages: &'a [Message],
     /// The sink an interceptor uses to emit engine events.
     pub events: &'a dyn EventSink,
 }

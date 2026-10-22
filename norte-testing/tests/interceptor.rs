@@ -166,6 +166,62 @@ async fn an_interceptor_that_answers_nothing_leaves_the_turn_untouched() {
     assert_eq!(history[1].role, Role::Assistant);
 }
 
+/// An interceptor that reads the conversation before it answers.
+struct Reading {
+    seen: Arc<Mutex<Vec<String>>>,
+}
+
+#[async_trait::async_trait]
+impl TurnInterceptor for Reading {
+    fn name(&self) -> &'static str {
+        "reading"
+    }
+
+    async fn intercept(&self, context: &InterceptionContext<'_>) -> Result<Vec<Message>> {
+        let texts: Vec<String> = context.messages.iter().map(Message::text).collect();
+        self.seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(texts.join("|"));
+        Ok(Vec::new())
+    }
+}
+
+#[tokio::test]
+async fn an_interceptor_reads_the_history_the_request_carries() {
+    let scripted = Arc::new(ScriptedModel::new(model("test/echo")).turn_text("hello"));
+    let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let mut tools = ToolRegistry::new();
+    tools.register_declarator(&Echo).expect("register echo");
+    let engine = EngineBuilder::new()
+        .store(Arc::new(InMemoryStore::new()))
+        .blobs(Arc::new(InMemoryBlobStore::new()))
+        .model(scripted.clone())
+        .tools(tools)
+        .interceptors(vec![Arc::new(Reading {
+            seen: Arc::clone(&seen),
+        })])
+        .build()
+        .expect("build engine");
+
+    let session = engine.create().await.expect("create");
+    engine
+        .send(session.id, Message::user("ping"))
+        .finish()
+        .await
+        .expect("turn");
+
+    let reads = seen
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    assert_eq!(reads.len(), 1, "the interceptor was consulted once");
+    assert_eq!(
+        reads[0], "ping",
+        "it saw the conversation the request carries, before the answer"
+    );
+}
+
 #[tokio::test]
 async fn a_resume_without_input_drains_the_steering_queue() {
     let scripted = Arc::new(

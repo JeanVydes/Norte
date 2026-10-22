@@ -169,6 +169,15 @@ pub enum EngineEvent {
         /// The grant that was revoked.
         grant: GrantId,
     },
+    /// A host ended the turn on purpose (FR-ENG-10).
+    TurnStopped {
+        /// The session.
+        session: SessionId,
+        /// The interceptor that stopped it.
+        interceptor: String,
+        /// Why the turn ended.
+        reason: String,
+    },
     /// A host seeded durable history onto the session head without generating
     /// (FR-ENG-6).
     HistoryAppended {
@@ -267,6 +276,7 @@ impl EngineEvent {
             | EngineEvent::ApprovalGranted { session, .. }
             | EngineEvent::ApprovalRevoked { session, .. }
             | EngineEvent::HistoryAppended { session, .. }
+            | EngineEvent::TurnStopped { session, .. }
             | EngineEvent::InterceptionApplied { session, .. }
             | EngineEvent::CommitSucceeded { session, .. }
             | EngineEvent::CommitConflict { session, .. }

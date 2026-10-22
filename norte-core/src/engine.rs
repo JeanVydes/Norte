@@ -1019,7 +1019,20 @@ impl Engine {
             match interceptor.intercept(&context).await? {
                 Interception::Continue => {}
                 Interception::Inject(added) => messages.extend(added),
-                Interception::Stop { reason } => stop = Some(reason),
+                Interception::Stop { reason } => {
+                    // The host ended the turn on purpose; say so, so the client
+                    // does not read it as a failure.
+                    self.emit(
+                        sender,
+                        EngineEvent::TurnStopped {
+                            session: session.id,
+                            interceptor: interceptor.name().to_owned(),
+                            reason: reason.clone(),
+                        },
+                    )
+                    .await;
+                    stop = Some(reason);
+                }
             }
         }
         if messages.is_empty() {

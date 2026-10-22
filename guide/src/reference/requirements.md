@@ -268,7 +268,7 @@ The engine is a pure state machine over the session. It never holds long-lived n
 
 **Where it lives:** `norte-core/src/engine.rs` (`steer`).
 
-**FR-ENG-3.** Steering messages may be enqueued at any time; they are drained at the next safe point (after the current assistant turn completes or is interrupted). A host that must reach the request already in flight uses an interceptor (FR-ENG-10) instead: the queue is a durable session field, and a message written to it while a turn runs cannot be committed without racing that turn (FR-ENG-2).
+**FR-ENG-3.** Steering messages may be enqueued at any time; they are drained at the next safe point (after the current assistant turn completes or is interrupted). The queue is the durable path: a host that wants the message to reach the request already in flight registers a turn interceptor (FR-ENG-10), which is the path a message takes while a turn runs.
 
 **FR-ENG-4.** The engine records a request digest with every assistant generation so that policy and approval decisions can be audited against the exact inputs. The digest is computed over the reconstructed request (Section 8), so it changes exactly when the wire changes.
 

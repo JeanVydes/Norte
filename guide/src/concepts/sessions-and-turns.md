@@ -103,6 +103,10 @@ applied at the next turn boundary, inside the same turn, which is how a UI can
 correct an agent mid-loop without racing it. The queue is visible as
 `Session::queue` and is part of the session that gets committed.
 
+The queue is the durable path: it survives a restart, and a host that wants
+the message to reach the request that is already running registers a turn
+interceptor instead.
+
 ## Reaching the request in flight
 
 The queue is a session field, so a message written to it while a turn runs

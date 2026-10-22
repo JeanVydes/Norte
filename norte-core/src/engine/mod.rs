@@ -1,4 +1,6 @@
+mod approvals;
 mod request;
+mod session;
 mod tools;
 mod turn;
 
@@ -8,25 +10,22 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context as TaskContext, Poll};
 use std::time::{Duration, Instant};
 
-use chrono::Utc;
 use futures_core::Stream;
 use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::approval::{ApprovalRecord, ApprovalStatus, AuditAction, GrantScope};
+use crate::approval::{ApprovalRecord, AuditAction};
 use crate::capability::{Capabilities, ReasoningRequest};
 use crate::domain::commit::Commit;
-use crate::domain::conversation::{CONVERSATION_SCHEMA_VERSION, Conversation};
 use crate::domain::message::{Message, Usage};
-use crate::domain::node::Node;
 use crate::domain::part::{Part, ToolCallPart, ToolResultPart};
 use crate::domain::role::Role;
-use crate::domain::session::{Phase, Session};
+use crate::domain::session::Session;
 use crate::error::{Error, Result};
 use crate::event::{EngineEvent, EventSink, StreamDelta};
-use crate::id::{ApprovalId, Digest, GrantId, SessionId, ToolName};
+use crate::id::{Digest, SessionId, ToolName};
 use crate::interceptor::{InterceptorSet, TurnInterceptor};
 use crate::layer::{Continuation, LayerContext, LayerStack};
 use crate::media_adapter::MediaAdapter;
@@ -328,241 +327,6 @@ impl Engine {
         &self.tools
     }
 
-    /// Creates an empty session (extension metadata records the registered
-    /// observers and layers so a run stays reproducible).
-    ///
-    /// # Errors
-    ///
-    /// Propagates the store error when the initial commit fails.
-    pub async fn create(&self) -> Result<Session> {
-        let mut session = Session::new();
-        session.metadata.insert(
-            "observers".to_owned(),
-            serde_json::json!(self.observers.names()),
-        );
-        session.metadata.insert(
-            "layers".to_owned(),
-            serde_json::json!(
-                self.layers
-                    .layers()
-                    .iter()
-                    .map(|layer| layer.name().to_owned())
-                    .collect::<Vec<_>>()
-            ),
-        );
-        session.metadata.insert(
-            "transforms".to_owned(),
-            serde_json::json!(self.observers.transform_names()),
-        );
-        session.metadata.insert(
-            "interceptors".to_owned(),
-            serde_json::json!(self.interceptors.names()),
-        );
-        let commit = Commit {
-            session_id: session.id,
-            expected_version: None,
-            nodes: Vec::new(),
-            head: None,
-            phase: Phase::Idle,
-            turn: 0,
-            grants: Vec::new(),
-            metadata: Some(session.metadata.clone()),
-        };
-        let session = self.store.commit(commit).await?;
-        self.observers.emit(&EngineEvent::SessionCreated {
-            session: session.id,
-            phase: session.phase,
-        });
-        Ok(session)
-    }
-
-    /// Loads the current session state.
-    ///
-    /// # Errors
-    ///
-    /// Returns the store's error, including [`Error::SessionNotFound`].
-    pub async fn session(&self, session: SessionId) -> Result<Session> {
-        self.store.load(session).await
-    }
-
-    /// Loads the ancestor conversation for the session head.
-    ///
-    /// # Errors
-    ///
-    /// Propagates the store error while walking the graph.
-    pub async fn history(&self, session: SessionId) -> Result<Vec<Message>> {
-        let session = self.store.load(session).await?;
-        self.store.history(session.head).await
-    }
-
-    /// The approvals the host still has to decide for the session: records that
-    /// are pending and have not expired, oldest first. Decided and expired
-    /// records stay in the store for audit rather than showing up here.
-    ///
-    /// # Errors
-    ///
-    /// Propagates the store error.
-    pub async fn pending_approvals(&self, session: SessionId) -> Result<Vec<ApprovalRecord>> {
-        let now = Utc::now();
-        Ok(self
-            .store
-            .approvals(session)
-            .await?
-            .into_iter()
-            .filter(|record| record.status == ApprovalStatus::Pending && !record.is_expired_at(now))
-            .collect())
-    }
-
-    /// Appends `messages` to the session as durable history, in order, without
-    /// generating (FR-ENG-6).
-    ///
-    /// This is the array-to-graph bridge: a host that already holds a
-    /// conversation as an ordered `Vec<Message>` — a transcript it loaded,
-    /// imported from another system or built in memory — persists it verbatim
-    /// onto the current head. Nothing is sent to the model, so the next
-    /// [`send`](Engine::send) sees the seeded prefix unchanged and the provider
-    /// prompt cache keeps hitting (FR-RECON-2).
-    ///
-    /// Appending requires an `Idle` session: a running turn owns the head, and
-    /// moving it underneath the turn would race its commit. An empty slice is a
-    /// no-op that returns the session unchanged.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::InvalidInput`] when the session is not `Idle`, and
-    /// propagates the store error, including [`Error::StoreConflict`] when the
-    /// session advanced under the caller (FR-ENG-2).
-    pub async fn append_history(
-        &self,
-        session: SessionId,
-        messages: Vec<Message>,
-    ) -> Result<Session> {
-        let current = self.store.load(session).await?;
-        if messages.is_empty() {
-            return Ok(current);
-        }
-        if current.phase != Phase::Idle {
-            return Err(Error::InvalidInput(format!(
-                "append_history requires an Idle session, found {:?}",
-                current.phase
-            )));
-        }
-
-        let mut parent = current.head;
-        let mut nodes = Vec::with_capacity(messages.len());
-        for message in messages {
-            let node = Node::message(message, parent);
-            parent = Some(node.id);
-            nodes.push(node);
-        }
-        let appended = nodes.len();
-        let committed = self
-            .store
-            .commit(Commit {
-                session_id: current.id,
-                expected_version: Some(current.version),
-                nodes,
-                head: parent,
-                phase: current.phase,
-                turn: current.turn,
-                grants: current.grants.clone(),
-                metadata: None,
-            })
-            .await?;
-        self.observers.emit(&EngineEvent::HistoryAppended {
-            session: committed.id,
-            messages: appended,
-        });
-        Ok(committed)
-    }
-
-    /// Exports a session and its ordered history as a self-contained,
-    /// serializable [`Conversation`] (FR-EXP-1).
-    ///
-    /// The envelope carries the session id on purpose: adapters that pass a
-    /// session-derived cache key derive it from that id, so re-importing under
-    /// the same id keeps the provider cache warm (FR-EXP-2).
-    ///
-    /// # Errors
-    ///
-    /// Propagates the store error, including [`Error::SessionNotFound`].
-    pub async fn export(&self, session: SessionId) -> Result<Conversation> {
-        let state = self.store.load(session).await?;
-        let messages = self.store.history(state.head).await?;
-        let mut metadata = state.metadata;
-        let options = metadata
-            .remove(TURN_OPTIONS_KEY)
-            .and_then(|value| serde_json::from_value(value).ok());
-        Ok(Conversation {
-            schema_version: CONVERSATION_SCHEMA_VERSION,
-            session: state.id,
-            phase: state.phase,
-            turn: state.turn,
-            metadata,
-            options,
-            messages,
-        })
-    }
-
-    /// Commits a [`Conversation`] as a brand-new session under the same id, so
-    /// the next generation reproduces the exact same wire bytes (FR-EXP-2).
-    ///
-    /// The messages are committed verbatim as history (no generation), chained
-    /// onto the new session's head. The store rejects the import when the id
-    /// already exists, so a restore never clobbers a live session. Importing
-    /// under a different id than the source is an explicit cache-invalidating
-    /// fork; the caller decides that by editing [`Conversation::session`]
-    /// first.
-    ///
-    /// Byte-identity to what was previously sent holds when the importing
-    /// engine is configured with the same model, capabilities, tools and
-    /// generation parameters: reconstruction depends only on those plus the
-    /// history, and the history is preserved losslessly.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::SchemaVersion`] for an envelope this build does not
-    /// understand, and propagates the store error, including
-    /// [`Error::StoreConflict`] when the id already exists.
-    pub async fn import(&self, conversation: Conversation) -> Result<Session> {
-        if conversation.schema_version != CONVERSATION_SCHEMA_VERSION {
-            return Err(Error::SchemaVersion {
-                kind: "conversation".to_owned(),
-                found: conversation.schema_version,
-            });
-        }
-
-        let mut parent = None;
-        let mut nodes = Vec::with_capacity(conversation.messages.len());
-        for message in conversation.messages {
-            let node = Node::message(message, parent);
-            parent = Some(node.id);
-            nodes.push(node);
-        }
-
-        let mut metadata = conversation.metadata;
-        if let Some(options) = &conversation.options {
-            if let Ok(value) = serde_json::to_value(options) {
-                metadata.insert(TURN_OPTIONS_KEY.to_owned(), value);
-            }
-        }
-
-        let committed = self
-            .store
-            .commit(Commit {
-                session_id: conversation.session,
-                expected_version: None,
-                nodes,
-                head: parent,
-                phase: conversation.phase,
-                turn: conversation.turn,
-                grants: Vec::new(),
-                metadata: Some(metadata),
-            })
-            .await?;
-        Ok(committed)
-    }
-
     /// Starts a turn with a new user message, using the inherited options.
     #[must_use]
     pub fn send(&self, session: SessionId, message: Message) -> EngineStream {
@@ -629,125 +393,6 @@ impl Engine {
             .into_iter()
             .filter(|spec| selected.contains(&spec.name))
             .collect())
-    }
-
-    /// Grants a pending approval and moves the session back to tool execution.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::ApprovalNotFound`] when no such record exists, or the
-    /// store error from saving the grant and the follow-up commit.
-    pub async fn approve(
-        &self,
-        approval: ApprovalId,
-        scope: GrantScope,
-        actor: impl Into<String>,
-    ) -> Result<ApprovalRecord> {
-        let mut record = self
-            .store
-            .approval(approval)
-            .await?
-            .ok_or(Error::ApprovalNotFound(approval))?;
-        record.grant(scope, actor);
-        self.store.save_approval(record.clone()).await?;
-
-        let session = self.store.load(record.session).await?;
-        let mut grants = session.grants.clone();
-        grants.extend(record.grants.iter().cloned());
-        let commit = Commit {
-            session_id: session.id,
-            expected_version: Some(session.version),
-            nodes: Vec::new(),
-            head: None,
-            phase: Phase::AwaitingTool,
-            turn: session.turn,
-            grants,
-            metadata: None,
-        };
-        self.store.commit(commit).await?;
-        self.observers.emit(&EngineEvent::ApprovalGranted {
-            session: record.session,
-            approval: record.id,
-        });
-        Ok(record)
-    }
-
-    /// Records a denial and audits it.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::ApprovalNotFound`] when no such record exists, or the
-    /// store error from persisting the denial.
-    pub async fn deny(
-        &self,
-        approval: ApprovalId,
-        actor: impl Into<String>,
-        reason: impl Into<String>,
-    ) -> Result<ApprovalRecord> {
-        let mut record = self
-            .store
-            .approval(approval)
-            .await?
-            .ok_or(Error::ApprovalNotFound(approval))?;
-        record.deny(actor, reason);
-        self.store.save_approval(record.clone()).await?;
-        Ok(record)
-    }
-
-    /// Revokes a grant and audits it.
-    ///
-    /// The grant is dropped from the session's standing grants in the same call,
-    /// so a tool-, session- or global-scoped grant stops authorizing calls the
-    /// moment this returns (FR-APPR-3).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::GrantNotFound`] when no record of the session holds that
-    /// grant, and propagates store failures.
-    pub async fn revoke(
-        &self,
-        session: SessionId,
-        grant: GrantId,
-        actor: impl Into<String>,
-    ) -> Result<ApprovalRecord> {
-        let records = self.store.approvals(session).await?;
-        let mut record = records
-            .into_iter()
-            .find(|record| record.grants.iter().any(|held| held.id == grant))
-            .ok_or(Error::GrantNotFound(grant))?;
-        record.revoke(grant, actor);
-        self.store.save_approval(record.clone()).await?;
-
-        let revoked_at = record
-            .grants
-            .iter()
-            .find(|held| held.id == grant)
-            .and_then(|held| held.revoked_at);
-        let current = self.store.load(session).await?;
-        let mut grants = current.grants.clone();
-        for held in &mut grants {
-            if held.id == grant {
-                held.revoked_at = revoked_at;
-            }
-        }
-        self.store
-            .commit(Commit {
-                session_id: session,
-                expected_version: Some(current.version),
-                nodes: Vec::new(),
-                head: None,
-                phase: current.phase,
-                turn: current.turn,
-                grants,
-                metadata: None,
-            })
-            .await?;
-        self.observers.emit(&EngineEvent::ApprovalRevoked {
-            session,
-            approval: record.id,
-            grant,
-        });
-        Ok(record)
     }
 
     async fn commit(&self, commit: Commit, sender: &mpsc::Sender<EngineEvent>) -> Result<Session> {

@@ -116,17 +116,29 @@ impl TurnInterceptor for Steer {
         "steer"
     }
 
-    async fn intercept(&self, _context: &InterceptionContext<'_>) -> Result<Vec<Message>> {
-        Ok(self.take())
+    async fn intercept(&self, _context: &InterceptionContext<'_>) -> Result<Interception> {
+        let messages = self.take();
+        if messages.is_empty() {
+            Ok(Interception::Continue)
+        } else {
+            Ok(Interception::Inject(messages))
+        }
     }
 }
 ```
 
-The engine consults it before every model request of a turn and commits what it
-returns, so the message lands in the history, in the request digest and in
-what the policies read. The consultation point is a safe one: the message
-arrives after the tool results of the previous step, never between a tool call
-and its result.
+The engine consults it before the turn's input, before every model request and
+before the turn ends, and commits what it returns, so the message lands in the
+history, in the request digest and in what the policies read. The consultation
+points are safe ones: the message arrives before the turn's input or after the
+tool results of the previous step, never between a tool call and its result.
+
+Because the turn asks the host before it ends, a message the host was holding
+keeps the turn alive: the steering never waits for the next turn.
+
+The interceptor reads the history the request carries, so it can decide on the
+conversation itself: the call the model asked for, the tool that answered it,
+the instruction the human gave.
 
 A layer is not a substitute. A layer wraps the model call and sees the request
 after it was built, so what it adds is neither durable nor visible to the

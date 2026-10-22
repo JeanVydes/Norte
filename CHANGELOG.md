@@ -11,15 +11,31 @@ entry describes the whole set.
 
 Draft. Not published.
 
+### Fixed
+
+- The digest the engine records described the request as it was reconstructed,
+  but a layer may alter the request before the model sees it, so the audit
+  trail did not match the wire. The engine now digests the request that reached
+  the model, and the `RequestReconstructed` event reports that digest
+  (FR-ENG-4).
+- A turn that started without an input never drained the steering queue: the
+  queue is drained when a turn appends an input, so a message queued while the
+  session rested waited for the next turn that had one. The engine now drains
+  it when the session is idle, which is the only moment the head owes no tool
+  result; a parked session keeps waiting, because the messages must not come
+  between a tool call and its result.
+
 ### Added
 
-- Turn interceptors. A host may register an interceptor the engine consults
-  before every model request of a running turn; the messages it returns are
-  chained onto the session's head and committed by the engine, so they are
-  durable, part of the request digest, visible to the policies and free of a
-  version race. The steering queue cannot do this: it is a session field, so a
-  message written to it while a turn runs cannot be committed without racing
-  that turn (FR-ENG-3, FR-ENG-10).
+- Turn interceptors. A host may register an interceptor the engine consults at
+  the safe points of a running turn: before the turn's input, before every
+  model request, and before the turn ends. The interceptor decides whether the
+  turn goes on, adds messages to the session's history, or stops with a reason;
+  the messages it adds are chained onto the session's head and committed by the
+  engine, so they are durable, part of the request digest, visible to the
+  policies and free of a version race. The steering queue cannot do this: it is
+  a session field, so a message written to it while a turn runs cannot be
+  committed without racing that turn (FR-ENG-3, FR-ENG-10).
 - Reasoning efforts `XHigh` and `Max`, matching the levels OpenAI and Anthropic
   now document. The OpenAI Responses and Chat adapters serialize them as
   `xhigh` and `max`, and the Anthropic adapter sends `output_config.effort`.

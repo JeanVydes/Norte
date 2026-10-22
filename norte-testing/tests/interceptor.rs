@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use norte_core::{
-    CallId, Engine, EngineBuilder, FnExecutor, InterceptionContext, Message, Result, Role, Store,
-    ToolRegistry, TurnInterceptor,
+    CallId, Engine, EngineBuilder, FnExecutor, Interception, InterceptionContext, Message, Result,
+    Role, Store, ToolRegistry, TurnInterceptor,
 };
 use norte_testing::{InMemoryBlobStore, InMemoryStore, ScriptedModel, model};
 use schemars::JsonSchema;
@@ -32,37 +32,64 @@ impl FnExecutor<EchoArgs, EchoResult> for Echo {
     }
 }
 
-/// An interceptor that hands over one message on its second consultation.
+/// An interceptor that speaks once the tools of the turn have answered.
 ///
-/// The engine consults it before every model request of a turn, so the second
-/// consultation is the one that precedes the request the model makes after the
-/// tool ran.
-struct SteerOnSecondCall {
-    calls: Mutex<usize>,
+/// The decision is taken from the conversation, not from a counter: the host
+/// adds its message when the last thing that happened was a tool result, which
+/// is the point where the request is about to be built.
+struct SteerAfterTools {
+    injected: Mutex<bool>,
 }
 
-impl SteerOnSecondCall {
+impl SteerAfterTools {
     fn new() -> Self {
         Self {
-            calls: Mutex::new(0),
+            injected: Mutex::new(false),
         }
     }
 }
 
 #[async_trait::async_trait]
-impl TurnInterceptor for SteerOnSecondCall {
+impl TurnInterceptor for SteerAfterTools {
     fn name(&self) -> &'static str {
-        "steer-on-second-call"
+        "steer-after-tools"
     }
 
-    async fn intercept(&self, _context: &InterceptionContext<'_>) -> Result<Vec<Message>> {
-        let mut calls = self.calls.lock().expect("lock");
-        *calls += 1;
-        if *calls == 2 {
-            Ok(vec![Message::user("steer")])
-        } else {
-            Ok(Vec::new())
+    async fn intercept(&self, context: &InterceptionContext<'_>) -> Result<Interception> {
+        let after_tools = context
+            .messages
+            .last()
+            .is_some_and(|message| message.role == Role::Tool);
+        if !after_tools {
+            return Ok(Interception::Continue);
         }
+        let mut injected = self.injected.lock().expect("lock");
+        if *injected {
+            return Ok(Interception::Continue);
+        }
+        *injected = true;
+        Ok(Interception::Inject(vec![Message::user("steer")]))
+    }
+}
+
+/// An interceptor that reads the conversation and says nothing.
+struct Reading {
+    seen: Arc<Mutex<Vec<String>>>,
+}
+
+#[async_trait::async_trait]
+impl TurnInterceptor for Reading {
+    fn name(&self) -> &'static str {
+        "reading"
+    }
+
+    async fn intercept(&self, context: &InterceptionContext<'_>) -> Result<Interception> {
+        let texts: Vec<String> = context.messages.iter().map(Message::text).collect();
+        self.seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(texts.join("|"));
+        Ok(Interception::Continue)
     }
 }
 
@@ -92,7 +119,7 @@ async fn an_intercepted_message_reaches_the_request_in_flight() {
             .turn_tool_call(call_id, "echo", &serde_json::json!({ "text": "hi" }))
             .turn_text("all done"),
     );
-    let (engine, store) = engine_with(scripted.clone(), Arc::new(SteerOnSecondCall::new()));
+    let (engine, store) = engine_with(scripted.clone(), Arc::new(SteerAfterTools::new()));
 
     let session = engine.create().await.expect("create");
     let outcome = engine
@@ -150,7 +177,7 @@ async fn an_intercepted_message_reaches_the_request_in_flight() {
 #[tokio::test]
 async fn an_interceptor_that_answers_nothing_leaves_the_turn_untouched() {
     let scripted = Arc::new(ScriptedModel::new(model("test/echo")).turn_text("hello"));
-    let (engine, store) = engine_with(scripted.clone(), Arc::new(SteerOnSecondCall::new()));
+    let (engine, store) = engine_with(scripted.clone(), Arc::new(SteerAfterTools::new()));
 
     let session = engine.create().await.expect("create");
     let outcome = engine
@@ -166,43 +193,16 @@ async fn an_interceptor_that_answers_nothing_leaves_the_turn_untouched() {
     assert_eq!(history[1].role, Role::Assistant);
 }
 
-/// An interceptor that reads the conversation before it answers.
-struct Reading {
-    seen: Arc<Mutex<Vec<String>>>,
-}
-
-#[async_trait::async_trait]
-impl TurnInterceptor for Reading {
-    fn name(&self) -> &'static str {
-        "reading"
-    }
-
-    async fn intercept(&self, context: &InterceptionContext<'_>) -> Result<Vec<Message>> {
-        let texts: Vec<String> = context.messages.iter().map(Message::text).collect();
-        self.seen
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(texts.join("|"));
-        Ok(Vec::new())
-    }
-}
-
 #[tokio::test]
 async fn an_interceptor_reads_the_history_the_request_carries() {
     let scripted = Arc::new(ScriptedModel::new(model("test/echo")).turn_text("hello"));
-    let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let mut tools = ToolRegistry::new();
-    tools.register_declarator(&Echo).expect("register echo");
-    let engine = EngineBuilder::new()
-        .store(Arc::new(InMemoryStore::new()))
-        .blobs(Arc::new(InMemoryBlobStore::new()))
-        .model(scripted.clone())
-        .tools(tools)
-        .interceptors(vec![Arc::new(Reading {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let (engine, _store) = engine_with(
+        scripted.clone(),
+        Arc::new(Reading {
             seen: Arc::clone(&seen),
-        })])
-        .build()
-        .expect("build engine");
+        }),
+    );
 
     let session = engine.create().await.expect("create");
     engine
@@ -215,10 +215,81 @@ async fn an_interceptor_reads_the_history_the_request_carries() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
-    assert_eq!(reads.len(), 1, "the interceptor was consulted once");
+    assert!(!reads.is_empty(), "the interceptor was consulted");
     assert_eq!(
-        reads[0], "ping",
-        "it saw the conversation the request carries, before the answer"
+        reads[0], "",
+        "the first consultation comes before the input joins the session"
+    );
+    assert_eq!(
+        reads[1], "ping",
+        "and the request carries the conversation the interceptor saw"
+    );
+}
+
+/// An interceptor that speaks when the turn is about to end.
+struct SteerAtTheEnd {
+    injected: Mutex<bool>,
+}
+
+impl SteerAtTheEnd {
+    fn new() -> Self {
+        Self {
+            injected: Mutex::new(false),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl TurnInterceptor for SteerAtTheEnd {
+    fn name(&self) -> &'static str {
+        "steer-at-the-end"
+    }
+
+    async fn intercept(&self, context: &InterceptionContext<'_>) -> Result<Interception> {
+        let ending = context
+            .messages
+            .last()
+            .is_some_and(|message| message.role == Role::Assistant);
+        if !ending {
+            return Ok(Interception::Continue);
+        }
+        let mut injected = self.injected.lock().expect("lock");
+        if *injected {
+            return Ok(Interception::Continue);
+        }
+        *injected = true;
+        Ok(Interception::Inject(vec![Message::user("one more thing")]))
+    }
+}
+
+#[tokio::test]
+async fn a_message_the_host_holds_keeps_the_turn_alive() {
+    let scripted = Arc::new(
+        ScriptedModel::new(model("test/echo"))
+            .turn_text("first answer")
+            .turn_text("second answer"),
+    );
+    let (engine, _store) = engine_with(scripted.clone(), Arc::new(SteerAtTheEnd::new()));
+
+    let session = engine.create().await.expect("create");
+    engine
+        .send(session.id, Message::user("go"))
+        .finish()
+        .await
+        .expect("turn");
+
+    let requests = scripted.requests();
+    assert_eq!(requests.len(), 2, "the turn asked again");
+    let users: Vec<String> = requests[1]
+        .messages
+        .iter()
+        .filter(|message| message.role == Role::User)
+        .map(Message::text)
+        .collect();
+    assert_eq!(
+        users,
+        ["go", "one more thing"],
+        "the message the host held reached the request that followed"
     );
 }
 

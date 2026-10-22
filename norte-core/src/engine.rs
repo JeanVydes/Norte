@@ -28,7 +28,7 @@ use crate::event::{EngineEvent, EventSink, StreamDelta};
 use crate::id::{
     ApprovalId, CallId, Digest, GenerationId, GrantId, ModelRef, NodeId, SessionId, ToolName,
 };
-use crate::interceptor::{InterceptionContext, InterceptorSet, TurnInterceptor};
+use crate::interceptor::{Interception, InterceptionContext, InterceptorSet, TurnInterceptor};
 use crate::layer::{Continuation, LayerContext, LayerStack};
 use crate::media_adapter::MediaAdapter;
 use crate::model::{
@@ -791,6 +791,20 @@ impl Engine {
         let effective =
             options.over(&session_turn_options(&session).over(&self.default_turn_options()));
         if let Some(message) = input {
+            // The host may add messages before the input, so they come first.
+            // A parked session still owes a tool result, and the messages must
+            // not come between the call and it.
+            if session.phase == Phase::Idle {
+                let history = self.store.history(session.head).await?;
+                let consultation = self.consult(&session, &sender, Some(&history)).await?;
+                session = consultation.session;
+                if consultation.stop.is_some() {
+                    return Ok(TurnOutcome {
+                        session,
+                        message: None,
+                    });
+                }
+            }
             session = self.append_turn(&session, message, &sender).await?;
         } else if !session.queue.is_empty() && session.phase == Phase::Idle {
             // A turn that starts without an input still drains the steering
@@ -814,17 +828,21 @@ impl Engine {
 
             // A turn ends at the first assistant message that is not waiting on
             // tools; a parked session carries on as soon as the host has nothing
-            // left to decide.
+            // left to decide. The host gets the last word: a message it was
+            // holding keeps the turn alive.
             let head_message = match session.head {
                 Some(head) => Some(self.store.node(head).await?.message),
                 None => None,
             };
             if let Some(message) = &head_message {
                 if message.role == Role::Assistant && !self.continues_turn(&session).await? {
-                    return Ok(TurnOutcome {
-                        session,
-                        message: last.or_else(|| Some(message.clone())),
-                    });
+                    let Some(outcome) = self
+                        .end_of_turn(&mut session, &sender, last.clone(), message)
+                        .await?
+                    else {
+                        continue;
+                    };
+                    return Ok(outcome);
                 }
             }
 
@@ -949,6 +967,29 @@ impl Engine {
         Ok(())
     }
 
+    /// Handles the end of a turn: the host gets the last word.
+    ///
+    /// A message the host was holding keeps the turn alive, so the turn ends
+    /// only when the host has nothing left to say.
+    async fn end_of_turn(
+        &self,
+        session: &mut Session,
+        sender: &mpsc::Sender<EngineEvent>,
+        last: Option<Message>,
+        head_message: &Message,
+    ) -> Result<Option<TurnOutcome>> {
+        let history = self.store.history(session.head).await?;
+        let consultation = self.consult(session, sender, Some(&history)).await?;
+        *session = consultation.session;
+        if consultation.added {
+            return Ok(None);
+        }
+        Ok(Some(TurnOutcome {
+            session: session.clone(),
+            message: last.or_else(|| Some(head_message.clone())),
+        }))
+    }
+
     /// Prepares the next request.
     ///
     /// The host may add messages to the session first. An interceptor reads
@@ -965,7 +1006,11 @@ impl Engine {
         } else {
             Some(self.store.history(before).await?)
         };
-        let session = self.intercept(session, sender, history.as_deref()).await?;
+        let consultation = self.consult(session, sender, history.as_deref()).await?;
+        let session = consultation.session;
+        if consultation.stop.is_some() {
+            return Ok(None);
+        }
         let Some(head) = session.head else {
             return Ok(None);
         };
@@ -976,21 +1021,21 @@ impl Engine {
         Ok(Some((session, head, history)))
     }
 
-    /// Asks the host interceptors for messages to append before the next
-    /// request, and commits them when there are any.
+    /// Asks the host interceptors what the turn does next, and applies the
+    /// messages they add.
     ///
     /// The engine is the only writer while a turn runs, so the commit carries
     /// the version the turn already holds: an interceptor never races the
     /// turn, and what it adds lands in the graph, in the request digest and in
     /// the history the policies read.
-    async fn intercept(
+    async fn consult(
         &self,
         session: &Session,
         sender: &mpsc::Sender<EngineEvent>,
         history: Option<&[Message]>,
-    ) -> Result<Session> {
+    ) -> Result<Consultation> {
         if self.interceptors.is_empty() {
-            return Ok(session.clone());
+            return Ok(Consultation::unchanged(session.clone()));
         }
         let sink = ChannelSink {
             sender: sender.clone(),
@@ -1004,11 +1049,20 @@ impl Engine {
             events: &sink,
         };
         let mut messages = Vec::new();
+        let mut stop = None;
         for interceptor in self.interceptors.interceptors() {
-            messages.extend(interceptor.intercept(&context).await?);
+            match interceptor.intercept(&context).await? {
+                Interception::Continue => {}
+                Interception::Inject(added) => messages.extend(added),
+                Interception::Stop { reason } => stop = Some(reason),
+            }
         }
         if messages.is_empty() {
-            return Ok(session.clone());
+            return Ok(Consultation {
+                session: session.clone(),
+                added: false,
+                stop,
+            });
         }
         let count = messages.len();
         let mut parent = session.head;
@@ -1042,7 +1096,11 @@ impl Engine {
             },
         )
         .await;
-        Ok(committed)
+        Ok(Consultation {
+            session: committed,
+            added: true,
+            stop,
+        })
     }
 
     /// Chains the steering queue onto the head without a new input.
@@ -2119,6 +2177,27 @@ impl EventSink for ChannelSink {
     fn emit(&self, event: EngineEvent) {
         if self.sender.try_send(event).is_err() {
             tracing::debug!("layer event dropped: engine channel full or closed");
+        }
+    }
+}
+
+/// What the host decided, and what the engine did about it.
+struct Consultation {
+    /// The session after the messages the host added.
+    session: Session,
+    /// Whether messages joined the session.
+    added: bool,
+    /// Whether the host asked for the turn to end.
+    stop: Option<String>,
+}
+
+impl Consultation {
+    /// A consultation that changed nothing.
+    fn unchanged(session: Session) -> Self {
+        Self {
+            session,
+            added: false,
+            stop: None,
         }
     }
 }

@@ -78,7 +78,7 @@ pub use id::{
     ApprovalId, BlobId, CallId, Digest, GenerationId, GrantId, ModelId, ModelRef, NodeId,
     ProviderId, SessionId, ToolName, WireFamily,
 };
-pub use interceptor::{InterceptionContext, InterceptorSet, TurnInterceptor};
+pub use interceptor::{Interception, InterceptionContext, InterceptorSet, TurnInterceptor};
 pub use layer::{
     Continuation, Layer, LayerContext, LayerStack, ModelContinuation, ShortCircuitReason,
     synthetic_stream,

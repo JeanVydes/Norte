@@ -8,6 +8,22 @@ use crate::error::Result;
 use crate::event::EventSink;
 use crate::id::{NodeId, SessionId};
 
+/// What an interceptor decided about the turn.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Interception {
+    /// The turn goes on as it would.
+    #[default]
+    Continue,
+    /// These messages join the session before the next request.
+    Inject(Vec<Message>),
+    /// The turn ends here.
+    Stop {
+        /// Why the turn ends. The host reports it under its own namespace.
+        reason: String,
+    },
+}
+
 /// What an interceptor may rely on while a turn runs.
 pub struct InterceptionContext<'a> {
     /// The session the turn belongs to.
@@ -44,17 +60,17 @@ pub trait TurnInterceptor: Send + Sync {
     /// The interceptor's name, as it appears in the session metadata.
     fn name(&self) -> &str;
 
-    /// Returns the messages to append before the next request.
+    /// Decides what the turn does next.
     ///
-    /// An empty answer changes nothing. The engine appends the messages in
-    /// order, on top of the current head, and commits them as part of the
-    /// turn.
+    /// The engine consults the interceptor before the turn's input and before
+    /// every model request, so a message the interceptor returns reaches the
+    /// request that is about to be built.
     ///
     /// # Errors
     ///
     /// Returns an error when the host cannot decide. The turn then fails with
     /// it and the session stays resumable.
-    async fn intercept(&self, context: &InterceptionContext<'_>) -> Result<Vec<Message>>;
+    async fn intercept(&self, context: &InterceptionContext<'_>) -> Result<Interception>;
 }
 
 /// The interceptors an engine consults, in registration order.

@@ -26,6 +26,7 @@ is the host-side idempotency pattern for a tool with an external effect.
 | --- | --- |
 | `direct_model` | The `Model` port without the engine: one request, every event |
 | `direct_turn` | The turn loop without the engine: accumulate the stream, keep the transcript |
+| `direct_tools` | Running the model's tool calls without the engine: registry, results, loop |
 | `events` | Reading a turn's event stream |
 | `streaming` | Streaming live vs collecting with `finish()` |
 | `approval` | Human approval: park the turn, decide, resume |

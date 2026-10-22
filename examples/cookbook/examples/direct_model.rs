@@ -8,7 +8,7 @@
 //!
 //! That is the seam a host sits on when it wants its own loop. See
 //! `direct_turn` for the next step: the same stream, accumulated into a message
-//! and carried across turns.
+//! and carried across turns; `direct_tools` adds the calls the model asks for.
 //!
 //! ```sh
 //! OPENROUTER_API_KEY=sk-or-... \

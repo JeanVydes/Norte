@@ -8,9 +8,10 @@
 //!
 //! Tools are the other half of the loop: fill `request.tools`, and when the
 //! answer carries a `Part::ToolCall`, append one `Message::tool(results)` and
-//! ask again. What the engine adds around that step is policies, approvals and
-//! the registry; what it adds around the loop is persistence, reconstruction
-//! (continuity replay and cache boundaries) and resuming a parked turn.
+//! ask again. `direct_tools` does exactly that; what the engine adds around it
+//! is policies, approvals and the registry, and around the loop it adds
+//! persistence, reconstruction (continuity replay and cache boundaries) and
+//! resuming a parked turn.
 //!
 //! ```sh
 //! OPENROUTER_API_KEY=sk-or-... \

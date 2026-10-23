@@ -78,7 +78,8 @@ impl CacheClass {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct Usage {
-    /// Prompt tokens, cache reads included on OpenAI-compatible wires.
+    /// Prompt tokens. The cache counters below are part of this count, so a
+    /// cache share never exceeds the prompt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_tokens: Option<u64>,
     /// Tokens the model produced.

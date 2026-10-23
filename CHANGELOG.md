@@ -13,6 +13,10 @@ Draft. Not published.
 
 ### Fixed
 
+- Anthropic's `input_tokens` now includes the tokens served from and written
+  to the prompt cache, as the other wires already did. A cache share cannot
+  exceed 100%, and the prompt total the engine records matches what the
+  provider billed.
 - A provider that puts its retry delay in the error body instead of a
   `Retry-After` header is now honored. Gemini's `google.rpc.RetryInfo` detail
   sets `retry_after`, so a host waits for the quota window to reopen instead of

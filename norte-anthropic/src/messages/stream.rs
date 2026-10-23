@@ -396,13 +396,21 @@ fn extension_source(citation: &Value) -> CitationSource {
 
 /// Reads the vendor's usage object into the neutral counters, and keeps
 /// everything the neutral vocabulary does not model in [`Usage::vendor`].
+///
+/// Anthropic reports `input_tokens` without the tokens served from or written
+/// to the prompt cache; the neutral `input_tokens` is the whole prompt, as on
+/// the other wires, so the two cache counters are folded into it.
 fn usage_of(usage: &Value) -> Usage {
     let mut vendor = VendorUsage::new(usage);
     let mut mapped = Usage::default();
-    mapped.input_tokens = vendor.take(&["input_tokens"]);
+    let input = vendor.take(&["input_tokens"]);
+    let cache_read = vendor.take(&["cache_read_input_tokens"]);
+    let cache_write = vendor.take(&["cache_creation_input_tokens"]);
+    mapped.input_tokens =
+        input.map(|input| input + cache_read.unwrap_or(0) + cache_write.unwrap_or(0));
     mapped.output_tokens = vendor.take(&["output_tokens"]);
-    mapped.cache_read_tokens = vendor.take(&["cache_read_input_tokens"]);
-    mapped.cache_write_tokens = vendor.take(&["cache_creation_input_tokens"]);
+    mapped.cache_read_tokens = cache_read;
+    mapped.cache_write_tokens = cache_write;
     mapped.vendor = vendor.remainder();
     mapped
 }
@@ -541,7 +549,7 @@ mod tests {
                 output = usage.output_tokens.or(output);
             }
         }
-        assert_eq!(input, Some(10));
+        assert_eq!(input, Some(14));
         assert_eq!(cache_read, Some(4));
         assert_eq!(output, Some(2));
         assert_eq!(
@@ -584,7 +592,7 @@ mod tests {
                 _ => None,
             })
             .expect("usage");
-        assert_eq!(usage.input_tokens, Some(10));
+        assert_eq!(usage.input_tokens, Some(14));
         assert_eq!(usage.cache_read_tokens, Some(4));
         assert_eq!(
             events.last(),
@@ -607,7 +615,8 @@ mod tests {
                 _ => None,
             })
             .expect("usage");
-        assert_eq!(reported.input_tokens, Some(10));
+        assert_eq!(reported.input_tokens, Some(15));
+        // The whole prompt: 10 uncached + 4 read + 1 written.
         assert_eq!(reported.output_tokens, Some(2));
         assert_eq!(reported.cache_read_tokens, Some(4));
         assert_eq!(reported.cache_write_tokens, Some(1));

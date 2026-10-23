@@ -17,7 +17,7 @@ println!(
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `input_tokens` | `Option<u64>` | Prompt tokens, cache reads included on `OpenAI`-compatible wires. |
+| `input_tokens` | `Option<u64>` | Prompt tokens; the cache read and write counters are included in this count. |
 | `output_tokens` | `Option<u64>` | Tokens the model produced. |
 | `reasoning_tokens` | `Option<u64>` | Reasoning tokens, where the provider separates them. |
 | `cache_read_tokens` | `Option<u64>` | Tokens served from the provider's cache. |
@@ -66,9 +66,9 @@ Two things follow:
 - **Log `RequestReconstructed`.** It fires once per model request, including
   every round of a tool loop. A turn's outcome shows only the last answer, while
   every iteration committed and billed a message of its own.
-- **Cache reads are inside `input`** on `OpenAI`-compatible wires, so a "hit
-  rate" is `cache_read / input`, and what it was worth is already in the
-  provider's number. Print it beside the bill; never derive a bill from it.
+- **Cache reads are inside `input` on every wire**, so a "hit rate" is
+  `cache_read / input`, and what it was worth is already in the provider's
+  number. Print it beside the bill; never derive a bill from it.
 
 ## Reading usage out of a stream
 

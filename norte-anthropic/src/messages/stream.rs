@@ -419,7 +419,7 @@ fn usage_of(usage: &Value) -> Usage {
 fn finish_reason(reason: &str) -> FinishReason {
     match reason {
         "end_turn" | "stop_sequence" => FinishReason::Stop,
-        "max_tokens" => FinishReason::Length,
+        "max_tokens" | "model_context_window_exceeded" => FinishReason::Length,
         "tool_use" => FinishReason::ToolCalls,
         "refusal" => FinishReason::Refusal,
         other => FinishReason::Other(other.to_owned()),
@@ -443,7 +443,18 @@ fn provider_result_tool(kind: &str) -> &str {
 fn stream_error(value: &Value) -> Error {
     let error = value.get("error").unwrap_or(value);
     let message = opt_str(error, "message").unwrap_or("anthropic stream error");
-    let mut provider = ProviderError::new(ProviderErrorKind::Other, message.to_owned());
+    let kind = match opt_str(error, "type") {
+        Some("overloaded_error") => ProviderErrorKind::ModelOverloaded,
+        Some("api_error") => ProviderErrorKind::ServerError,
+        Some("rate_limit_error") => ProviderErrorKind::RateLimited,
+        Some("authentication_error") => ProviderErrorKind::Authentication,
+        Some("permission_error") => ProviderErrorKind::Permission,
+        Some("not_found_error") => ProviderErrorKind::NotFound,
+        Some("request_too_large" | "invalid_request_error") => ProviderErrorKind::InvalidRequest,
+        Some("content_filter") => ProviderErrorKind::ContentFilter,
+        _ => ProviderErrorKind::Other,
+    };
+    let mut provider = ProviderError::new(kind, message.to_owned());
     if let Some(code) = opt_str(error, "type") {
         provider = provider.with_code(code.to_owned());
     }
@@ -850,13 +861,25 @@ mod tests {
 
     #[tokio::test]
     async fn failures_surface_as_provider_errors() {
-        let mut stream = map(
-            stream_of(&[
-                r#"{"type":"error","error":{"type":"overloaded_error","message":"busy"}}"#,
-            ]),
-            continuity(),
+        for (kind, expected) in [
+            ("overloaded_error", ProviderErrorKind::ModelOverloaded),
+            ("api_error", ProviderErrorKind::ServerError),
+            ("rate_limit_error", ProviderErrorKind::RateLimited),
+            ("invalid_request_error", ProviderErrorKind::InvalidRequest),
+        ] {
+            let payload =
+                format!(r#"{{"type":"error","error":{{"type":"{kind}","message":"busy"}}}}"#);
+            let mut stream = map(stream_of(&[payload.as_str()]), continuity());
+            let error = stream.next().await.expect("some").expect_err("error");
+            assert_eq!(error.provider_kind(), Some(expected), "{kind}");
+        }
+    }
+
+    #[test]
+    fn a_context_window_stop_is_truncation() {
+        assert_eq!(
+            finish_reason("model_context_window_exceeded"),
+            FinishReason::Length
         );
-        let error = stream.next().await.expect("some").expect_err("error");
-        assert_eq!(error.provider_kind(), Some(ProviderErrorKind::Other));
     }
 }

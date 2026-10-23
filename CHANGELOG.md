@@ -13,6 +13,11 @@ Draft. Not published.
 
 ### Fixed
 
+- Anthropic stream errors now keep their kind. An `overloaded_error` or
+  `api_error` arriving as an event is transient like the same HTTP status, so
+  the retry loop handles it; a `model_context_window_exceeded` stop is reported
+  as truncation instead of a normal finish. The old decoder called every
+  in-stream failure `other`, so a mid-stream overload was not retried.
 - Anthropic thinking now follows the model generation. Claude 4.6 and later
   turn an effort request into `thinking: {type: adaptive}` plus
   `output_config.effort`, while Claude 4.5 keeps the manual

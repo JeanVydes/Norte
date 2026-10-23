@@ -329,6 +329,158 @@ fn media_part(media: &MediaPart) -> Result<Value> {
     }
 }
 
+/// Rewrites a JSON Schema document into the subset Gemini's `Schema` accepts.
+///
+/// Gemini validates `functionDeclarations[].parameters` against its own proto:
+/// `type` is one string rather than a list, unions use `anyOf` and not `oneOf`,
+/// a constant is an `enum` of one, `examples` is singular, and keywords such as
+/// `$schema`, `$defs`, `$ref` or `additionalProperties` do not exist. Schemars
+/// emits the full JSON Schema vocabulary, so every schema crosses this function
+/// before it reaches the wire; a keyword the API does not know is dropped
+/// instead of failing the whole request.
+fn gemini_schema(value: &Value) -> Value {
+    let Some(object) = value.as_object() else {
+        return value.clone();
+    };
+    let mut out = serde_json::Map::new();
+
+    let (type_name, nullable) = gemini_type(object);
+    if let Some(name) = type_name {
+        out.insert("type".to_owned(), Value::String(name));
+    }
+    if nullable {
+        out.insert("nullable".to_owned(), Value::Bool(true));
+    }
+
+    if let Some((key, value)) = gemini_union(object) {
+        out.insert(key.to_owned(), value);
+    }
+
+    for key in [
+        "title",
+        "description",
+        "format",
+        "pattern",
+        "minimum",
+        "maximum",
+        "minItems",
+        "maxItems",
+        "minLength",
+        "maxLength",
+        "minProperties",
+        "maxProperties",
+        "propertyOrdering",
+    ] {
+        if let Some(value) = object.get(key) {
+            out.insert(key.to_owned(), value.clone());
+        }
+    }
+
+    // `default: null` says nothing the nullable flag does not already say, and
+    // the API's `example` is singular while JSON Schema's is plural.
+    if let Some(default) = object.get("default").filter(|value| !value.is_null()) {
+        out.insert("default".to_owned(), default.clone());
+    }
+    if let Some(example) = object.get("example").or_else(|| {
+        object
+            .get("examples")
+            .and_then(Value::as_array)
+            .and_then(|examples| examples.first())
+    }) {
+        out.insert("example".to_owned(), example.clone());
+    }
+
+    match object.get("items") {
+        Some(Value::Array(items)) => {
+            if let Some(first) = items.first() {
+                out.insert("items".to_owned(), gemini_schema(first));
+            }
+        }
+        Some(items) if items.is_object() => {
+            out.insert("items".to_owned(), gemini_schema(items));
+        }
+        _ => {}
+    }
+    if let Some(properties) = object.get("properties").and_then(Value::as_object) {
+        let properties = properties
+            .iter()
+            .map(|(name, schema)| (name.clone(), gemini_schema(schema)))
+            .collect();
+        out.insert("properties".to_owned(), Value::Object(properties));
+    }
+    if let Some(required) = object.get("required").and_then(Value::as_array) {
+        let required: Vec<Value> = required
+            .iter()
+            .filter(|name| name.is_string())
+            .cloned()
+            .collect();
+        if !required.is_empty() {
+            out.insert("required".to_owned(), Value::Array(required));
+        }
+    }
+
+    Value::Object(out)
+}
+
+/// The single type Gemini accepts, and whether the value may be null.
+///
+/// JSON Schema models an optional value as `type: [T, "null"]`; Gemini spells
+/// it `type: T` plus `nullable: true`. A union of several non-null types has no
+/// Gemini form, so the first one is kept: the tool validates the arguments
+/// anyway.
+fn gemini_type(object: &serde_json::Map<String, Value>) -> (Option<String>, bool) {
+    let mut nullable = object
+        .get("nullable")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let type_name = match object.get("type") {
+        Some(Value::String(name)) => Some(name.clone()),
+        Some(Value::Array(names)) => {
+            let mut names: Vec<&str> = names.iter().filter_map(Value::as_str).collect();
+            if names.contains(&"null") {
+                nullable = true;
+                names.retain(|name| *name != "null");
+            }
+            names.first().map(|name| (*name).to_owned())
+        }
+        _ => None,
+    };
+    (type_name, nullable)
+}
+
+/// The `enum` or `anyOf` a constant or union becomes on Gemini's schema.
+///
+/// A string `const` becomes a one-value enum; Gemini's `enum` holds strings.
+/// `oneOf` is not in the proto, but its sibling `anyOf` is.
+fn gemini_union(object: &serde_json::Map<String, Value>) -> Option<(&'static str, Value)> {
+    if let Some(value) = object.get("const") {
+        return value.as_str().map(|value| ("enum", json!([value])));
+    }
+    if let Some(values) = object.get("enum").and_then(Value::as_array) {
+        let values: Vec<Value> = values
+            .iter()
+            .filter(|value| value.is_string())
+            .cloned()
+            .collect();
+        if !values.is_empty() {
+            return Some(("enum", Value::Array(values)));
+        }
+    }
+    let variants = object
+        .get("oneOf")
+        .or_else(|| object.get("anyOf"))
+        .and_then(Value::as_array)?;
+    let variants: Vec<Value> = variants
+        .iter()
+        .filter(|variant| variant.is_object())
+        .map(gemini_schema)
+        .collect();
+    if variants.is_empty() {
+        return None;
+    }
+    Some(("anyOf", Value::Array(variants)))
+}
+
 /// Builds the `tools` array entries: one `functionDeclarations` entry for the
 /// host-executed functions plus one entry per provider tool.
 ///
@@ -345,7 +497,7 @@ fn build_tools(model: &ModelRef, tools: &[ToolSpec]) -> Result<Vec<Value>> {
             declarations.push(json!({
                 "name": tool.name.as_str(),
                 "description": tool.description,
-                "parameters": tool.parameters,
+                "parameters": gemini_schema(&tool.parameters),
             }));
         } else {
             provider.push(tool.provider_declaration(model, "generateContent")?.clone());
@@ -394,7 +546,7 @@ fn generation_config(request: &ModelRequest) -> serde_json::Map<String, Value> {
             "responseMimeType".to_owned(),
             Value::String("application/json".to_owned()),
         );
-        config.insert("responseSchema".to_owned(), schema.clone());
+        config.insert("responseSchema".to_owned(), gemini_schema(schema));
     }
     if let Some(thinking) = thinking_config(request.reasoning) {
         config.insert("thinkingConfig".to_owned(), thinking);
@@ -766,6 +918,80 @@ mod tests {
         assert_eq!(
             body["tools"][0]["functionDeclarations"][0]["name"],
             "lookup"
+        );
+    }
+
+    #[test]
+    fn tool_schemas_are_rewritten_for_the_api() {
+        let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
+        request.tools = vec![ToolSpec {
+            name: ToolName::new("lookup").expect("tool"),
+            description: "Look up a value".to_owned(),
+            kind: ToolKind::Function,
+            parameters: json!({
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "title": "LookupArgs",
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "when": { "type": ["string", "null"], "examples": ["now"] },
+                    "mode": {
+                        "oneOf": [
+                            { "type": "string", "const": "fast" },
+                            { "type": "string", "const": "slow" }
+                        ]
+                    },
+                    "env": {
+                        "type": "object",
+                        "additionalProperties": { "type": "string" }
+                    }
+                },
+                "required": ["when"]
+            }),
+            declaration: None,
+            approval: None,
+        }];
+        let body = build(&model(), &continuity(), &request).expect("build");
+        assert_eq!(
+            body["tools"][0]["functionDeclarations"][0]["parameters"],
+            json!({
+                "title": "LookupArgs",
+                "type": "object",
+                "properties": {
+                    "when": { "type": "string", "nullable": true, "example": "now" },
+                    "mode": {
+                        "anyOf": [
+                            { "type": "string", "enum": ["fast"] },
+                            { "type": "string", "enum": ["slow"] }
+                        ]
+                    },
+                    "env": { "type": "object" }
+                },
+                "required": ["when"]
+            })
+        );
+    }
+
+    #[test]
+    fn structured_output_schemas_are_rewritten_for_the_api() {
+        let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
+        request.params.output_schema = Some(json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "count": { "type": ["integer", "null"], "format": "uint64" }
+            }
+        }));
+        let body = build(&model(), &continuity(), &request).expect("build");
+        assert_eq!(
+            body["generationConfig"]["responseSchema"],
+            json!({
+                "type": "object",
+                "properties": {
+                    "count": { "type": "integer", "format": "uint64", "nullable": true }
+                }
+            })
         );
     }
 

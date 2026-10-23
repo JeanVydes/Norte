@@ -13,6 +13,12 @@ Draft. Not published.
 
 ### Fixed
 
+- Tool calls on Gemini no longer fail with `Invalid JSON payload`: the adapter
+  rewrites every schema into the OpenAPI subset the API accepts. It turns
+  `type: [T, "null"]` into `nullable`, `oneOf` into `anyOf`, `const` into an
+  `enum`, `examples` into `example`, and drops `$schema`,
+  `additionalProperties` and the other JSON Schema keywords Gemini does not
+  know. Structured output's `responseSchema` goes through the same rewrite.
 - The digest the engine records described the request as it was reconstructed,
   but a layer may alter the request before the model sees it, so the audit
   trail did not match the wire. The engine now digests the request that reached

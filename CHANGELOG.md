@@ -16,6 +16,10 @@ Draft. Not published.
 - A shell `command` no longer has to name its interpreter, and a `write` no
   longer has to send `overwrite`: they default to `sh` and `false`. Both were
   required only by the schema, so the natural call failed and models guessed.
+- An Anthropic request that asks for a reasoning token budget now sends
+  `thinking: {type: enabled, budget_tokens}`. The adapter only sent the
+  current `output_config.effort` levels, so a model that advertises a budget
+  (Claude Haiku 4.5) ran without the requested thinking.
 - Anthropic's `input_tokens` now includes the tokens served from and written
   to the prompt cache, as the other wires already did. A cache share cannot
   exceed 100%, and the prompt total the engine records matches what the

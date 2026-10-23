@@ -119,6 +119,12 @@ fn build_body(
                 ),
             );
         }
+        if let ReasoningRequest::Budget(tokens) = request.reasoning {
+            body.insert(
+                "thinking".to_owned(),
+                json!({ "type": "enabled", "budget_tokens": tokens }),
+            );
+        }
         if let Some(effort) = effort_name(request.reasoning) {
             body.insert("output_config".to_owned(), json!({ "effort": effort }));
         }
@@ -492,11 +498,30 @@ mod tests {
     }
 
     #[test]
-    fn a_count_request_omits_the_effort() {
+    fn a_reasoning_budget_enables_thinking() {
         let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
-        request.reasoning = ReasoningRequest::Effort(ReasoningEffort::Max);
-        let body = build_count(&model(), &continuity(), &request).expect("build");
-        assert!(body.get("output_config").is_none());
+        request.reasoning = ReasoningRequest::Budget(4096);
+        let body = build(&model(), &continuity(), &request).expect("build");
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["thinking"]["budget_tokens"], 4096);
+        assert!(
+            body.get("output_config").is_none(),
+            "the legacy budget and the current effort are different knobs"
+        );
+    }
+
+    #[test]
+    fn a_count_request_omits_the_reasoning_controls() {
+        for reasoning in [
+            ReasoningRequest::Effort(ReasoningEffort::Max),
+            ReasoningRequest::Budget(4096),
+        ] {
+            let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
+            request.reasoning = reasoning;
+            let body = build_count(&model(), &continuity(), &request).expect("build");
+            assert!(body.get("output_config").is_none());
+            assert!(body.get("thinking").is_none());
+        }
     }
 
     #[test]

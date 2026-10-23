@@ -114,9 +114,9 @@ of them — a test in this repository fails if one reaches the wire.
 | Tool | Arguments | Notes |
 | --- | --- | --- |
 | `read` | `path`, plus `lines`, `tail`, `pattern`, `context`, `invert`, `ignore_case`, `count_only`, `max_matches` | Reads files or searches them. |
-| `write` | `path`, `content`, `overwrite` | Creates or replaces a whole file. |
+| `write` | `path`, `content`, optional `overwrite` (default `false`) | Creates or replaces a whole file. |
 | `edit` | `path`, `edits: [{search, replace}, ..]` | Exact-match, atomic, with a failure report that says what did not match. |
-| `command` | `command: {kind: "program"|"shell", ..}`, plus `cwd`, `env`, `timeout_ms`, `max_output_bytes`, `stdin`, .. | Runs a program or a shell script. |
+| `command` | `command: {kind: "program", program, args} or {kind: "shell", script, shell?}`, plus `cwd`, `env`, `timeout_ms`, `max_output_bytes`, `stdin`, .. | Runs a program or a shell script; `shell` defaults to `sh`. |
 
 `CommandTool` has two builder methods worth knowing:
 

@@ -40,6 +40,11 @@ use tokio::time::timeout as with_timeout;
 /// The shell [`CommandRequest::shell`] runs with unless it names another one.
 pub const DEFAULT_SHELL: &str = "sh";
 
+/// The shell a [`CommandLine::Shell`] gets when the request omits one.
+fn default_shell() -> String {
+    DEFAULT_SHELL.to_owned()
+}
+
 /// What a redacted secret becomes in output, progress and the audit record.
 const REDACTED: &[u8] = b"[redacted]";
 
@@ -68,11 +73,16 @@ pub enum CommandLine {
     /// Run a script through `shell -c`.
     #[schemars(
         description = "Run a script with the shell's -c flag.",
-        example = serde_json::json!({"kind": "shell", "shell": "sh", "script": "echo $HOME"})
+        example = serde_json::json!({"kind": "shell", "script": "echo $HOME"})
     )]
     Shell {
         /// The interpreter; [`CommandRequest::shell`] fills in [`DEFAULT_SHELL`].
-        #[schemars(description = "The shell to run the script with.", example = &"sh")]
+        #[serde(default = "default_shell")]
+        #[schemars(
+            default = "default_shell",
+            description = "The shell to run the script with; defaults to sh.",
+            example = &"sh"
+        )]
         shell: String,
         /// The script passed to the shell.
         #[schemars(description = "The script to run.")]
@@ -2413,5 +2423,39 @@ mod tests {
         async fn contains(&self, id: BlobId) -> Result<bool> {
             Ok(self.0.lock().expect("lock").contains_key(&id))
         }
+    }
+
+    #[test]
+    fn a_shell_command_defaults_its_interpreter() {
+        let request: CommandRequest = serde_json::from_value(serde_json::json!({
+            "command": {"kind": "shell", "script": "echo hi"}
+        }))
+        .expect("shell command");
+        assert_eq!(
+            request.command,
+            CommandLine::Shell {
+                shell: DEFAULT_SHELL.to_owned(),
+                script: "echo hi".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn the_command_schema_leaves_the_shell_optional() {
+        let declaration = CommandTool::new().into_declaration();
+        let schema = serde_json::to_value(&declaration.parameters).expect("schema");
+        let shell = schema["$defs"]["CommandLine"]["oneOf"]
+            .as_array()
+            .expect("command variants")
+            .iter()
+            .find(|variant| variant["properties"]["kind"]["const"] == "shell")
+            .expect("shell variant");
+        assert!(
+            !shell["required"]
+                .as_array()
+                .is_some_and(|required| required.iter().any(|field| field == "shell")),
+            "shell must stay optional: {shell}"
+        );
+        assert_eq!(shell["properties"]["shell"]["default"], "sh");
     }
 }

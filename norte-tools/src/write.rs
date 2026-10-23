@@ -22,9 +22,11 @@ pub struct WriteRequest {
     /// The complete contents of the file, verbatim.
     pub content: String,
     /// `true` replaces a file that already exists. `false` makes an existing
-    /// file a failed call instead of a replacement.
+    /// file a failed call instead of a replacement. Defaults to `false`.
+    #[serde(default)]
     #[schemars(
-        description = "true replaces a file that already exists; false makes an existing file a failed call.",
+        default,
+        description = "true replaces a file that already exists; false makes an existing file a failed call; defaults to false.",
         example = false
     )]
     pub overwrite: bool,
@@ -116,7 +118,7 @@ impl Default for WriteLimits {
 /// (FR-POL-1), not the executor's business.
 #[norte_core::tool(
     name = "write",
-    description = "Write a whole text file. Creates the parent directories. Set overwrite to true to replace a file that already exists; with it false, an existing file makes the call fail. Use edit to change part of a file."
+    description = "Write a whole text file. Creates the parent directories. overwrite defaults to false: an existing file then makes the call fail. Set overwrite to true to replace it. Use edit to change part of a file."
 )]
 pub struct WriteTool {
     limits: WriteLimits,
@@ -512,5 +514,28 @@ mod tests {
             .await
             .expect_err("unknown field (FR-TOOL-2)");
         assert!(matches!(error, Error::InvalidToolArguments { .. }));
+    }
+
+    #[test]
+    fn a_write_request_defaults_overwrite_to_false() {
+        let request: WriteRequest = serde_json::from_value(serde_json::json!({
+            "path": "new.txt",
+            "content": "hello\n"
+        }))
+        .expect("write request");
+        assert!(!request.overwrite);
+    }
+
+    #[test]
+    fn the_write_schema_leaves_overwrite_optional() {
+        let declaration = WriteTool::new().into_declaration();
+        let schema = serde_json::to_value(&declaration.parameters).expect("schema");
+        assert!(
+            !schema["required"]
+                .as_array()
+                .is_some_and(|required| required.iter().any(|field| field == "overwrite")),
+            "overwrite must stay optional: {schema}"
+        );
+        assert_eq!(schema["properties"]["overwrite"]["default"], false);
     }
 }

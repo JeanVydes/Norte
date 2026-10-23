@@ -13,6 +13,16 @@ Draft. Not published.
 
 ### Fixed
 
+- Anthropic thinking now follows the model generation. Claude 4.6 and later
+  turn an effort request into `thinking: {type: adaptive}` plus
+  `output_config.effort`, while Claude 4.5 keeps the manual
+  `thinking: {type: enabled, budget_tokens}` shape. The adapter sends
+  `display: summarized` when thinking is requested, so a CLI can show it;
+  `off` now sends `thinking: {type: disabled}` instead of leaving the
+  provider's default on. A budget is checked against the 1024-token minimum
+  and the request's `max_tokens`, and `output_tokens_details.thinking_tokens`
+  is reported as `Usage::reasoning_tokens`. Cache boundaries no longer land on
+  thinking blocks, which the API rejects as cache targets.
 - A shell `command` no longer has to name its interpreter, and a `write` no
   longer has to send `overwrite`: they default to `sh` and `false`. Both were
   required only by the schema, so the natural call failed and models guessed.

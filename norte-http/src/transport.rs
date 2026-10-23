@@ -28,6 +28,18 @@ pub fn parse_retry_after(value: &str) -> Option<Duration> {
     }
 }
 
+/// Parses a provider's `JSON` duration, the `19.104108766s` form Google puts in
+/// a `google.rpc.RetryInfo` detail. A negative or non-finite value is not a
+/// delay, so it yields `None`.
+#[must_use]
+pub fn parse_retry_delay(value: &str) -> Option<Duration> {
+    let seconds: f64 = value.trim().strip_suffix('s')?.parse().ok()?;
+    if !seconds.is_finite() || seconds.is_sign_negative() {
+        return None;
+    }
+    Duration::try_from_secs_f64(seconds).ok()
+}
+
 fn parse_http_date(value: &str) -> Option<chrono::DateTime<chrono::Utc>> {
     if let Ok(parsed) = chrono::DateTime::parse_from_rfc2822(value) {
         return Some(parsed.with_timezone(&chrono::Utc));
@@ -126,6 +138,24 @@ mod tests {
     #[test]
     fn retry_after_rejects_garbage() {
         assert_eq!(parse_retry_after("soon"), None);
+    }
+
+    #[test]
+    fn retry_delay_accepts_a_proto_duration() {
+        assert_eq!(
+            parse_retry_delay("19.104108766s"),
+            Some(Duration::from_secs_f64(19.104_108_766))
+        );
+        assert_eq!(parse_retry_delay(" 19s "), Some(Duration::from_secs(19)));
+        assert_eq!(parse_retry_delay("0s"), Some(Duration::ZERO));
+    }
+
+    #[test]
+    fn retry_delay_rejects_anything_else() {
+        assert_eq!(parse_retry_delay("19"), None);
+        assert_eq!(parse_retry_delay("soon"), None);
+        assert_eq!(parse_retry_delay("-1s"), None);
+        assert_eq!(parse_retry_delay("NaNs"), None);
     }
 
     #[test]

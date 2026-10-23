@@ -13,6 +13,11 @@ Draft. Not published.
 
 ### Fixed
 
+- A provider that puts its retry delay in the error body instead of a
+  `Retry-After` header is now honored. Gemini's `google.rpc.RetryInfo` detail
+  sets `retry_after`, so a host waits for the quota window to reopen instead of
+  exhausting its attempts against a closed one. The streaming decoder reads the
+  same detail when the error arrives as an event.
 - Tool calls on Gemini no longer fail with `Invalid JSON payload`: the adapter
   rewrites every schema into the OpenAPI subset the API accepts. It turns
   `type: [T, "null"]` into `nullable`, `oneOf` into `anyOf`, `const` into an

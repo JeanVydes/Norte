@@ -10,7 +10,7 @@ use serde_json::Value;
 use norte_core::{Error, ProviderError, ProviderErrorKind, Result};
 
 use crate::sse::{SseDecoder, SseEvent};
-use crate::transport::{TransportPolicy, parse_retry_after};
+use crate::transport::{TransportPolicy, parse_retry_after, parse_retry_delay};
 use crate::vendor::VendorProfile;
 
 /// A stream of decoded `SSE` events.
@@ -482,10 +482,23 @@ fn status_error(status: StatusCode, body: &str, retry_after: Option<Duration>) -
     if let Some(code) = code {
         provider = provider.with_code(code);
     }
-    if let Some(retry_after) = retry_after {
+    if let Some(retry_after) = retry_after.or_else(|| body_retry_delay(body)) {
         provider = provider.with_retry_after(retry_after);
     }
     Error::provider(provider)
+}
+
+/// Reads the delay Google sends in a `google.rpc.RetryInfo` detail instead of a
+/// `Retry-After` header.
+fn body_retry_delay(body: &str) -> Option<Duration> {
+    let value: Value = serde_json::from_str(body).ok()?;
+    let error = value.get("error").unwrap_or(&value);
+    error
+        .get("details")
+        .and_then(Value::as_array)?
+        .iter()
+        .find_map(|detail| detail.get("retryDelay").and_then(Value::as_str))
+        .and_then(parse_retry_delay)
 }
 
 fn error_code(body: &str) -> Option<String> {
@@ -538,6 +551,33 @@ mod tests {
         assert_eq!(provider.message, "slow down");
         assert_eq!(provider.retry_after, Some(Duration::from_secs(3)));
         assert_eq!(provider.status, Some(429));
+    }
+
+    #[test]
+    fn a_retry_info_body_supplies_the_delay_without_a_header() {
+        let body = r#"{
+            "error": {
+                "code": 429,
+                "message": "quota exceeded",
+                "status": "RESOURCE_EXHAUSTED",
+                "details": [
+                    {"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "RATE_LIMIT_EXCEEDED"},
+                    {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "19.104108766s"}
+                ]
+            }
+        }"#;
+        let error = status_error(StatusCode::TOO_MANY_REQUESTS, body, None);
+        assert_eq!(
+            error.retry_after(),
+            Some(Duration::from_secs_f64(19.104_108_766))
+        );
+
+        let with_header = status_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            body,
+            Some(Duration::from_secs(3)),
+        );
+        assert_eq!(with_header.retry_after(), Some(Duration::from_secs(3)));
     }
 
     #[test]

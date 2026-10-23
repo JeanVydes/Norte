@@ -23,5 +23,5 @@ pub use media::HttpMedia;
 pub use quirk::{Quirk, Quirks};
 pub use secret::Secret;
 pub use sse::{SseDecoder, SseEvent};
-pub use transport::{TransportPolicy, parse_retry_after};
+pub use transport::{TransportPolicy, parse_retry_after, parse_retry_delay};
 pub use vendor::VendorProfile;

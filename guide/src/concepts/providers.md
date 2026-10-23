@@ -75,15 +75,16 @@ value }` — the four shapes the field actually uses. Secrets are wrapped in
   retried even though it is a transport failure — by then the request may be
   running, and a generation must never run twice.
 - **A provider's answer is never retried by the transport.** A rate limit, a
-  quota, a `5xx` reaches the host as an error with `retry_after` intact, because
-  whether to wait is application policy.
+  quota, a `5xx` reaches the host as an error with `retry_after` intact — from
+  the `Retry-After` header, or from a `RetryInfo` detail in the body when the
+  provider sends one there — because whether to wait is application policy.
 - **Timeouts are explicit**: `connect_timeout`, `request_timeout`, and
   `stream_idle_timeout` — the last bounds the silence *inside* an event stream, so
   a provider that stops sending mid-answer fails instead of hanging a turn
   forever.
 
-`HttpClient`, `TransportPolicy`, `SseDecoder` and `parse_retry_after` are public
-if you want them directly.
+`HttpClient`, `TransportPolicy`, `SseDecoder`, `parse_retry_after` and
+`parse_retry_delay` are public if you want them directly.
 
 ### What the host does with a `429`
 

@@ -673,6 +673,18 @@ fn stream_error(error: &Value) -> Error {
     if let Some(code) = code {
         provider = provider.with_status(code);
     }
+    if let Some(delay) = error
+        .get("details")
+        .and_then(Value::as_array)
+        .and_then(|details| {
+            details
+                .iter()
+                .find_map(|detail| detail.get("retryDelay").and_then(Value::as_str))
+        })
+        .and_then(norte_http::parse_retry_delay)
+    {
+        provider = provider.with_retry_after(delay);
+    }
     Error::provider(provider)
 }
 
@@ -1063,12 +1075,16 @@ mod tests {
     async fn stream_errors_are_classified() {
         let mut stream = map(
             stream_of(&[
-                r#"{"error":{"code":429,"message":"quota","status":"RESOURCE_EXHAUSTED"}}"#,
+                r#"{"error":{"code":429,"message":"quota","status":"RESOURCE_EXHAUSTED","details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"19.104108766s"}]}}"#,
             ]),
             continuity(),
         );
         let error = stream.next().await.expect("some").expect_err("error");
         assert_eq!(error.provider_kind(), Some(ProviderErrorKind::RateLimited));
+        assert_eq!(
+            error.retry_after(),
+            Some(std::time::Duration::from_secs_f64(19.104_108_766))
+        );
     }
 
     #[tokio::test]

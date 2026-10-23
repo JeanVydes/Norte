@@ -409,6 +409,7 @@ fn usage_of(usage: &Value) -> Usage {
     mapped.input_tokens =
         input.map(|input| input + cache_read.unwrap_or(0) + cache_write.unwrap_or(0));
     mapped.output_tokens = vendor.take(&["output_tokens"]);
+    mapped.reasoning_tokens = vendor.take(&["output_tokens_details", "thinking_tokens"]);
     mapped.cache_read_tokens = cache_read;
     mapped.cache_write_tokens = cache_write;
     mapped.vendor = vendor.remainder();
@@ -598,6 +599,26 @@ mod tests {
             events.last(),
             Some(&StreamEvent::Finish(FinishReason::Stop))
         );
+    }
+
+    #[tokio::test]
+    async fn thinking_tokens_are_reported_beside_output_tokens() {
+        let events = drain(&[
+            r#"{"type":"message_start","message":{"usage":{"input_tokens":10}}}"#,
+            r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5,"output_tokens_details":{"thinking_tokens":3}}}"#,
+        ])
+        .await;
+        let usage = events
+            .iter()
+            .rev()
+            .find_map(|event| match event {
+                StreamEvent::Usage(usage) => Some(usage),
+                _ => None,
+            })
+            .expect("usage");
+        assert_eq!(usage.output_tokens, Some(5));
+        assert_eq!(usage.reasoning_tokens, Some(3));
+        assert!(!usage.vendor.contains_key("output_tokens_details"));
     }
 
     #[tokio::test]

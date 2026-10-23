@@ -39,6 +39,15 @@ let c = gemini("gemini-2.5-pro", key, capabilities)?;
 Each crate also exports `<vendor>_profile(api_key) -> Result<VendorProfile>` if
 you want the profile without the adapter.
 
+Anthropic's thinking request has two wire shapes. Through Claude 4.5, an
+explicit thinking request is manual: `thinking: {type: "enabled",
+budget_tokens: N}`. From Claude 4.6, it is adaptive:
+`thinking: {type: "adaptive"}`, steered by `output_config.effort`. Claude 4.6
+still accepts the manual budget as a deprecated fallback; Claude 4.7 and later
+reject it. The adapter chooses the shape from the model id, sends a visible
+summary (`display: "summarized"`) when thinking is requested, and never puts a
+cache breakpoint on a thinking block.
+
 ## Any OpenAI-compatible endpoint
 
 That is a `VendorProfile`, not a preset:

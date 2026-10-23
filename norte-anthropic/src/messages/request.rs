@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
 use norte_core::{
-    CallId, Error, MediaKind, MediaPart, MediaSource, Message, ModelRef, ModelRequest, Part,
-    ReasoningEffort, ReasoningRequest, Result, Role, ToolKind, ToolResultPart, ToolSpec,
-    splice_vendor_extensions,
+    CallId, Capabilities, Error, MediaKind, MediaPart, MediaSource, Message, ModelRef,
+    ModelRequest, Part, ReasoningEffort, ReasoningRequest, Result, Role, ToolKind, ToolResultPart,
+    ToolSpec, splice_vendor_extensions,
 };
 use serde_json::{Value, json};
 
@@ -14,6 +14,9 @@ use crate::json::{base64_encode, opt_str};
 /// Fallback `max_tokens` for the Messages wire, which requires the field. Hosts
 /// should set `GenerationParams::max_output_tokens` on the request.
 const DEFAULT_MAX_TOKENS: u64 = 4096;
+
+/// The smallest thinking budget the Messages API accepts.
+const MIN_THINKING_BUDGET: u32 = 1024;
 
 type CallIndex = BTreeMap<CallId, String>;
 
@@ -28,9 +31,10 @@ type CallIndex = BTreeMap<CallId, String>;
 pub(crate) fn build(
     model: &ModelRef,
     continuity: &AnthropicContinuity,
+    capabilities: &Capabilities,
     request: &ModelRequest,
 ) -> Result<Value> {
-    build_body(model, continuity, request, true)
+    build_body(model, continuity, capabilities, request, true)
 }
 
 /// Builds the wire body for a `count_tokens` call, which accepts the prompt but
@@ -42,19 +46,26 @@ pub(crate) fn build(
 pub(crate) fn build_count(
     model: &ModelRef,
     continuity: &AnthropicContinuity,
+    capabilities: &Capabilities,
     request: &ModelRequest,
 ) -> Result<Value> {
-    build_body(model, continuity, request, false)
+    build_body(model, continuity, capabilities, request, false)
 }
 
 fn build_body(
     model: &ModelRef,
     continuity: &AnthropicContinuity,
+    capabilities: &Capabilities,
     request: &ModelRequest,
     stream: bool,
 ) -> Result<Value> {
     let instructions = instruction_count(&request.messages);
     let calls = call_index(continuity, &request.messages);
+
+    let max_tokens = request
+        .params
+        .max_output_tokens
+        .unwrap_or(DEFAULT_MAX_TOKENS);
 
     let mut body = serde_json::Map::new();
     body.insert(
@@ -62,15 +73,7 @@ fn build_body(
         Value::String(model.model.as_str().to_owned()),
     );
     if stream {
-        body.insert(
-            "max_tokens".to_owned(),
-            json!(
-                request
-                    .params
-                    .max_output_tokens
-                    .unwrap_or(DEFAULT_MAX_TOKENS)
-            ),
-        );
+        body.insert("max_tokens".to_owned(), json!(max_tokens));
         body.insert("stream".to_owned(), Value::Bool(true));
     }
 
@@ -119,11 +122,8 @@ fn build_body(
                 ),
             );
         }
-        if let ReasoningRequest::Budget(tokens) = request.reasoning {
-            body.insert(
-                "thinking".to_owned(),
-                json!({ "type": "enabled", "budget_tokens": tokens }),
-            );
+        if let Some(thinking) = thinking_config(model, capabilities, request, max_tokens)? {
+            body.insert("thinking".to_owned(), thinking);
         }
         if let Some(effort) = effort_name(request.reasoning) {
             body.insert("output_config".to_owned(), json!({ "effort": effort }));
@@ -144,6 +144,123 @@ fn effort_name(request: ReasoningRequest) -> Option<&'static str> {
         ReasoningRequest::Effort(ReasoningEffort::Max) => Some("max"),
         _ => None,
     }
+}
+
+/// The `thinking` object for the requested mode, if the model takes one.
+///
+/// Anthropic has two thinking APIs. Through Claude 4.5, a host selects manual
+/// extended thinking with `type: "enabled"` and a token budget. From Claude
+/// 4.6, a host selects adaptive thinking with `type: "adaptive"` and steers its
+/// depth with `output_config.effort`; the token budget remains valid on 4.6
+/// only as a deprecated fallback, and 4.7 and later reject it. An explicit
+/// request asks for visible summaries so a CLI can show what the model is
+/// doing; `automatic` leaves the provider default (and, on the models where
+/// adaptive thinking is on by default, its default display) untouched.
+fn thinking_config(
+    model: &ModelRef,
+    capabilities: &Capabilities,
+    request: &ModelRequest,
+    max_tokens: u64,
+) -> Result<Option<Value>> {
+    let reasoning = &capabilities.reasoning;
+    match request.reasoning {
+        ReasoningRequest::Automatic => Ok(None),
+        ReasoningRequest::Disabled => {
+            if reasoning.supported && !reasoning.can_disable {
+                return Err(Error::InvalidInput(format!(
+                    "anthropic: {model} does not allow thinking to be disabled"
+                )));
+            }
+            if !reasoning.supported {
+                return Ok(None);
+            }
+            Ok(Some(json!({ "type": "disabled" })))
+        }
+        ReasoningRequest::Budget(tokens) => {
+            if !reasoning.supported || !reasoning.supports_budget {
+                return Err(Error::InvalidInput(format!(
+                    "anthropic: {model} does not accept a thinking budget; use an effort level"
+                )));
+            }
+            if tokens < MIN_THINKING_BUDGET {
+                return Err(Error::InvalidInput(format!(
+                    "anthropic: a thinking budget must be at least {MIN_THINKING_BUDGET} tokens"
+                )));
+            }
+            if u64::from(tokens) >= max_tokens {
+                return Err(Error::InvalidInput(format!(
+                    "anthropic: a thinking budget of {tokens} must leave room under max_tokens ({max_tokens})"
+                )));
+            }
+            Ok(Some(json!({
+                "type": "enabled",
+                "budget_tokens": tokens,
+                "display": "summarized",
+            })))
+        }
+        ReasoningRequest::Effort(_) => {
+            if !reasoning.supported || reasoning.efforts.is_empty() {
+                return Err(Error::InvalidInput(format!(
+                    "anthropic: {model} does not accept an effort level; use auto or a token budget"
+                )));
+            }
+            if adaptive_thinking(model) {
+                Ok(Some(json!({
+                    "type": "adaptive",
+                    "display": "summarized",
+                })))
+            } else {
+                // On Claude 4.5, effort composes with a manual budget. A host
+                // that asks only for effort gets effort, not thinking; the
+                // budget request is how it asks for manual thinking.
+                Ok(None)
+            }
+        }
+        _ => Err(Error::InvalidInput(
+            "anthropic: unsupported reasoning request".to_owned(),
+        )),
+    }
+}
+
+/// Whether this Claude generation takes the adaptive thinking object.
+///
+/// The model id is the only generation signal a wire request carries; the
+/// capability set says which effort levels and budgets the host may offer, and
+/// this says which of Anthropic's two thinking shapes they travel in. The
+/// dateless ids from 4.6 on and the dated 4.5 ids both parse here.
+fn adaptive_thinking(model: &ModelRef) -> bool {
+    let id = model.model.as_str();
+    if id.contains("fable") || id.contains("mythos") {
+        return true;
+    }
+    if !id.contains("claude") {
+        return false;
+    }
+    claude_version(id).is_some_and(|(major, minor)| (major, minor) >= (4, 6))
+}
+
+/// Reads the `major.minor` generation from a Claude model id.
+///
+/// Families put the pair in different positions (`claude-3-7-sonnet`,
+/// `claude-sonnet-4-6`, `claude-opus-5-5`), so the first small numeric pair is
+/// the version. A date-only suffix is ignored rather than read as a generation.
+fn claude_version(id: &str) -> Option<(u32, u32)> {
+    let id = id.rsplit('/').next().unwrap_or(id);
+    let tokens: Vec<&str> = id.split(['-', '_', '.']).collect();
+    for (position, token) in tokens.iter().enumerate() {
+        let Ok(major) = token.parse::<u32>() else {
+            continue;
+        };
+        if major > 20 {
+            continue;
+        }
+        let minor = tokens
+            .get(position + 1)
+            .and_then(|next| next.parse::<u32>().ok())
+            .unwrap_or(0);
+        return Some((major, minor));
+    }
+    None
 }
 
 fn instruction_count(messages: &[Message]) -> usize {
@@ -285,11 +402,26 @@ fn push_blocks(role: &str, mut blocks: Vec<Value>, mark: bool, out: &mut Vec<Val
         return;
     }
     if mark {
-        if let Some(last) = blocks.last_mut() {
-            last["cache_control"] = json!({ "type": "ephemeral" });
-        }
+        mark_last_cacheable(&mut blocks);
     }
     out.push(json!({ "role": role, "content": blocks }));
+}
+
+/// Places the cache breakpoint on the last block Anthropic may cache.
+///
+/// Thinking blocks cannot carry `cache_control`; when a boundary lands on an
+/// assistant turn that ends in one, walk back to the text, tool call or tool
+/// result that precedes it. The thinking block is still inside the cached
+/// prefix, which is what keeps the continuity and the cache aligned.
+fn mark_last_cacheable(blocks: &mut [Value]) {
+    for block in blocks.iter_mut().rev() {
+        let kind = block.get("type").and_then(Value::as_str);
+        if matches!(kind, Some("thinking" | "redacted_thinking")) {
+            continue;
+        }
+        block["cache_control"] = json!({ "type": "ephemeral" });
+        return;
+    }
 }
 
 fn call_index(continuity: &AnthropicContinuity, messages: &[Message]) -> CallIndex {
@@ -422,9 +554,9 @@ fn media_source(media: &MediaPart) -> Result<Value> {
 mod tests {
     use super::*;
     use norte_core::{
-        CallId, ContinuityAdapter, ExtensionPart, MimeType, ModelId, ProviderId, ProviderTool,
-        ProviderToolCallPart, ProviderToolResultPart, ReasoningPart, ReasoningVisibility,
-        ToolCallPart, ToolName, WireFamily,
+        CallId, Capabilities, ContinuityAdapter, ExtensionPart, MimeType, ModelId, ProviderId,
+        ProviderTool, ProviderToolCallPart, ProviderToolResultPart, Reasoning, ReasoningPart,
+        ReasoningVisibility, ToolCallPart, ToolName, WireFamily,
     };
 
     use crate::WIRE_MESSAGES;
@@ -436,8 +568,75 @@ mod tests {
         )
     }
 
+    fn model_named(id: &str) -> ModelRef {
+        ModelRef::new(
+            ProviderId::new("anthropic").expect("provider"),
+            ModelId::new(id).expect("model"),
+        )
+    }
+
     fn continuity() -> AnthropicContinuity {
         AnthropicContinuity::new(WireFamily::new(WIRE_MESSAGES).expect("family"), model())
+    }
+
+    fn continuity_for(model: &ModelRef) -> AnthropicContinuity {
+        AnthropicContinuity::new(
+            WireFamily::new(WIRE_MESSAGES).expect("family"),
+            model.clone(),
+        )
+    }
+
+    fn test_capabilities() -> Capabilities {
+        Capabilities::builder()
+            .reasoning(Reasoning {
+                supported: true,
+                can_disable: true,
+                efforts: [
+                    ReasoningEffort::Minimal,
+                    ReasoningEffort::Low,
+                    ReasoningEffort::Medium,
+                    ReasoningEffort::High,
+                    ReasoningEffort::XHigh,
+                    ReasoningEffort::Max,
+                ]
+                .into_iter()
+                .collect(),
+                supports_budget: true,
+                max_budget: None,
+            })
+            .build()
+    }
+
+    fn build(
+        model: &ModelRef,
+        continuity: &AnthropicContinuity,
+        request: &ModelRequest,
+    ) -> Result<Value> {
+        super::build(model, continuity, &test_capabilities(), request)
+    }
+
+    fn build_count(
+        model: &ModelRef,
+        continuity: &AnthropicContinuity,
+        request: &ModelRequest,
+    ) -> Result<Value> {
+        super::build_count(model, continuity, &test_capabilities(), request)
+    }
+
+    fn build_for(id: &str, request: &ModelRequest) -> Result<Value> {
+        let model = model_named(id);
+        let continuity = continuity_for(&model);
+        super::build(&model, &continuity, &test_capabilities(), request)
+    }
+
+    fn build_for_with(
+        id: &str,
+        capabilities: &Capabilities,
+        request: &ModelRequest,
+    ) -> Result<Value> {
+        let model = model_named(id);
+        let continuity = continuity_for(&model);
+        super::build(&model, &continuity, capabilities, request)
     }
 
     #[test]
@@ -500,14 +699,111 @@ mod tests {
     #[test]
     fn a_reasoning_budget_enables_thinking() {
         let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
+        request.params.max_output_tokens = Some(8192);
         request.reasoning = ReasoningRequest::Budget(4096);
         let body = build(&model(), &continuity(), &request).expect("build");
         assert_eq!(body["thinking"]["type"], "enabled");
         assert_eq!(body["thinking"]["budget_tokens"], 4096);
+        assert_eq!(body["thinking"]["display"], "summarized");
         assert!(
             body.get("output_config").is_none(),
             "the legacy budget and the current effort are different knobs"
         );
+    }
+
+    #[test]
+    fn an_adaptive_model_turns_effort_into_adaptive_thinking() {
+        let mut request =
+            ModelRequest::new(model_named("claude-opus-4-6"), vec![Message::user("hi")]);
+        request.reasoning = ReasoningRequest::Effort(ReasoningEffort::High);
+        let body = build_for("claude-opus-4-6", &request).expect("build");
+        assert_eq!(body["output_config"]["effort"], "high");
+        assert_eq!(body["thinking"]["type"], "adaptive");
+        assert_eq!(body["thinking"]["display"], "summarized");
+    }
+
+    #[test]
+    fn a_45_effort_does_not_take_the_adaptive_object() {
+        let mut request =
+            ModelRequest::new(model_named("claude-opus-4-5"), vec![Message::user("hi")]);
+        request.reasoning = ReasoningRequest::Effort(ReasoningEffort::High);
+        let body = build_for("claude-opus-4-5", &request).expect("build");
+        assert_eq!(body["output_config"]["effort"], "high");
+        assert!(
+            body.get("thinking").is_none(),
+            "4.5 rejects adaptive thinking; a budget is how it thinks"
+        );
+    }
+
+    #[test]
+    fn a_budget_keeps_extended_thinking_on_46() {
+        let mut request =
+            ModelRequest::new(model_named("claude-sonnet-4-6"), vec![Message::user("hi")]);
+        request.params.max_output_tokens = Some(8192);
+        request.reasoning = ReasoningRequest::Budget(4096);
+        let body = build_for("claude-sonnet-4-6", &request).expect("build");
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["thinking"]["budget_tokens"], 4096);
+        assert!(body.get("output_config").is_none());
+    }
+
+    #[test]
+    fn a_disabled_request_turns_thinking_off() {
+        let mut request =
+            ModelRequest::new(model_named("claude-sonnet-5"), vec![Message::user("hi")]);
+        request.reasoning = ReasoningRequest::Disabled;
+        let body = build_for("claude-sonnet-5", &request).expect("build");
+        assert_eq!(body["thinking"]["type"], "disabled");
+        assert!(body["thinking"].get("display").is_none());
+        assert!(body.get("output_config").is_none());
+    }
+
+    #[test]
+    fn a_budget_below_the_api_minimum_is_rejected() {
+        let mut request =
+            ModelRequest::new(model_named("claude-haiku-4-5"), vec![Message::user("hi")]);
+        request.params.max_output_tokens = Some(8192);
+        request.reasoning = ReasoningRequest::Budget(512);
+        let error = build_for("claude-haiku-4-5", &request).expect_err("reject");
+        assert!(error.to_string().contains("at least 1024"));
+    }
+
+    #[test]
+    fn a_budget_must_leave_room_under_max_tokens() {
+        let mut request =
+            ModelRequest::new(model_named("claude-haiku-4-5"), vec![Message::user("hi")]);
+        request.params.max_output_tokens = Some(4096);
+        request.reasoning = ReasoningRequest::Budget(4096);
+        let error = build_for("claude-haiku-4-5", &request).expect_err("reject");
+        assert!(error.to_string().contains("leave room"));
+    }
+
+    #[test]
+    fn a_budget_on_a_model_without_budget_support_is_an_error() {
+        let mut capabilities = test_capabilities();
+        capabilities.reasoning.supports_budget = false;
+        let mut request =
+            ModelRequest::new(model_named("claude-opus-4-7"), vec![Message::user("hi")]);
+        request.params.max_output_tokens = Some(8192);
+        request.reasoning = ReasoningRequest::Budget(4096);
+        let error = build_for_with("claude-opus-4-7", &capabilities, &request).expect_err("reject");
+        assert!(
+            error
+                .to_string()
+                .contains("does not accept a thinking budget")
+        );
+    }
+
+    #[test]
+    fn a_disabled_request_on_a_non_disableable_model_is_an_error() {
+        let mut capabilities = test_capabilities();
+        capabilities.reasoning.can_disable = false;
+        let mut request =
+            ModelRequest::new(model_named("claude-sonnet-5-5"), vec![Message::user("hi")]);
+        request.reasoning = ReasoningRequest::Disabled;
+        let error =
+            build_for_with("claude-sonnet-5-5", &capabilities, &request).expect_err("reject");
+        assert!(error.to_string().contains("does not allow thinking"));
     }
 
     #[test]
@@ -538,6 +834,68 @@ mod tests {
         assert_eq!(
             body["messages"][1]["content"][0]["cache_control"]["type"],
             "ephemeral"
+        );
+    }
+
+    #[test]
+    fn a_cache_boundary_never_lands_on_a_thinking_block() {
+        let token = continuity()
+            .build(&json!({
+                "type": "thinking",
+                "thinking": "why",
+                "signature": "sig",
+            }))
+            .expect("token");
+        let assistant = Message::new(
+            Role::Assistant,
+            vec![
+                Part::Reasoning(ReasoningPart {
+                    visibility: ReasoningVisibility::Full,
+                    text: "why".to_owned(),
+                    continuity: Some(token),
+                }),
+                Part::text("answer"),
+            ],
+        );
+        let mut request = ModelRequest::new(model(), vec![assistant]);
+        request.cache_boundaries = vec![1];
+        let body = build(&model(), &continuity(), &request).expect("build");
+        assert!(
+            body["messages"][0]["content"][0]
+                .get("cache_control")
+                .is_none(),
+            "thinking blocks cannot carry cache_control"
+        );
+        assert_eq!(
+            body["messages"][0]["content"][1]["cache_control"]["type"],
+            "ephemeral"
+        );
+    }
+
+    #[test]
+    fn a_thinking_only_message_gets_no_cache_marker() {
+        let token = continuity()
+            .build(&json!({
+                "type": "thinking",
+                "thinking": "why",
+                "signature": "sig",
+            }))
+            .expect("token");
+        let assistant = Message::new(
+            Role::Assistant,
+            vec![Part::Reasoning(ReasoningPart {
+                visibility: ReasoningVisibility::Full,
+                text: "why".to_owned(),
+                continuity: Some(token),
+            })],
+        );
+        let mut request = ModelRequest::new(model(), vec![assistant]);
+        request.cache_boundaries = vec![1];
+        let body = build(&model(), &continuity(), &request).expect("build");
+        assert!(
+            body["messages"][0]["content"][0]
+                .get("cache_control")
+                .is_none()
         );
     }
 

@@ -30,7 +30,7 @@ let capabilities = Capabilities::builder()
 | `ToolKind` | `Function` (host executes), `ProviderExecuted`, `ProviderSchema` |
 | `StreamingGranularity` | `Delta`, `Part`, `Disabled` |
 | `CacheMode` | `None`, `Automatic`, `Explicit` |
-| `ReasoningRequest` | the reasoning ask: automatic, a budget, or off |
+| `ReasoningRequest` | the reasoning ask: automatic, an effort, a budget, or off |
 | `Feature` | `Citations`, `ParallelToolCalls`, `ForcedToolChoice`, `Batch`, `Logprobs` |
 
 A request that asks for something outside the declared capabilities is a typed

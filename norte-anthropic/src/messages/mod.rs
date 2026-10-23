@@ -75,7 +75,12 @@ impl AnthropicMessages {
     ///
     /// Returns a codec error when a part cannot be expressed on this wire.
     pub fn request_body(&self, request: &ModelRequest) -> Result<Value> {
-        request::build(&self.reference, &self.continuity, request)
+        request::build(
+            &self.reference,
+            &self.continuity,
+            &self.capabilities,
+            request,
+        )
     }
 
     /// Counts the tokens a request would consume, using the vendor's
@@ -87,7 +92,12 @@ impl AnthropicMessages {
     /// Returns an error when the request cannot be expressed on this wire or the
     /// endpoint fails.
     pub async fn count_tokens(&self, request: &ModelRequest) -> Result<u64> {
-        let body = request::build_count(&self.reference, &self.continuity, request)?;
+        let body = request::build_count(
+            &self.reference,
+            &self.continuity,
+            &self.capabilities,
+            request,
+        )?;
         let response = self
             .client
             .send_post_json(&self.profile, COUNT_TOKENS_PATH, &body)
@@ -118,7 +128,12 @@ impl Model for AnthropicMessages {
     }
 
     async fn stream(&self, request: ModelRequest) -> Result<ModelStream> {
-        let body = request::build(&self.reference, &self.continuity, &request)?;
+        let body = request::build(
+            &self.reference,
+            &self.continuity,
+            &self.capabilities,
+            &request,
+        )?;
         let sse = self.client.send_sse(&self.profile, PATH, &body).await?;
         Ok(stream::map(sse, self.continuity.clone()))
     }

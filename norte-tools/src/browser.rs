@@ -1,6 +1,7 @@
 //! The browser automation executor for AI agents.
 //!
-//! Controls a real Chromium/CDP-enabled browser instance over Chrome DevTools Protocol (CDP),
+//! Controls a real Chromium/`CDP`-enabled browser instance over the Chrome
+//! `DevTools` protocol,
 //! providing feedback-rich primitives (navigate, click, type, scroll, wait, extract/map DOM, screenshot).
 
 use std::error::Error as StdError;
@@ -202,6 +203,11 @@ impl BrowserTool {
     }
 
     /// Executes the browser request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the action fails, when the CDP connection drops,
+    /// or when the page reports a failure for the requested command.
     pub async fn run(&self, request: &BrowserRequest, _ctx: &ToolContext) -> Result<ToolOutput> {
         let outcome = execute_browser_action(request, &self.limits, &self.cdp_client).await?;
         let json_val = serde_json::to_value(&outcome)?;
@@ -304,7 +310,7 @@ impl PersistentCdp {
                     if let Ok(v) = serde_json::from_str::<Value>(&text) {
                         if v.get("id").and_then(Value::as_i64) == Some(id) {
                             if let Some(err) = v.get("error") {
-                                return Err(format!("CDP Error in {}: {:?}", method, err).into());
+                                return Err(format!("CDP Error in {method}: {err:?}").into());
                             }
                             return Ok(v.get("result").cloned().unwrap_or(Value::Null));
                         }
@@ -357,21 +363,19 @@ impl PersistentCdp {
             Err("CDP connection closed while waiting for Page.loadEventFired".into())
         };
 
-        match timeout(timeout_dur, wait_future).await {
-            Ok(res) => res,
-            Err(_) => {
-                // Si el evento ya ocurrió o la página fue rápida, verificar readyState
-                if let Ok(ready) = self
-                    .evaluate("document.readyState", Duration::from_secs(2))
-                    .await
-                {
-                    if ready.as_str() == Some("complete") || ready.as_str() == Some("interactive") {
-                        return Ok(());
-                    }
-                }
-                Err("Timed out waiting for Page.loadEventFired".into())
+        if let Ok(res) = timeout(timeout_dur, wait_future).await {
+            return res;
+        }
+        // Si el evento ya ocurrió o la página fue rápida, verificar readyState
+        if let Ok(ready) = self
+            .evaluate("document.readyState", Duration::from_secs(2))
+            .await
+        {
+            if ready.as_str() == Some("complete") || ready.as_str() == Some("interactive") {
+                return Ok(());
             }
         }
+        Err("Timed out waiting for Page.loadEventFired".into())
     }
 
     async fn extract_interactive(
@@ -416,16 +420,14 @@ async fn get_or_create_cdp<'a>(
     let mut guard = cdp_slot.lock().await;
 
     // Verificar si la conexión existente sigue viva
-    if let Some(client) = guard.as_mut() {
-        if client.endpoint == endpoint {
-            if client
-                .evaluate("1 + 1", Duration::from_millis(500))
-                .await
-                .is_ok()
-            {
-                return Ok(guard);
-            }
-        }
+    if let Some(client) = guard.as_mut()
+        && client.endpoint == endpoint
+        && client
+            .evaluate("1 + 1", Duration::from_millis(500))
+            .await
+            .is_ok()
+    {
+        return Ok(guard);
     }
 
     // Si no existe o se desconectó, reconectar
@@ -502,6 +504,9 @@ async fn get_or_create_cdp<'a>(
     Ok(guard)
 }
 
+// One arm per browser action, each with its own script and readback; the length
+// is the action count rather than a tangled control flow.
+#[allow(clippy::too_many_lines)]
 async fn execute_browser_action(
     request: &BrowserRequest,
     limits: &BrowserLimits,
@@ -542,7 +547,7 @@ async fn execute_browser_action(
 
             if request.highlight {
                 let h_js = format!(
-                    r#"
+                    r"
                     (function() {{
                         let el = document.querySelector({});
                         if (el) {{
@@ -551,7 +556,7 @@ async fn execute_browser_action(
                             el.style.backgroundColor = 'rgba(255, 235, 59, 0.4)';
                         }}
                     }})();
-                    "#,
+                    ",
                     serde_json::to_string(&target_selector)?
                 );
                 let _ = cdp.evaluate(&h_js, cmd_timeout).await;
@@ -559,7 +564,7 @@ async fn execute_browser_action(
             }
 
             let click_js = format!(
-                r#"
+                r"
                 (function() {{
                     let el = document.querySelector({});
                     if (el) {{
@@ -568,7 +573,7 @@ async fn execute_browser_action(
                     }}
                     return false;
                 }})();
-                "#,
+                ",
                 serde_json::to_string(&target_selector)?
             );
 
@@ -603,7 +608,7 @@ async fn execute_browser_action(
             };
 
             let type_js = format!(
-                r#"
+                r"
                 (function() {{
                     let el = document.querySelector({});
                     if (!el) return false;
@@ -616,7 +621,7 @@ async fn execute_browser_action(
                     el.dispatchEvent(new Event('change', {{ bubbles: true }}));
                     return true;
                 }})();
-                "#,
+                ",
                 serde_json::to_string(&target_selector)?,
                 clear,
                 serde_json::to_string(text)?
@@ -643,6 +648,7 @@ async fn execute_browser_action(
             )
         }
         BrowserAction::Wait { seconds } => {
+            #[allow(clippy::cast_precision_loss)]
             let wait_secs = seconds.clamp(0.1, limits.max_wait_seconds as f64);
             sleep(Duration::from_secs_f64(wait_secs)).await;
             let els = cdp

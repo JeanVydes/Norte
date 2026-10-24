@@ -33,30 +33,7 @@ pub(crate) fn build(
     quirks: &Quirks,
     request: &ModelRequest,
 ) -> Result<Value> {
-    let calls = call_index(continuity, &request.messages);
-    let mut messages = Vec::new();
-    // Most local chat templates accept a single system message at position 0,
-    // while the neutral conversation may carry several instructions. Coalesce
-    // the leading run; a mid-run instruction keeps its own system message, which
-    // the reference wire does accept.
-    let instructions = request
-        .messages
-        .iter()
-        .take_while(|message| message.role.is_instruction())
-        .count();
-    if instructions > 0 {
-        let text = request.messages[..instructions]
-            .iter()
-            .map(Message::text)
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        if !text.is_empty() {
-            messages.push(json!({ "role": "system", "content": text }));
-        }
-    }
-    for message in &request.messages[instructions..] {
-        push_message(&calls, model, message, &mut messages)?;
-    }
+    let messages = build_messages(model, continuity, request)?;
 
     let mut body = serde_json::Map::new();
     body.insert(
@@ -139,6 +116,45 @@ pub(crate) fn build(
     }
     splice_vendor_extensions(model, WIRE_CHAT, &request.extensions, &mut body)?;
     Ok(Value::Object(body))
+}
+
+/// Renders the neutral conversation as the wire's message array.
+///
+/// Most local chat templates accept a single system message at position 0,
+/// while the neutral conversation may carry several instructions. Coalesce the
+/// leading run; a mid-run instruction keeps its own system message, which the
+/// reference wire does accept.
+///
+/// # Errors
+///
+/// Returns a capability error when a message cannot be expressed on the chat
+/// wire, such as media inside a tool result.
+fn build_messages(
+    model: &ModelRef,
+    continuity: &OpenAiContinuity,
+    request: &ModelRequest,
+) -> Result<Vec<Value>> {
+    let calls = call_index(continuity, &request.messages);
+    let mut messages = Vec::new();
+    let instructions = request
+        .messages
+        .iter()
+        .take_while(|message| message.role.is_instruction())
+        .count();
+    if instructions > 0 {
+        let text = request.messages[..instructions]
+            .iter()
+            .map(Message::text)
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        if !text.is_empty() {
+            messages.push(json!({ "role": "system", "content": text }));
+        }
+    }
+    for message in &request.messages[instructions..] {
+        push_message(&calls, model, message, &mut messages)?;
+    }
+    Ok(messages)
 }
 
 fn build_effort(request: ReasoningRequest) -> Option<&'static str> {

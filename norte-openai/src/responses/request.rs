@@ -21,7 +21,10 @@ struct CallMeta {
 
 type CallIndex = BTreeMap<CallId, CallMeta>;
 
-/// Builds the wire body for one Responses request.
+/// Builds the wire body for one Responses request with no quirks.
+///
+/// Only the tests below call this; production goes through
+/// [`build_with_quirks`] so the vendor profile is applied.
 ///
 /// # Errors
 ///
@@ -29,6 +32,7 @@ type CallIndex = BTreeMap<CallId, CallMeta>;
 /// example media stored as a blob with no configured [`MediaAdapter`].
 ///
 /// [`MediaAdapter`]: norte_core::MediaAdapter
+#[cfg(test)]
 pub(crate) fn build(
     model: &ModelRef,
     continuity: &OpenAiContinuity,

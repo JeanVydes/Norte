@@ -29,20 +29,21 @@ pub enum BrowserAction {
     /// Navigate the active page to a specific URL.
     Navigate {
         /// Target URL (e.g. `https://example.com` or `https://github.com/login`).
+        #[schemars(example = &"https://example.com")]
         url: String,
     },
     /// Click an element on the page (by `selector` or annotated numeric `agent_id`).
     Click {
-        /// Optional CSS selector.
+        /// CSS selector of the element to click (e.g. `button.submit`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         selector: Option<String>,
-        /// Optional numeric agent id injected during DOM extraction.
+        /// Numeric agent id from a prior `extract_dom` call.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent_id: Option<usize>,
     },
     /// Type text into an element (or active focus).
     Type {
-        /// Optional CSS selector.
+        /// Optional CSS selector (e.g. `input[name="email"]`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         selector: Option<String>,
         /// Optional numeric agent id injected during DOM extraction.
@@ -50,22 +51,28 @@ pub enum BrowserAction {
         agent_id: Option<usize>,
         /// Text to input.
         text: String,
-        /// Clear field before typing.
+        /// When `true`, the field's current value is cleared before typing.
+        /// When `false` (default), the text is appended to whatever is already
+        /// there. Set to `true` to replace the whole field contents.
         #[serde(default)]
+        #[schemars(
+            default,
+            description = "true clears the field before typing (replaces its contents); false appends to the existing value. Defaults to false."
+        )]
         clear: bool,
     },
     /// Scroll the viewport.
     Scroll {
-        /// Horizontal scroll delta.
+        /// Horizontal scroll delta in pixels (positive = right).
         #[serde(default)]
         delta_x: f64,
-        /// Vertical scroll delta.
+        /// Vertical scroll delta in pixels (positive = down).
         #[serde(default)]
         delta_y: f64,
     },
-    /// Wait for a duration or condition.
+    /// Wait for a duration.
     Wait {
-        /// Seconds to sleep (default 1.0, capped to limits).
+        /// Seconds to sleep (default 1.0, capped to the configured limit).
         #[serde(default = "default_wait_seconds")]
         seconds: f64,
     },
@@ -83,12 +90,13 @@ fn default_wait_seconds() -> f64 {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BrowserRequest {
-    /// Action to perform.
+    /// Action to perform. See `BrowserAction` for the available variants.
     pub action: BrowserAction,
     /// Remote debugging endpoint (defaults to `http://127.0.0.1:9222`).
+    /// Point at a running Chrome/Chromium with `--remote-debugging-port=9222`.
     #[serde(default = "default_endpoint")]
     pub endpoint: String,
-    /// Highlight element visually in the user's browser before interacting.
+    /// Highlight the target element visually before interacting (default true).
     #[serde(default = "default_true")]
     pub highlight: bool,
 }
@@ -209,7 +217,7 @@ impl Default for BrowserTool {
 
 impl ToolMetadata for BrowserTool {
     const NAME: &'static str = "browser_use";
-    const DESCRIPTION: &'static str = "Controls a browser live via CDP (Chrome/Vivaldi/Brave/Edge). Can navigate, click, type, wait, map interactive elements and take screenshots with rich feedback.";
+    const DESCRIPTION: &'static str = "Controls a live browser via CDP (Chrome/Vivaldi/Brave/Edge). Actions: navigate (load a URL), click (by CSS selector or agent_id from ExtractDom), type (text input; set clear=true to replace the field, false to append), scroll, wait, extract_dom (map interactive elements with agent_ids), screenshot (base64 PNG). Use ExtractDom first to get agent_ids for clicking/typing.";
 }
 
 #[async_trait::async_trait]

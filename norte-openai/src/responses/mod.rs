@@ -72,7 +72,12 @@ impl OpenAiResponses {
     ///
     /// Returns a codec error when a part cannot be expressed on this wire.
     pub fn request_body(&self, request: &ModelRequest) -> Result<Value> {
-        request::build(&self.reference, &self.continuity, request)
+        request::build_with_quirks(
+            &self.reference,
+            &self.continuity,
+            self.profile.quirks(),
+            request,
+        )
     }
 }
 
@@ -91,7 +96,12 @@ impl Model for OpenAiResponses {
     }
 
     async fn stream(&self, request: ModelRequest) -> Result<ModelStream> {
-        let body = request::build(&self.reference, &self.continuity, &request)?;
+        let body = request::build_with_quirks(
+            &self.reference,
+            &self.continuity,
+            self.profile.quirks(),
+            &request,
+        )?;
         let sse = self.client.send_sse(&self.profile, PATH, &body).await?;
         Ok(stream::map(sse, self.continuity.clone()))
     }

@@ -35,7 +35,26 @@ pub(crate) fn build(
 ) -> Result<Value> {
     let calls = call_index(continuity, &request.messages);
     let mut messages = Vec::new();
-    for message in &request.messages {
+    // Most local chat templates accept a single system message at position 0,
+    // while the neutral conversation may carry several instructions. Coalesce
+    // the leading run; a mid-run instruction keeps its own system message, which
+    // the reference wire does accept.
+    let instructions = request
+        .messages
+        .iter()
+        .take_while(|message| message.role.is_instruction())
+        .count();
+    if instructions > 0 {
+        let text = request.messages[..instructions]
+            .iter()
+            .map(Message::text)
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        if !text.is_empty() {
+            messages.push(json!({ "role": "system", "content": text }));
+        }
+    }
+    for message in &request.messages[instructions..] {
         push_message(&calls, model, message, &mut messages)?;
     }
 
@@ -231,9 +250,9 @@ fn push_user(
 
 /// The Chat Completions role policy (FR-ROLE-2).
 ///
-/// `System` and `Developer` both map to the wire `system` role and may appear
-/// anywhere in the conversation, so a mid-run instruction update is just another
-/// `system` message in sequence.
+/// `System` and `Developer` both map to the wire `system` role. The builder
+/// coalesces the leading run into one message, which local templates require;
+/// a mid-run instruction update stays a `system` message in sequence.
 fn chat_role(role: Role) -> &'static str {
     match role {
         Role::System | Role::Developer => "system",
@@ -481,6 +500,24 @@ mod tests {
         assert_eq!(body["messages"][0]["content"], "be terse");
         assert_eq!(body["messages"][1]["role"], "user");
         assert_eq!(body["stream_options"]["include_usage"], true);
+    }
+
+    #[test]
+    fn leading_instructions_are_coalesced_into_one_system_message() {
+        let request = ModelRequest::new(
+            model(),
+            vec![
+                Message::system("first"),
+                Message::developer("second"),
+                Message::user("hi"),
+            ],
+        );
+        let body = build(&model(), &continuity(), &Quirks::new(), &request).expect("build");
+        let messages = body["messages"].as_array().expect("messages");
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(messages[0]["content"], "first\n\nsecond");
+        assert_eq!(messages[1]["role"], "user");
     }
 
     #[test]

@@ -13,6 +13,13 @@ Draft. Not published.
 
 ### Fixed
 
+- OpenAI Responses now honors the host's `no_prompt_cache_key` quirk. It sent
+  the session-derived field unconditionally, so a host could not disable it for
+  a gateway that rejects unknown fields.
+- OpenAI Chat now joins the leading system and developer messages into one
+  system message. The neutral conversation may carry several instructions, but
+  local chat templates, including Qwen's, accept only one at position 0 and
+  reject the request with "System message must be at the beginning".
 - Anthropic stream errors now keep their kind. An `overloaded_error` or
   `api_error` arriving as an event is transient like the same HTTP status, so
   the retry loop handles it; a `model_context_window_exceeded` stop is reported

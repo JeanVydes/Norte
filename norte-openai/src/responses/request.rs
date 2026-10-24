@@ -6,6 +6,7 @@ use norte_core::{
     ReasoningPart, ReasoningRequest, Result, Role, SESSION_EXTENSION, ToolCallPart, ToolKind,
     ToolResultPart, ToolSpec, splice_vendor_extensions,
 };
+use norte_http::{Quirk, Quirks};
 use serde_json::{Value, json};
 
 use crate::WIRE_RESPONSES;
@@ -31,6 +32,15 @@ type CallIndex = BTreeMap<CallId, CallMeta>;
 pub(crate) fn build(
     model: &ModelRef,
     continuity: &OpenAiContinuity,
+    request: &ModelRequest,
+) -> Result<Value> {
+    build_with_quirks(model, continuity, &Quirks::new(), request)
+}
+
+pub(crate) fn build_with_quirks(
+    model: &ModelRef,
+    continuity: &OpenAiContinuity,
+    quirks: &Quirks,
     request: &ModelRequest,
 ) -> Result<Value> {
     let (instructions, conversation) = split_instructions(&request.messages);
@@ -80,12 +90,14 @@ pub(crate) fn build(
     if let Some(top) = request.params.logprobs {
         body.insert("top_logprobs".to_owned(), json!(top));
     }
-    if let Some(key) = request
-        .extensions
-        .get(SESSION_EXTENSION)
-        .and_then(Value::as_str)
-    {
-        body.insert("prompt_cache_key".to_owned(), Value::String(key.to_owned()));
+    if !quirks.contains(Quirk::NoPromptCacheKey) {
+        if let Some(key) = request
+            .extensions
+            .get(SESSION_EXTENSION)
+            .and_then(Value::as_str)
+        {
+            body.insert("prompt_cache_key".to_owned(), Value::String(key.to_owned()));
+        }
     }
     splice_vendor_extensions(model, WIRE_RESPONSES, &request.extensions, &mut body)?;
     Ok(Value::Object(body))
@@ -818,6 +830,17 @@ mod tests {
             .insert(SESSION_EXTENSION.to_owned(), serde_json::json!("ses_1"));
         let body = build(&model(), &continuity(), &request).expect("build");
         assert_eq!(body["prompt_cache_key"], "ses_1");
+    }
+
+    #[test]
+    fn no_prompt_cache_key_quirk_omits_the_key() {
+        let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
+        request
+            .extensions
+            .insert(SESSION_EXTENSION.to_owned(), serde_json::json!("ses_1"));
+        let quirks: Quirks = [Quirk::NoPromptCacheKey].into_iter().collect();
+        let body = build_with_quirks(&model(), &continuity(), &quirks, &request).expect("build");
+        assert!(body.get("prompt_cache_key").is_none());
     }
 
     #[test]

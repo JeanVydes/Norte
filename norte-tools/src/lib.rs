@@ -4,15 +4,15 @@
 mod fs;
 mod text;
 
+pub mod browser;
 pub mod command;
 pub mod edit;
 pub mod read;
 pub mod write;
-pub mod browser;
 
 pub use browser::{
-    BrowserAction, BrowserLimits, BrowserOutput, BrowserRequest, BrowserTool,
-    InteractiveElement, browser_tool,
+    BrowserAction, BrowserLimits, BrowserOutput, BrowserRequest, BrowserTool, InteractiveElement,
+    browser_tool,
 };
 
 pub use command::{

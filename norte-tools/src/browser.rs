@@ -226,7 +226,11 @@ impl FnExecutor<BrowserRequest, ToolOutput> for BrowserTool {
         self.run(&request, &ToolContext::new()).await
     }
 
-    async fn call_with_context(&self, _ctx: &ToolContext, request: BrowserRequest) -> Result<ToolOutput> {
+    async fn call_with_context(
+        &self,
+        _ctx: &ToolContext,
+        request: BrowserRequest,
+    ) -> Result<ToolOutput> {
         self.run(&request, _ctx).await
     }
 }
@@ -259,10 +263,14 @@ struct PersistentCdp {
 }
 
 impl PersistentCdp {
-    async fn connect(endpoint: &str, target_id: &str, ws_url: &str) -> std::result::Result<Self, Box<dyn StdError + Send + Sync>> {
+    async fn connect(
+        endpoint: &str,
+        target_id: &str,
+        ws_url: &str,
+    ) -> std::result::Result<Self, Box<dyn StdError + Send + Sync>> {
         let mut config = WebSocketConfig::default();
         config.max_message_size = Some(100 * 1024 * 1024); // 100 MB
-        config.max_frame_size = Some(100 * 1024 * 1024);   // 100 MB
+        config.max_frame_size = Some(100 * 1024 * 1024); // 100 MB
 
         let (ws, _) = connect_async_with_config(ws_url, Some(config), false).await?;
         Ok(Self {
@@ -273,7 +281,12 @@ impl PersistentCdp {
         })
     }
 
-    async fn send(&mut self, method: &str, params: Value, timeout_dur: Duration) -> std::result::Result<Value, Box<dyn StdError + Send + Sync>> {
+    async fn send(
+        &mut self,
+        method: &str,
+        params: Value,
+        timeout_dur: Duration,
+    ) -> std::result::Result<Value, Box<dyn StdError + Send + Sync>> {
         self.msg_id += 1;
         let id = self.msg_id;
         let req = json!({
@@ -307,16 +320,29 @@ impl PersistentCdp {
         }
     }
 
-    async fn evaluate(&mut self, expr: &str, timeout_dur: Duration) -> std::result::Result<Value, Box<dyn StdError + Send + Sync>> {
-        let res = self.send("Runtime.evaluate", json!({
-            "expression": expr,
-            "returnByValue": true,
-            "awaitPromise": true
-        }), timeout_dur).await?;
+    async fn evaluate(
+        &mut self,
+        expr: &str,
+        timeout_dur: Duration,
+    ) -> std::result::Result<Value, Box<dyn StdError + Send + Sync>> {
+        let res = self
+            .send(
+                "Runtime.evaluate",
+                json!({
+                    "expression": expr,
+                    "returnByValue": true,
+                    "awaitPromise": true
+                }),
+                timeout_dur,
+            )
+            .await?;
         Ok(res["result"]["value"].clone())
     }
 
-    async fn wait_for_load_event(&mut self, timeout_dur: Duration) -> std::result::Result<(), Box<dyn StdError + Send + Sync>> {
+    async fn wait_for_load_event(
+        &mut self,
+        timeout_dur: Duration,
+    ) -> std::result::Result<(), Box<dyn StdError + Send + Sync>> {
         let wait_future = async {
             while let Some(msg) = self.ws.next().await {
                 let msg = msg?;
@@ -335,7 +361,10 @@ impl PersistentCdp {
             Ok(res) => res,
             Err(_) => {
                 // Si el evento ya ocurrió o la página fue rápida, verificar readyState
-                if let Ok(ready) = self.evaluate("document.readyState", Duration::from_secs(2)).await {
+                if let Ok(ready) = self
+                    .evaluate("document.readyState", Duration::from_secs(2))
+                    .await
+                {
                     if ready.as_str() == Some("complete") || ready.as_str() == Some("interactive") {
                         return Ok(());
                     }
@@ -345,7 +374,10 @@ impl PersistentCdp {
         }
     }
 
-    async fn extract_interactive(&mut self, timeout_dur: Duration) -> std::result::Result<Vec<InteractiveElement>, Box<dyn StdError + Send + Sync>> {
+    async fn extract_interactive(
+        &mut self,
+        timeout_dur: Duration,
+    ) -> std::result::Result<Vec<InteractiveElement>, Box<dyn StdError + Send + Sync>> {
         let script = r#"
             (function() {
                 let items = document.querySelectorAll('a, button, input, textarea, select, [role="button"]');
@@ -386,7 +418,11 @@ async fn get_or_create_cdp<'a>(
     // Verificar si la conexión existente sigue viva
     if let Some(client) = guard.as_mut() {
         if client.endpoint == endpoint {
-            if client.evaluate("1 + 1", Duration::from_millis(500)).await.is_ok() {
+            if client
+                .evaluate("1 + 1", Duration::from_millis(500))
+                .await
+                .is_ok()
+            {
                 return Ok(guard);
             }
         }
@@ -399,14 +435,21 @@ async fn get_or_create_cdp<'a>(
         .get(&tabs_url)
         .send()
         .await
-        .map_err(|e| tool_fail(format!("Cannot connect to browser endpoint {tabs_url}: {e}")))?
+        .map_err(|e| {
+            tool_fail(format!(
+                "Cannot connect to browser endpoint {tabs_url}: {e}"
+            ))
+        })?
         .json()
         .await
         .map_err(|e| tool_fail(format!("Invalid tabs list JSON from browser: {e}")))?;
 
     let target_tab = tabs.iter().find(|t| {
         t["type"] == "page"
-            && !t["url"].as_str().unwrap_or("").starts_with("chrome-extension://")
+            && !t["url"]
+                .as_str()
+                .unwrap_or("")
+                .starts_with("chrome-extension://")
             && t["webSocketDebuggerUrl"].as_str().is_some()
     });
 
@@ -435,7 +478,11 @@ async fn get_or_create_cdp<'a>(
     };
 
     if !tab_id.is_empty() {
-        let act_url = format!("{}/json/activate/{}", endpoint.trim_end_matches('/'), tab_id);
+        let act_url = format!(
+            "{}/json/activate/{}",
+            endpoint.trim_end_matches('/'),
+            tab_id
+        );
         let _ = client_http.put(&act_url).send().await;
     }
 
@@ -444,8 +491,12 @@ async fn get_or_create_cdp<'a>(
         .map_err(|e| tool_fail(format!("CDP connection failed: {e}")))?;
 
     let _ = persistent.send("Page.enable", json!({}), cmd_timeout).await;
-    let _ = persistent.send("Runtime.enable", json!({}), cmd_timeout).await;
-    let _ = persistent.send("Page.bringToFront", json!({}), cmd_timeout).await;
+    let _ = persistent
+        .send("Runtime.enable", json!({}), cmd_timeout)
+        .await;
+    let _ = persistent
+        .send("Page.bringToFront", json!({}), cmd_timeout)
+        .await;
 
     *guard = Some(persistent);
     Ok(guard)
@@ -461,14 +512,21 @@ async fn execute_browser_action(
     let cmd_timeout = Duration::from_secs(limits.cdp_timeout_seconds);
 
     let mut guard = get_or_create_cdp(&request.endpoint, cdp_slot, cmd_timeout).await?;
-    let cdp = guard.as_mut().ok_or_else(|| tool_fail("Failed to obtain persistent CDP client"))?;
+    let cdp = guard
+        .as_mut()
+        .ok_or_else(|| tool_fail("Failed to obtain persistent CDP client"))?;
 
     let (message, elements, screenshot_base64) = match &request.action {
         BrowserAction::Navigate { url } => {
-            let _ = cdp.send("Page.navigate", json!({ "url": url }), cmd_timeout).await;
+            let _ = cdp
+                .send("Page.navigate", json!({ "url": url }), cmd_timeout)
+                .await;
             // Escuchar el evento Page.loadEventFired para prevenir condiciones de carrera
             let _ = cdp.wait_for_load_event(Duration::from_secs(10)).await;
-            let els = cdp.extract_interactive(cmd_timeout).await.unwrap_or_default();
+            let els = cdp
+                .extract_interactive(cmd_timeout)
+                .await
+                .unwrap_or_default();
             (format!("Navigated to {url}"), els, None)
         }
         BrowserAction::Click { selector, agent_id } => {
@@ -476,7 +534,9 @@ async fn execute_browser_action(
                 (Some(s), _) => s.clone(),
                 (None, Some(id)) => format!("[data-agent-id='{id}']"),
                 (None, None) => {
-                    return Err(Error::InvalidInput("Click action requires selector or agent_id".to_owned()));
+                    return Err(Error::InvalidInput(
+                        "Click action requires selector or agent_id".to_owned(),
+                    ));
                 }
             };
 
@@ -512,13 +572,23 @@ async fn execute_browser_action(
                 serde_json::to_string(&target_selector)?
             );
 
-            let res = cdp.evaluate(&click_js, cmd_timeout).await.map_err(|e| tool_fail(e.to_string()))?;
+            let res = cdp
+                .evaluate(&click_js, cmd_timeout)
+                .await
+                .map_err(|e| tool_fail(e.to_string()))?;
             if res.as_bool() != Some(true) {
                 return Err(tool_fail(format!("Element not found: {target_selector}")));
             }
             sleep(Duration::from_millis(400)).await;
-            let els = cdp.extract_interactive(cmd_timeout).await.unwrap_or_default();
-            (format!("Clicked element matching {target_selector}"), els, None)
+            let els = cdp
+                .extract_interactive(cmd_timeout)
+                .await
+                .unwrap_or_default();
+            (
+                format!("Clicked element matching {target_selector}"),
+                els,
+                None,
+            )
         }
         BrowserAction::Type {
             selector,
@@ -552,42 +622,75 @@ async fn execute_browser_action(
                 serde_json::to_string(text)?
             );
 
-            let res = cdp.evaluate(&type_js, cmd_timeout).await.map_err(|e| tool_fail(e.to_string()))?;
+            let res = cdp
+                .evaluate(&type_js, cmd_timeout)
+                .await
+                .map_err(|e| tool_fail(e.to_string()))?;
             if res.as_bool() != Some(true) {
-                return Err(tool_fail(format!("Element not found to type into: {target_selector}")));
+                return Err(tool_fail(format!(
+                    "Element not found to type into: {target_selector}"
+                )));
             }
             (format!("Typed into {target_selector}"), Vec::new(), None)
         }
         BrowserAction::Scroll { delta_x, delta_y } => {
             let scroll_js = format!("window.scrollBy({delta_x}, {delta_y}); true;");
             let _ = cdp.evaluate(&scroll_js, cmd_timeout).await;
-            (format!("Scrolled window by ({delta_x}, {delta_y})"), Vec::new(), None)
+            (
+                format!("Scrolled window by ({delta_x}, {delta_y})"),
+                Vec::new(),
+                None,
+            )
         }
         BrowserAction::Wait { seconds } => {
             let wait_secs = seconds.clamp(0.1, limits.max_wait_seconds as f64);
             sleep(Duration::from_secs_f64(wait_secs)).await;
-            let els = cdp.extract_interactive(cmd_timeout).await.unwrap_or_default();
+            let els = cdp
+                .extract_interactive(cmd_timeout)
+                .await
+                .unwrap_or_default();
             (format!("Waited for {wait_secs}s"), els, None)
         }
         BrowserAction::ExtractDom => {
-            let els = cdp.extract_interactive(cmd_timeout).await.map_err(|e| tool_fail(e.to_string()))?;
-            (format!("Extracted {} visible interactive elements", els.len()), els, None)
+            let els = cdp
+                .extract_interactive(cmd_timeout)
+                .await
+                .map_err(|e| tool_fail(e.to_string()))?;
+            (
+                format!("Extracted {} visible interactive elements", els.len()),
+                els,
+                None,
+            )
         }
         BrowserAction::Screenshot => {
             let shot_res = cdp
-                .send("Page.captureScreenshot", json!({ "format": "png" }), cmd_timeout)
+                .send(
+                    "Page.captureScreenshot",
+                    json!({ "format": "png" }),
+                    cmd_timeout,
+                )
                 .await
                 .map_err(|e| tool_fail(format!("Screenshot capture failed: {e}")))?;
             if let Some(data) = shot_res["data"].as_str() {
-                ("Screenshot captured successfully".to_owned(), Vec::new(), Some(data.to_owned()))
+                (
+                    "Screenshot captured successfully".to_owned(),
+                    Vec::new(),
+                    Some(data.to_owned()),
+                )
             } else {
                 return Err(tool_fail("Failed to extract screenshot payload".to_owned()));
             }
         }
     };
 
-    let url_val = cdp.evaluate("window.location.href", cmd_timeout).await.unwrap_or_default();
-    let title_val = cdp.evaluate("document.title", cmd_timeout).await.unwrap_or_default();
+    let url_val = cdp
+        .evaluate("window.location.href", cmd_timeout)
+        .await
+        .unwrap_or_default();
+    let title_val = cdp
+        .evaluate("document.title", cmd_timeout)
+        .await
+        .unwrap_or_default();
 
     Ok(BrowserOutput {
         url: url_val.as_str().unwrap_or("").to_string(),

@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use norte_core::{
     ContinuityAdapter, ContinuityFragment, ContinuityScope, ContinuitySemantics, ContinuityToken,
     Error, Message, ModelRef, Part, ReplayDecision, Result, WireFamily,
@@ -115,26 +117,38 @@ impl ContinuityAdapter for GeminiContinuity {
     }
 }
 
-/// Dropping a thought signature while a tool result is still owed makes the
-/// vendor reject the turn, so the adapter refuses it rather than sending a
-/// request known to be rejected (FR-CONT-2, FR-CONT-4).
+/// A call the model made but no result answers: dropping the token here would
+/// leave the vendor with a tool call it considers open, and it would reject the
+/// turn, so the adapter refuses it rather than sending a request known to be
+/// rejected (FR-CONT-2, FR-CONT-4). A call that a result already answers is a
+/// finished turn and must not block a replay.
 const BLOCK_REASON: &str =
     "cannot replay vendor continuity across models while a tool result is pending";
 
 fn mid_tool_loop(history: &[Message]) -> bool {
-    history.iter().any(|message| {
-        message
-            .parts
-            .iter()
-            .any(|part| matches!(part, Part::ToolResult(_)))
-    })
+    let mut called = BTreeSet::new();
+    let mut answered = BTreeSet::new();
+    for message in history {
+        for part in &message.parts {
+            match part {
+                Part::ToolCall(call) => {
+                    called.insert(call.call_id);
+                }
+                Part::ToolResult(result) => {
+                    answered.insert(result.call_id);
+                }
+                _ => {}
+            }
+        }
+    }
+    called.difference(&answered).next().is_some() || answered.difference(&called).next().is_some()
 }
 
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
 
-    use norte_core::{CallId, ToolResultPart};
+    use norte_core::{CallId, Role, ToolCallPart, ToolResultPart};
 
     use super::*;
 
@@ -179,7 +193,9 @@ mod tests {
     }
 
     #[test]
-    fn a_mid_tool_loop_switch_blocks_instead_of_dropping_tokens() {
+    fn a_result_without_its_call_blocks_instead_of_dropping_tokens() {
+        // The call the result answers is not in the history, so the vendor
+        // would see a result it cannot place: refuse rather than drop.
         let history = vec![Message::tool(vec![ToolResultPart::text(
             CallId::new(),
             "ok",
@@ -190,5 +206,33 @@ mod tests {
             &token("google/gemini-2.5-pro"),
         );
         assert!(matches!(decision, ReplayDecision::Block(_)));
+    }
+
+    #[test]
+    fn a_finished_tool_turn_drops_instead_of_blocking() {
+        // A committed turn: the call and its result are both present, the model
+        // answered, and the session was resumed. Nothing is owed, so a stale
+        // token is dropped rather than blocking the whole resume.
+        let call = CallId::new();
+        let history = vec![
+            Message::user("read a.txt"),
+            Message::new(
+                Role::Assistant,
+                vec![Part::ToolCall(ToolCallPart {
+                    call_id: call,
+                    name: "read".to_owned(),
+                    arguments: serde_json::json!({ "path": "a.txt" }),
+                    continuity: None,
+                })],
+            ),
+            Message::tool(vec![ToolResultPart::text(call, "contents")]),
+            Message::assistant("done"),
+        ];
+        let decision = continuity().replay(
+            &model_ref("google/gemini-2.5-flash"),
+            &history,
+            &token("google/gemini-2.5-pro"),
+        );
+        assert_eq!(decision, ReplayDecision::Drop);
     }
 }

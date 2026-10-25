@@ -12,9 +12,10 @@ use std::time::Duration;
 use norte_anthropic::{AnthropicContinuity, WIRE_MESSAGES};
 use norte_core::{
     ContinuityAdapter, ContinuityFragment, ContinuityScope, ContinuitySemantics, ContinuityToken,
-    Conversation, Digest, Message, Model, ModelRef, ModelRequest, WireFamily,
+    Digest, Message, Model, ModelRef, ModelRequest, WireFamily,
 };
 use norte_gemini::{GeminiContinuity, WIRE_GENERATE};
+use norte_harness::Conversation;
 use norte_harness::{Decision, PolicyDecision, PolicyOutcome, Store, combine};
 use norte_harness::{Harness, HarnessBuilder};
 use norte_openai::{OpenAiContinuity, WIRE_RESPONSES};

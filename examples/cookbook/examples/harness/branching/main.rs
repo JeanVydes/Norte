@@ -34,10 +34,10 @@ use std::error::Error;
 use std::sync::{Arc, Mutex};
 
 use norte_core::{
-    Capabilities, Commit, ContinuityAdapter, Digest, Message, Modality, Model, ModelRef,
-    ModelRequest, ModelStream, Node, NodeId, Phase, Session, StreamingGranularity, ToolKind,
-    ToolRegistry, TurnOptions, WireFamily,
+    Capabilities, ContinuityAdapter, Digest, Message, Modality, Model, ModelRef, ModelRequest,
+    ModelStream, NodeId, StreamingGranularity, ToolKind, ToolRegistry, TurnOptions, WireFamily,
 };
+use norte_harness::{Commit, Node, Phase, Session};
 use norte_harness::{Harness, HarnessBuilder, InMemoryBlobStore, InMemoryStore, Store};
 use norte_http::{AuthScheme, VendorProfile};
 use norte_openai::{OpenAiChat, WIRE_CHAT};

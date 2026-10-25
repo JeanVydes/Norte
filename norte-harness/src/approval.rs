@@ -10,7 +10,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use norte_core::approval::{Grant, GrantScope};
+use crate::grant::{Grant, GrantScope};
 use norte_core::error::{Error, Result};
 use norte_core::id::{ApprovalId, CallId, Digest, GrantId, SessionId, ToolName};
 

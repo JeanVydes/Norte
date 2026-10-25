@@ -28,9 +28,8 @@ use std::time::{Duration, Instant};
 use futures_util::StreamExt as _;
 use norte_bench_support::report::{Align, Report};
 use norte_bench_support::{Mode, Run, captured as new_capture};
-use norte_core::{
-    Capabilities, EngineEvent, Message, Modality, Role, StreamDelta, StreamingGranularity, Usage,
-};
+use norte_core::{Capabilities, Message, Modality, Role, StreamingGranularity, Usage};
+use norte_harness::{EngineEvent, StreamDelta};
 use norte_harness::{Harness, HarnessBuilder};
 use norte_harness::{InMemoryBlobStore, InMemoryStore};
 use serde::Serialize;

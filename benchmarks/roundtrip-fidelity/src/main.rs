@@ -37,9 +37,10 @@ use std::time::Instant;
 use norte_bench_support::report::{Align, Report};
 use norte_bench_support::{Mode, Run};
 use norte_core::{
-    CacheClass, CallId, Conversation, Message, Model, ModelRef, ModelRequest, Part, Role, TextPart,
-    ToolCallPart, ToolResultPart,
+    CacheClass, CallId, Message, Model, ModelRef, ModelRequest, Part, Role, TextPart, ToolCallPart,
+    ToolResultPart,
 };
+use norte_harness::Conversation;
 use norte_harness::{Harness, HarnessBuilder};
 use norte_testing::{InMemoryBlobStore, InMemoryStore, ProbeModel, text_capabilities};
 use serde::Serialize;

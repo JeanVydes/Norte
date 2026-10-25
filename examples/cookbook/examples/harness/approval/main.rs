@@ -19,9 +19,10 @@ use std::error::Error;
 use std::sync::Arc;
 
 use norte_core::{
-    Capabilities, FnExecutor, GrantScope, Message, Modality, ModelRef, Role, SessionId,
-    StreamingGranularity, ToolKind, ToolName, ToolRegistry, WireFamily,
+    Capabilities, FnExecutor, Message, Modality, ModelRef, Role, SessionId, StreamingGranularity,
+    ToolKind, ToolName, ToolRegistry, WireFamily,
 };
+use norte_harness::GrantScope;
 use norte_harness::{
     Harness, HarnessBuilder, InMemoryBlobStore, InMemoryStore, PolicySet, ToolApprovalPolicy,
 };

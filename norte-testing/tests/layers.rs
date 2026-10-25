@@ -3,11 +3,10 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
 use norte_core::{
-    Continuation, Digest, EngineEvent, Layer, LayerContext, Message, ModelRequest, ModelStream,
-    Observer, Result,
+    Continuation, Digest, Layer, LayerContext, Message, ModelRequest, ModelStream, Result,
 };
 use norte_harness::InMemoryStore;
-use norte_harness::{HarnessBuilder, InMemoryBlobStore};
+use norte_harness::{EngineEvent, HarnessBuilder, InMemoryBlobStore, Observer};
 use norte_testing::{ScriptedModel, model};
 
 /// A layer that changes the request before it reaches the model.
@@ -24,7 +23,7 @@ impl Layer for Rewriting {
 
     async fn wrap(
         &self,
-        context: &LayerContext<'_>,
+        context: &LayerContext,
         mut request: ModelRequest,
         next: &dyn Continuation,
     ) -> Result<ModelStream> {

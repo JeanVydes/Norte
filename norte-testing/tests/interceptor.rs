@@ -3,7 +3,8 @@
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use norte_core::{CallId, EngineEvent, FnExecutor, Message, Result, Role, ToolRegistry};
+use norte_core::{CallId, FnExecutor, Message, Result, Role, ToolRegistry};
+use norte_harness::EngineEvent;
 use norte_harness::{
     Harness, HarnessBuilder, Interception, InterceptionContext, Store, TurnInterceptor,
 };

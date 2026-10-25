@@ -3,10 +3,10 @@ use std::time::Duration;
 
 use serde_json::Value;
 
+use crate::domain::session::Session;
 use norte_core::capability::Capabilities;
 use norte_core::domain::message::Message;
 use norte_core::domain::part::{ToolCallPart, ToolResultPart};
-use norte_core::domain::session::Session;
 use norte_core::id::{ModelRef, ToolName};
 
 /// A typed view of the request a policy decides on. Policies perform no I/O:

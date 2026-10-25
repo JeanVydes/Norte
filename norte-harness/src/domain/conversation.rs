@@ -3,11 +3,11 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::domain::message::Message;
 use crate::domain::session::Phase;
-use crate::error::Result;
-use crate::id::SessionId;
-use crate::model::TurnOptions;
+use norte_core::domain::message::Message;
+use norte_core::error::Result;
+use norte_core::id::SessionId;
+use norte_core::model::TurnOptions;
 
 /// Schema version of the [`Conversation`] envelope.
 ///
@@ -78,7 +78,7 @@ impl Conversation {
     pub fn from_json(json: &str) -> Result<Self> {
         let conversation: Self = serde_json::from_str(json)?;
         if conversation.schema_version != CONVERSATION_SCHEMA_VERSION {
-            return Err(crate::error::Error::SchemaVersion {
+            return Err(norte_core::error::Error::SchemaVersion {
                 kind: "conversation".to_owned(),
                 found: conversation.schema_version,
             });
@@ -102,7 +102,7 @@ impl Conversation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::role::Role;
+    use norte_core::domain::role::Role;
 
     fn conversation() -> Conversation {
         Conversation {
@@ -172,7 +172,7 @@ mod tests {
         .to_string();
         assert!(matches!(
             Conversation::from_json(&json),
-            Err(crate::error::Error::SchemaVersion { .. })
+            Err(norte_core::error::Error::SchemaVersion { .. })
         ));
     }
 

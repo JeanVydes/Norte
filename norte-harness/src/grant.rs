@@ -10,7 +10,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::id::{CallId, GrantId, SessionId, ToolName};
+use norte_core::id::{CallId, GrantId, SessionId, ToolName};
 
 /// How wide a grant reaches.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -9,15 +9,15 @@
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use crate::domain::commit::Commit;
+use crate::domain::node::Node;
+use crate::domain::session::{Phase, Session};
+use crate::event::EngineEvent;
 use crate::interceptor::{Interception, InterceptionContext};
-use norte_core::domain::commit::Commit;
 use norte_core::domain::message::Message;
-use norte_core::domain::node::Node;
 use norte_core::domain::part::ToolResultPart;
 use norte_core::domain::role::Role;
-use norte_core::domain::session::{Phase, Session};
 use norte_core::error::{Error, Result};
-use norte_core::event::EngineEvent;
 use norte_core::id::{NodeId, SessionId};
 use norte_core::model::TurnOptions;
 
@@ -138,16 +138,6 @@ impl Harness {
                             message: last,
                         });
                     }
-                }
-                // `Phase` is `#[non_exhaustive]`. A phase this build does not
-                // know is one whose work it cannot do, so the loop stops here
-                // rather than guessing what to run next.
-                other => {
-                    tracing::warn!(?other, "unknown session phase; ending the turn");
-                    return Ok(TurnOutcome {
-                        session,
-                        message: last,
-                    });
                 }
             }
         }

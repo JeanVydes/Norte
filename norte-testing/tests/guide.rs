@@ -117,7 +117,7 @@ impl Layer for PinRoute {
 
     async fn wrap(
         &self,
-        context: &LayerContext<'_>,
+        context: &LayerContext,
         request: ModelRequest,
         next: &dyn Continuation,
     ) -> Result<ModelStream> {

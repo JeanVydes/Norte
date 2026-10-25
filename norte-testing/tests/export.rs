@@ -8,10 +8,11 @@
 use std::sync::Arc;
 
 use norte_core::{
-    CallId, ContinuityScope, ContinuityToken, Conversation, Error, FnExecutor, GrantScope, Message,
-    Model, ModelRef, ModelRequest, Part, Phase, ReasoningPart, ReasoningVisibility, Result, Role,
-    TextPart, ToolCallPart, ToolName, ToolRegistry, ToolResultPart, WireFamily,
+    CallId, ContinuityScope, ContinuityToken, Error, FnExecutor, Message, Model, ModelRef,
+    ModelRequest, Part, ReasoningPart, ReasoningVisibility, Result, Role, TextPart, ToolCallPart,
+    ToolName, ToolRegistry, ToolResultPart, WireFamily,
 };
+use norte_harness::{Conversation, GrantScope, Phase};
 use norte_harness::{Harness, HarnessBuilder};
 use norte_harness::{PolicySet, ToolApprovalPolicy};
 use norte_openai::OpenAiChat;

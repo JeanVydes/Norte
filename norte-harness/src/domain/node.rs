@@ -4,8 +4,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::domain::message::Message;
-use crate::id::NodeId;
+use norte_core::domain::message::Message;
+use norte_core::id::NodeId;
 
 /// Node kinds the core understands. Persisted kinds evolve additively; a reader
 /// that meets an unknown kind reports a typed error instead of guessing.

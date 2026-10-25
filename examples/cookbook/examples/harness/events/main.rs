@@ -16,10 +16,8 @@ use std::error::Error;
 use std::sync::Arc;
 
 use futures_util::StreamExt;
-use norte_core::{
-    Capabilities, EngineEvent, Message, Modality, ModelRef, StreamDelta, StreamingGranularity,
-    WireFamily,
-};
+use norte_core::{Capabilities, Message, Modality, ModelRef, StreamingGranularity, WireFamily};
+use norte_harness::{EngineEvent, StreamDelta};
 use norte_harness::{HarnessBuilder, InMemoryBlobStore, InMemoryStore};
 use norte_http::{AuthScheme, VendorProfile};
 use norte_openai::{OpenAiChat, WIRE_CHAT};

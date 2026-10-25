@@ -97,10 +97,9 @@ pub mod presets {
 pub mod prelude {
     pub use norte_core::blob::InMemoryBlobStore;
     pub use norte_core::{
-        Capabilities, EngineEvent, Error, FnExecutor, Layer, Message, Modality, Model, ModelRef,
-        Observer, Part, Role, StreamDelta, ToolOutput, ToolRegistry, TurnOptions, Usage,
+        Capabilities, Error, FnExecutor, Layer, Message, Modality, Model, ModelRef, Part, Role,
+        ToolOutput, ToolRegistry, TurnOptions, Usage,
     };
-
     #[cfg(feature = "harness")]
     pub use norte_harness::{
         Decision, Harness, HarnessBuilder, InMemoryStore, Policy, PolicySet, PolicyView,

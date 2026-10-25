@@ -10,10 +10,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use norte_core::{
-    Conversation, Digest, EngineEvent, Error, Feature, FnExecutor, GenerationParams, Message,
-    Model, ModelRequest, Observer, ReasoningEffort, ReasoningRequest, Result, ToolName,
-    ToolRegistry, TurnOptions,
+    Digest, Error, Feature, FnExecutor, GenerationParams, Message, Model, ModelRequest,
+    ReasoningEffort, ReasoningRequest, Result, ToolName, ToolRegistry, TurnOptions,
 };
+use norte_harness::{Conversation, EngineEvent, Observer};
 use norte_harness::{Harness, HarnessBuilder, HarnessConfig};
 use norte_testing::{
     InMemoryBlobStore, InMemoryStore, ProbeModel, RecordingObserver, ScriptedModel, model,
@@ -535,7 +535,7 @@ async fn export_captures_and_import_restores_request_config() {
     let engine_b = build(probe_b.clone(), registry(), Vec::new(), config);
     let imported = engine_b
         .import(
-            norte_core::Conversation::from_json(&conversation.to_json().expect("json"))
+            norte_harness::Conversation::from_json(&conversation.to_json().expect("json"))
                 .expect("decode"),
         )
         .await

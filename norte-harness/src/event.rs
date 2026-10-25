@@ -1,13 +1,13 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::capability::ReasoningRequest;
-use crate::domain::logprob::TokenLogprob;
-use crate::domain::moderation::SafetyRating;
-use crate::domain::part::Part;
 use crate::domain::session::Phase;
-use crate::id::{ApprovalId, CallId, Digest, GrantId, SessionId, ToolName};
-use crate::model::GenerationParams;
+use norte_core::capability::ReasoningRequest;
+use norte_core::domain::logprob::TokenLogprob;
+use norte_core::domain::moderation::SafetyRating;
+use norte_core::domain::part::Part;
+use norte_core::id::{ApprovalId, CallId, Digest, GrantId, SessionId, ToolName};
+use norte_core::model::GenerationParams;
 
 /// A streamed delta as observers see it. Continuity material is reduced to its
 /// length: token payloads never enter the event channel.
@@ -216,7 +216,7 @@ pub enum EngineEvent {
         /// The layer's name.
         layer: String,
         /// Why it answered.
-        reason: crate::layer::ShortCircuitReason,
+        reason: norte_core::layer::ShortCircuitReason,
     },
     /// The engine reconstructed a request: the digest over the exact wire, the
     /// deterministic cache boundary positions and the effective request

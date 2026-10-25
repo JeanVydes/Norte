@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use norte_core::{EngineEvent, Observer};
+use norte_harness::{EngineEvent, Observer};
 
 /// Records every observed event in memory for assertions.
 #[derive(Clone)]

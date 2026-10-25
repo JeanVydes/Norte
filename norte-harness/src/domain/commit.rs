@@ -3,11 +3,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::approval::Grant;
 use crate::domain::node::Node;
 use crate::domain::session::{Phase, Session};
-use crate::error::{Error, Result};
-use crate::id::{NodeId, SessionId};
+use crate::grant::Grant;
+use norte_core::error::{Error, Result};
+use norte_core::id::{NodeId, SessionId};
 
 /// One atomic transition. A store applies all of it or none of it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

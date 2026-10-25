@@ -7,11 +7,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use norte_core::{
-    CallId, ContinuityFragment, ContinuityScope, ContinuitySemantics, EngineEvent, Error, Feature,
-    FinishReason, FnExecutor, LogprobValue, Message, MessageStatus, Part, Phase, Result, Role,
-    StreamEvent, TokenLogprob, ToolContext, ToolName, ToolRegistry, ToolResultPart, WireFamily,
+    CallId, ContinuityFragment, ContinuityScope, ContinuitySemantics, Error, Feature, FinishReason,
+    FnExecutor, LogprobValue, Message, MessageStatus, Part, Result, Role, StreamEvent,
+    TokenLogprob, ToolContext, ToolName, ToolRegistry, ToolResultPart, WireFamily,
 };
 use norte_harness::{Decision, Policy, PolicySet, PolicyView, Store, ToolApprovalPolicy};
+use norte_harness::{EngineEvent, Phase};
 use norte_harness::{Harness, HarnessBuilder, HarnessConfig};
 use norte_testing::{
     InMemoryBlobStore, InMemoryStore, ScriptedModel, StrictContinuity, model, text_capabilities,
@@ -381,7 +382,7 @@ async fn a_park_after_a_call_does_not_run_that_call_again() {
         .engine
         .approve(
             pending[0].id,
-            norte_core::GrantScope::Call(second),
+            norte_harness::GrantScope::Call(second),
             "tester",
         )
         .await
@@ -445,7 +446,7 @@ async fn early_tool_execution_does_not_run_a_call_twice_across_a_park() {
         .engine
         .approve(
             pending[0].id,
-            norte_core::GrantScope::Call(second),
+            norte_harness::GrantScope::Call(second),
             "tester",
         )
         .await
@@ -618,7 +619,11 @@ async fn a_required_approval_blocks_then_resumes() {
 
     harness
         .engine
-        .approve(record.id, norte_core::GrantScope::Call(call_id), "tester")
+        .approve(
+            record.id,
+            norte_harness::GrantScope::Call(call_id),
+            "tester",
+        )
         .await
         .expect("approve");
 
@@ -699,7 +704,7 @@ async fn a_later_transform_cannot_bypass_an_earlier_approval() {
         .engine
         .approve(
             pending[0].id,
-            norte_core::GrantScope::Call(call_id),
+            norte_harness::GrantScope::Call(call_id),
             "tester",
         )
         .await
@@ -764,7 +769,7 @@ async fn an_earlier_transform_is_what_the_human_approves_and_runs() {
         .engine
         .approve(
             pending[0].id,
-            norte_core::GrantScope::Call(call_id),
+            norte_harness::GrantScope::Call(call_id),
             "tester",
         )
         .await
@@ -832,7 +837,7 @@ async fn the_host_context_reaches_a_tool_that_resumes_after_approval() {
     engine
         .approve(
             pending[0].id,
-            norte_core::GrantScope::Call(call_id),
+            norte_harness::GrantScope::Call(call_id),
             "tester",
         )
         .await
@@ -964,7 +969,7 @@ async fn a_tool_scoped_grant_covers_later_calls() {
         .engine
         .approve(
             pending[0].id,
-            norte_core::GrantScope::Tool(ToolName::new("echo").expect("tool")),
+            norte_harness::GrantScope::Tool(ToolName::new("echo").expect("tool")),
             "tester",
         )
         .await
@@ -1068,7 +1073,7 @@ async fn a_revoked_grant_stops_authorizing_the_call() {
     let approval = pending[0].id;
     harness
         .engine
-        .approve(approval, norte_core::GrantScope::Call(call_id), "tester")
+        .approve(approval, norte_harness::GrantScope::Call(call_id), "tester")
         .await
         .expect("approve");
 
@@ -1148,7 +1153,7 @@ async fn revoking_a_standing_grant_brings_the_question_back() {
         .engine
         .approve(
             pending[0].id,
-            norte_core::GrantScope::Tool(ToolName::new("echo").expect("tool")),
+            norte_harness::GrantScope::Tool(ToolName::new("echo").expect("tool")),
             "tester",
         )
         .await

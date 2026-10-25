@@ -8,8 +8,9 @@
 
 use std::sync::Arc;
 
-use norte_core::{CacheClass, Commit, Message, ModelRequest, Node, Phase};
+use norte_core::{CacheClass, Message, ModelRequest};
 use norte_harness::Store;
+use norte_harness::{Commit, Node, Phase};
 use norte_harness::{Harness, HarnessBuilder};
 use norte_testing::{InMemoryBlobStore, InMemoryStore, ScriptedModel, model};
 

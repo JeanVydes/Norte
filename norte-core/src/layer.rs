@@ -1,33 +1,21 @@
 use std::sync::Arc;
 
 use crate::error::Result;
-use crate::event::{EngineEvent, EventSink};
 use crate::id::SessionId;
 use crate::model::{ModelRequest, ModelStream};
 use crate::stream::StreamEvent;
 
 /// What a layer may rely on while wrapping a request.
-pub struct LayerContext<'a> {
+///
+/// A layer wraps *one model call*: it sees the session and turn it belongs to
+/// and nothing else. It has no sink and no way to report: what it decides is the
+/// [`ModelStream`] it returns, and a stream that never reaches the model is a
+/// short circuit by construction.
+pub struct LayerContext {
     /// The session the turn belongs to.
     pub session: SessionId,
     /// The turn number.
     pub turn: u64,
-    /// The sink a layer uses to emit engine events.
-    pub events: &'a dyn EventSink,
-}
-
-impl LayerContext<'_> {
-    /// Records that `layer` short-circuited the request (FR-LAYER-2).
-    ///
-    /// The typed reason is emitted as an audit event. The layer is still the one
-    /// that returns its own synthetic [`ModelStream`].
-    pub fn short_circuit(&self, layer: &str, reason: ShortCircuitReason) {
-        self.events.emit(EngineEvent::LayerShortCircuited {
-            session: self.session,
-            layer: layer.to_owned(),
-            reason,
-        });
-    }
 }
 
 /// A typed reason a layer may short-circuit a request (FR-LAYER-2).
@@ -84,7 +72,7 @@ pub trait Layer: Send + Sync {
     /// Returns whatever the layer or the call below it fails with.
     async fn wrap(
         &self,
-        context: &LayerContext<'_>,
+        context: &LayerContext,
         request: ModelRequest,
         next: &dyn Continuation,
     ) -> Result<ModelStream>;
@@ -98,7 +86,7 @@ pub trait Continuation: Send + Sync {
     /// # Errors
     ///
     /// Returns whatever the next layer or the model call fails with.
-    async fn call(&self, context: &LayerContext<'_>, request: ModelRequest) -> Result<ModelStream>;
+    async fn call(&self, context: &LayerContext, request: ModelRequest) -> Result<ModelStream>;
 }
 
 /// A fixed stack, outermost first, built once at construction.
@@ -127,7 +115,7 @@ impl LayerStack {
     /// Propagates the first error any layer or the terminal call returns.
     pub async fn run<'a>(
         &'a self,
-        context: &LayerContext<'_>,
+        context: &LayerContext,
         request: ModelRequest,
         terminal: &'a dyn Continuation,
     ) -> Result<ModelStream> {
@@ -148,7 +136,7 @@ struct Terminal<'a> {
 
 #[async_trait::async_trait]
 impl Continuation for Terminal<'_> {
-    async fn call(&self, context: &LayerContext<'_>, request: ModelRequest) -> Result<ModelStream> {
+    async fn call(&self, context: &LayerContext, request: ModelRequest) -> Result<ModelStream> {
         self.inner.call(context, request).await
     }
 }
@@ -160,7 +148,7 @@ struct Step<'a> {
 
 #[async_trait::async_trait]
 impl Continuation for Step<'_> {
-    async fn call(&self, context: &LayerContext<'_>, request: ModelRequest) -> Result<ModelStream> {
+    async fn call(&self, context: &LayerContext, request: ModelRequest) -> Result<ModelStream> {
         self.layer.wrap(context, request, self.next.as_ref()).await
     }
 }
@@ -173,57 +161,31 @@ pub struct ModelContinuation<'a> {
 
 #[async_trait::async_trait]
 impl Continuation for ModelContinuation<'_> {
-    async fn call(
-        &self,
-        _context: &LayerContext<'_>,
-        request: ModelRequest,
-    ) -> Result<ModelStream> {
+    async fn call(&self, _context: &LayerContext, request: ModelRequest) -> Result<ModelStream> {
         self.model.stream(request).await
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
-
     use futures_util::StreamExt;
 
     use super::*;
     use crate::domain::message::FinishReason;
 
-    #[derive(Default)]
-    struct Sink(Mutex<Vec<EngineEvent>>);
-
-    impl EventSink for Sink {
-        fn emit(&self, event: EngineEvent) {
-            self.0.lock().expect("lock").push(event);
-        }
-    }
-
     #[test]
-    fn a_short_circuit_emits_a_typed_reason() {
-        let sink = Sink::default();
-        let context = LayerContext {
-            session: SessionId::new(),
-            turn: 2,
-            events: &sink,
+    fn a_short_circuit_reason_is_comparable() {
+        // The typed reason a layer reports through its own stream.
+        let reason = ShortCircuitReason::Rejected {
+            detail: "blocked".to_owned(),
         };
-        context.short_circuit(
-            "cache",
+        assert_eq!(
+            reason,
             ShortCircuitReason::Rejected {
                 detail: "blocked".to_owned(),
-            },
+            }
         );
-        let events = sink.0.lock().expect("lock");
-        assert!(matches!(
-            events.as_slice(),
-            [EngineEvent::LayerShortCircuited { layer, reason, .. }]
-                if layer == "cache"
-                    && *reason
-                        == ShortCircuitReason::Rejected {
-                            detail: "blocked".to_owned(),
-                        }
-        ));
+        assert_ne!(reason, ShortCircuitReason::CacheHit);
     }
 
     #[tokio::test]

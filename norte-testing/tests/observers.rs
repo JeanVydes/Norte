@@ -3,8 +3,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use norte_core::{EngineEvent, Message, StreamDelta, StreamTransform, ToolRegistry};
+use norte_core::{Message, ToolRegistry};
 use norte_harness::InMemoryStore;
+use norte_harness::{EngineEvent, StreamDelta, StreamTransform};
 use norte_harness::{Harness, HarnessBuilder, InMemoryBlobStore};
 use norte_testing::{RecordingObserver, ScriptedModel, model};
 

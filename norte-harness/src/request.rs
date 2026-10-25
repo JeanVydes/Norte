@@ -13,15 +13,15 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+use crate::domain::session::Session;
+use crate::event::{EngineEvent, StreamDelta};
 use crate::policy::{PolicyOutcome, PolicyView, combine};
 use norte_core::domain::continuity::{ContinuityToken, ReplayDecision};
 use norte_core::domain::media::{MediaPart, MediaSource};
 use norte_core::domain::message::{FinishReason, Message, MessageOrigin, MessageStatus};
 use norte_core::domain::part::{Part, ToolCallPart, ToolResultPart};
 use norte_core::domain::role::Role;
-use norte_core::domain::session::Session;
 use norte_core::error::{Error, Result};
-use norte_core::event::{EngineEvent, StreamDelta};
 use norte_core::id::{CallId, Digest, GenerationId, ModelRef, ToolName};
 use norte_core::layer::LayerContext;
 use norte_core::model::{ModelRequest, ModelStream, SESSION_EXTENSION, TurnOptions};
@@ -29,8 +29,8 @@ use norte_core::preprocess::MediaPayload;
 use norte_core::stream::{Accumulated, StreamAccumulator, StreamEvent};
 
 use super::{
-    CallSite, ChannelSink, Digesting, Harness, PreparedCall, Reconstructed, cache_boundaries,
-    digest_of, execute_call, materialize_message, request_messages, stream_delta,
+    CallSite, Digesting, Harness, PreparedCall, Reconstructed, cache_boundaries, digest_of,
+    execute_call, materialize_message, request_messages, stream_delta,
 };
 
 impl Harness {
@@ -92,13 +92,9 @@ impl Harness {
         // describes then.
         let reconstructed = request.clone();
         let wire_digest = Mutex::new(None);
-        let sink = ChannelSink {
-            sender: sender.clone(),
-        };
         let context = LayerContext {
             session: session.id,
             turn: session.turn,
-            events: &sink,
         };
         let continuation = Digesting {
             model: &*self.model,

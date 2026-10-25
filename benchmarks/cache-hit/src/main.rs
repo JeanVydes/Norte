@@ -70,9 +70,10 @@ use norte_bench_support::{
     money_opt, tokens,
 };
 use norte_core::{
-    Capabilities, Digest, FnExecutor, GrantScope, Message, Modality, Role, SessionId,
-    StreamingGranularity, ToolKind, ToolName, ToolRegistry, TurnOptions, Usage,
+    Capabilities, Digest, FnExecutor, Message, Modality, Role, SessionId, StreamingGranularity,
+    ToolKind, ToolName, ToolRegistry, TurnOptions, Usage,
 };
+use norte_harness::GrantScope;
 use norte_harness::{Harness, HarnessBuilder, InMemoryBlobStore};
 use norte_harness::{InMemoryStore, PolicySet, ToolApprovalPolicy};
 use schemars::JsonSchema;

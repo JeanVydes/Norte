@@ -29,12 +29,20 @@ let harness = HarnessBuilder::new()
 "]
 
 /// The record of an approval decision, and the grant it issues.
+/// The record of an approval decision, and the grant it issues.
 pub mod approval;
 /// What the host decides about a call a policy parked.
 pub mod approvals;
+pub mod domain;
+/// The events the harness emits while a turn runs.
+pub mod event;
+/// The grants a session holds.
+pub mod grant;
 /// In-memory reference implementations of the ports.
 pub mod interceptor;
 pub mod memory;
+/// Observers and transforms that watch a turn's events.
+pub mod observer;
 /// The tool-call decision: a rule over one call, evaluated before it runs.
 pub mod policy;
 /// Building and reconstructing one request.
@@ -61,7 +69,14 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 pub use crate::approval::{ApprovalRecord, AuditAction};
+pub use crate::domain::commit::Commit;
+pub use crate::domain::conversation::{CONVERSATION_SCHEMA_VERSION, Conversation};
+pub use crate::domain::node::{Node, NodeKind};
+pub use crate::domain::session::{Phase, Session};
+pub use crate::event::{EngineEvent, EventSink, StreamDelta};
+pub use crate::grant::{Grant, GrantScope};
 pub use crate::interceptor::{Interception, InterceptionContext, InterceptorSet, TurnInterceptor};
+pub use crate::observer::{Observer, ObserverSet, StreamTransform};
 pub use crate::policy::{
     Decision, Policy, PolicyDecision, PolicyOutcome, PolicySet, PolicyView, ToolApprovalPolicy,
     combine,
@@ -69,13 +84,10 @@ pub use crate::policy::{
 pub use crate::store::Store;
 use norte_core::BlobStore;
 use norte_core::capability::{Capabilities, ReasoningRequest};
-use norte_core::domain::commit::Commit;
 use norte_core::domain::message::{Message, Usage};
 use norte_core::domain::part::{Part, ToolCallPart, ToolResultPart};
 use norte_core::domain::role::Role;
-use norte_core::domain::session::Session;
 use norte_core::error::{Error, Result};
-use norte_core::event::{EngineEvent, EventSink, StreamDelta};
 use norte_core::id::{Digest, SessionId, ToolName};
 use norte_core::layer::{Continuation, LayerContext, LayerStack};
 use norte_core::media_adapter::MediaAdapter;
@@ -83,7 +95,6 @@ use norte_core::model::{
     GenerationParams, Model, ModelRequest, ModelStream, PARTIAL_TOOLS_KEY, StreamLimits,
     TURN_OPTIONS_KEY, TurnOptions,
 };
-use norte_core::observer::{Observer, ObserverSet, StreamTransform};
 use norte_core::preprocess::MediaPreprocessor;
 use norte_core::stream::StreamEvent;
 use norte_core::tool::registry::ToolRegistry;
@@ -709,11 +720,7 @@ struct Digesting<'a> {
 
 #[async_trait::async_trait]
 impl Continuation for Digesting<'_> {
-    async fn call(
-        &self,
-        _context: &LayerContext<'_>,
-        request: ModelRequest,
-    ) -> Result<ModelStream> {
+    async fn call(&self, _context: &LayerContext, request: ModelRequest) -> Result<ModelStream> {
         *self.digest.lock().unwrap_or_else(PoisonError::into_inner) = Some(digest_of(&request));
         self.model.stream(request).await
     }

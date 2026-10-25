@@ -4,8 +4,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use norte_core::{Commit, EngineEvent, Error, Message, Observer, Phase, SessionId};
+use norte_core::{Error, Message, SessionId};
 use norte_harness::Store;
+use norte_harness::{Commit, EngineEvent, Observer, Phase};
 use norte_harness::{Harness, HarnessBuilder};
 use norte_testing::{InMemoryBlobStore, InMemoryStore, RecordingObserver, ScriptedModel, model};
 

@@ -4,8 +4,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::approval::Grant;
-use crate::id::{NodeId, SessionId};
+use crate::grant::Grant;
+use norte_core::id::{NodeId, SessionId};
 
 /// Durable position of a session in the turn loop. Unknown phases fail to
 /// deserialize instead of being coerced to a default.

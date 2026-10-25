@@ -15,9 +15,11 @@ use std::collections::HashMap;
 use tokio::sync::RwLock;
 
 use crate::approval::ApprovalRecord;
+use crate::domain::commit::Commit;
+use crate::domain::node::Node;
+use crate::domain::session::Session;
 use crate::store::Store;
-use norte_core::Commit;
-use norte_core::{ApprovalId, Error, Node, NodeId, Result, Session, SessionId};
+use norte_core::{ApprovalId, Error, NodeId, Result, SessionId};
 
 #[derive(Default)]
 struct Tables {
@@ -182,7 +184,7 @@ impl Store for InMemoryStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use norte_core::Phase;
+    use crate::domain::session::Phase;
 
     fn creation(session_id: SessionId) -> Commit {
         Commit {

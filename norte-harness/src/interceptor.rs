@@ -2,10 +2,10 @@
 
 use std::sync::Arc;
 
+use crate::domain::session::Phase;
+use crate::event::EventSink;
 use norte_core::domain::message::Message;
-use norte_core::domain::session::Phase;
 use norte_core::error::Result;
-use norte_core::event::EventSink;
 use norte_core::id::{NodeId, SessionId};
 
 /// What an interceptor decided about the turn.
@@ -52,7 +52,7 @@ pub struct InterceptionContext<'a> {
 /// runs, the engine is the only writer.
 ///
 /// This is the seam a steering message takes when it must reach the request
-/// that is already in flight. A [`Layer`](crate::layer::Layer) cannot do it: a
+/// that is already in flight. A [`Layer`](norte_core::layer::Layer) cannot do it: a
 /// layer sees the request after it was built, so what it adds is neither
 /// durable nor visible to the policies.
 #[async_trait::async_trait]

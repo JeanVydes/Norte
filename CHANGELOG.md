@@ -122,6 +122,12 @@ Draft. Not published.
 
 ### Changed
 
+- A layer that refuses a request now reports it as `Error::ShortCircuited`,
+  carrying the layer's name and a typed `ShortCircuitReason`. The harness
+  recognises it and emits `EngineEvent::LayerShortCircuited` before propagating
+  the error, so the audit trail keeps the entry it had. `LayerContext` lost its
+  `EventSink` and its lifetime: a layer wraps one model call, and recording the
+  refusal is the loop's business rather than the layer's.
 - **The cookbook is organised by what a recipe needs, not by a prefix.** The
   crate root holds the ones that use `norte-core` alone, and each one is named
   for its subject: `model`, `turn`, `tools`, `layer`, `image_in`, `image_out`.

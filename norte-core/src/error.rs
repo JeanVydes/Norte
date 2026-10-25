@@ -129,6 +129,19 @@ pub enum Error {
     #[error("invalid input: {0}")]
     InvalidInput(String),
 
+    /// A layer refused the request before it reached the model.
+    ///
+    /// The reason is typed so a runtime can put it in the audit trail: a layer
+    /// wraps one model call and knows nothing about events or sessions, so it
+    /// reports *why* it stopped here and lets the caller decide what to record.
+    #[error("the {} layer short-circuited the request: {reason:?}", layer)]
+    ShortCircuited {
+        /// The layer's name, as it appears in the audit trail.
+        layer: String,
+        /// Why it stopped the request.
+        reason: crate::layer::ShortCircuitReason,
+    },
+
     /// An identifier could not be parsed.
     #[error("invalid identifier: {0}")]
     InvalidId(String),

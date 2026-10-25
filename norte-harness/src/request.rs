@@ -22,8 +22,8 @@ use norte_core::domain::message::{FinishReason, Message, MessageOrigin, MessageS
 use norte_core::domain::part::{Part, ToolCallPart, ToolResultPart};
 use norte_core::domain::role::Role;
 use norte_core::error::{Error, Result};
-use norte_core::id::{CallId, Digest, GenerationId, ModelRef, ToolName};
-use norte_core::layer::LayerContext;
+use norte_core::id::{CallId, Digest, GenerationId, ModelRef, SessionId, ToolName};
+use norte_core::layer::{Continuation, LayerContext};
 use norte_core::model::{ModelRequest, ModelStream, SESSION_EXTENSION, TurnOptions};
 use norte_core::preprocess::MediaPayload;
 use norte_core::stream::{Accumulated, StreamAccumulator, StreamEvent};
@@ -100,7 +100,9 @@ impl Harness {
             model: &*self.model,
             digest: &wire_digest,
         };
-        let mut stream = self.layers.run(&context, request, &continuation).await?;
+        let mut stream = self
+            .layered_call(&context, request, &continuation, session.id, sender)
+            .await?;
         let request_digest = wire_digest
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -384,6 +386,37 @@ impl Harness {
             // read, mean the same thing here: leave the token out. Dropping is
             // the safe reading of an unknown continuity decision.
             _ => Ok(part.without_continuity()),
+        }
+    }
+
+    /// Runs the layer stack, recording a layer's refusal before propagating it.
+    ///
+    /// A layer wraps one model call and names its reason in the error it
+    /// returns; it has no sink and should not need one. Putting the refusal in
+    /// the audit trail is the loop's business.
+    async fn layered_call(
+        &self,
+        context: &LayerContext,
+        request: ModelRequest,
+        continuation: &dyn Continuation,
+        session: SessionId,
+        sender: &mpsc::Sender<EngineEvent>,
+    ) -> Result<ModelStream> {
+        match self.layers.run(context, request, continuation).await {
+            Ok(stream) => Ok(stream),
+            Err(Error::ShortCircuited { layer, reason }) => {
+                self.emit(
+                    sender,
+                    EngineEvent::LayerShortCircuited {
+                        session,
+                        layer: layer.clone(),
+                        reason: reason.clone(),
+                    },
+                )
+                .await;
+                Err(Error::ShortCircuited { layer, reason })
+            }
+            Err(error) => Err(error),
         }
     }
 

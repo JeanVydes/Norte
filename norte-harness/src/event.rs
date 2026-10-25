@@ -141,6 +141,8 @@ pub enum EngineEvent {
         turn: u64,
         /// The call the output belongs to.
         call_id: CallId,
+        /// The tool that is running, as its sisters report it.
+        tool: ToolName,
         /// The stream the bytes came from.
         stream: ToolStream,
         /// The bytes themselves, already redacted by the tool.

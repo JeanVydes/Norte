@@ -566,6 +566,7 @@ struct CallProgress {
     session: SessionId,
     turn: u64,
     call_id: CallId,
+    tool: ToolName,
 }
 
 impl ProgressSink for CallProgress {
@@ -574,6 +575,7 @@ impl ProgressSink for CallProgress {
             session: self.session,
             turn: self.turn,
             call_id: self.call_id,
+            tool: self.tool.clone(),
             stream: progress.stream,
             bytes: progress.bytes,
             last: progress.last,
@@ -628,6 +630,7 @@ async fn execute_call(
         session: site.session,
         turn: site.turn,
         call_id: call.call_id,
+        tool: tool.clone(),
     });
     let mut context = ToolContext::new()
         .with_session(site.session)

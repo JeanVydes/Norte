@@ -227,6 +227,8 @@ pub enum ShellCode {
     Timeout,
     /// The caller cancelled and the process group was killed.
     Cancelled,
+    /// The caller stopped waiting and the process was left running.
+    Detached,
     /// The request itself could not be served (an unresolvable stdin blob).
     InvalidInput,
     /// The process never started.
@@ -238,6 +240,10 @@ pub enum ShellCode {
 /// The structured outcome of one invocation (FR-TOOL-BASH-3): what the process
 /// wrote, how it ended, and the digests that make it auditable
 /// (FR-TOOL-BASH-8).
+// The four flags restate `code`, which already says how the call ended. They
+// are here because the wire carries them and the renderers read them; a reader
+// that wants the reason matches on `code` instead.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShellOutput {
     /// How the invocation ended.
@@ -260,9 +266,20 @@ pub struct ShellOutput {
     /// Whether any of what the process wrote was left out of this result.
     pub truncated: bool,
     /// Whether the host's time bound killed the process.
+    ///
+    /// It, like `cancelled` and `detached`, restates `code` for readers that
+    /// want a flag rather than a match. They are kept because the wire and the
+    /// renderers already read them, not because the state is not also in
+    /// `code`.
     pub timed_out: bool,
     /// Whether the caller cancelled the invocation.
     pub cancelled: bool,
+    /// Whether the caller stopped waiting and the process was left running.
+    ///
+    /// The process outlives this call: its output belongs to whoever detached
+    /// it, and `stdout`/`stderr` hold whatever arrived before the detach.
+    #[serde(default)]
+    pub detached: bool,
     /// The directory the process ran in, when the request named one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<PathBuf>,
@@ -304,6 +321,7 @@ impl ShellOutput {
             truncated: false,
             timed_out: false,
             cancelled: false,
+            detached: false,
             cwd: None,
             summary: None,
             reason: Some(reason.into()),
@@ -556,6 +574,64 @@ impl ShellTool {
         command
     }
 
+    /// The answer to a call that was detached while it ran.
+    ///
+    /// It reports what has arrived, not what the process will produce: the
+    /// process is still alive and its output belongs to whoever detached it.
+    /// The exit status is absent because there is none yet — the call did not
+    /// end, it was let go of.
+    #[allow(clippy::too_many_arguments)]
+    fn detached_output(
+        &self,
+        request: &ShellRequest,
+        snapshot: &(Arc<Mutex<Captured>>, Arc<Mutex<Captured>>),
+        cap: usize,
+        clock: &Clock,
+        command_line: &str,
+    ) -> Result<ToolOutput> {
+        let stdout = snapshot.0.lock().expect("command stdout").clone();
+        let stderr = snapshot.1.lock().expect("command stderr").clone();
+        // A detached call does not report the merged view: its reader is still
+        // writing into it, and two streams reported apart say more than one
+        // that is still filling up.
+        let merged = None;
+        let decoded = decode(&Decode {
+            request,
+            stdout: &stdout,
+            stderr: &stderr,
+            merged: merged.as_ref(),
+            cap,
+            budget: self.limits.max_model_bytes,
+        });
+        let mut output_hash = decoded.stdout.as_bytes().to_vec();
+        output_hash.extend_from_slice(decoded.stderr.as_bytes());
+        let output = ShellOutput {
+            code: ShellCode::Detached,
+            exit_code: None,
+            signal: None,
+            stdout: decoded.stdout,
+            stderr: decoded.stderr,
+            duration_ms: clock.elapsed_ms(),
+            bytes_read: decoded.bytes_read,
+            truncated: decoded.truncated,
+            timed_out: false,
+            cancelled: false,
+            detached: true,
+            cwd: request.cwd.clone(),
+            summary: decoded.summary,
+            reason: Some(
+                "the caller stopped waiting; the process is still running and what it \
+                 writes from now on is not part of this result"
+                    .to_owned(),
+            ),
+            request_digest: clock.digest,
+            output_hash: Digest::of(&output_hash),
+            started_at: clock.started_at,
+            ended_at: Utc::now(),
+        };
+        self.report(&output, command_line)
+    }
+
     fn report(&self, output: &ShellOutput, command_line: &str) -> Result<ToolOutput> {
         audit(output, command_line);
         render(&*self.renderer, output)
@@ -613,9 +689,16 @@ impl ShellTool {
         let pid = child.id();
         let mut guard = GroupGuard::new(pid);
         let (streams, cap) = self.start_readers(context, request, &mut child);
+        // Kept beside `streams` for the detached path, which reads what has
+        // arrived without waiting for the readers to finish.
+        let snapshot = (Arc::clone(&streams.stdout), Arc::clone(&streams.stderr));
 
         let mut timed_out = false;
         let mut cancelled = false;
+        let mut detached = false;
+        // The three ways out are not the same. Cancelling and timing out kill
+        // the group; detaching does not — it stops waiting and leaves the
+        // process running, so whoever detached it reads the rest later.
         let status = tokio::select! {
             status = child.wait() => status,
             () = tokio::time::sleep(self.timeout(request)) => {
@@ -626,7 +709,35 @@ impl ShellTool {
                 cancelled = true;
                 self.terminate(&mut child, &mut guard).await
             }
+            () = context.detached() => {
+                detached = true;
+                // Disarming the guard is what lets the process outlive this
+                // call: the guard kills its group on drop.
+                guard.disarm();
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    "detached",
+                ))
+            }
         };
+
+        // A detached call reports what has arrived so far and returns without
+        // draining: the readers belong to a process that is still running, and
+        // waiting for them would defeat the point of detaching.
+        //
+        // The `Child` and the readers have to outlive this function for that to
+        // be true. `kill_on_drop` is set on the command, so letting the `Child`
+        // fall out of scope would kill the very process the caller just asked to
+        // leave alone. A task holds them instead, and ends when the process does.
+        if detached {
+            let detector = Detached {
+                child,
+                stdout_task: streams.stdout_task,
+                stderr_task: streams.stderr_task,
+            };
+            tokio::spawn(detector.hold());
+            return self.detached_output(request, &snapshot, cap, clock, command_line);
+        }
 
         let drained = streams
             .drain(
@@ -682,6 +793,7 @@ impl ShellTool {
             truncated: decoded.truncated,
             timed_out,
             cancelled,
+            detached: false,
             cwd: request.cwd.clone(),
             summary: decoded.summary,
             reason,
@@ -763,6 +875,31 @@ impl ShellTool {
                     "the process did not die after SIGKILL",
                 ))
             })
+    }
+}
+
+/// What a detached call hands to a task, so the process is not killed by the
+/// `Child` being dropped.
+///
+/// `kill_on_drop` is what makes an ordinary call safe: a dropped future leaves
+/// no process behind. Detaching asks for the opposite, and the only way to have
+/// both is to give the `Child` an owner that outlives the call.
+struct Detached {
+    child: tokio::process::Child,
+    stdout_task: tokio::task::JoinHandle<()>,
+    stderr_task: tokio::task::JoinHandle<()>,
+}
+
+impl Detached {
+    /// Waits for the process and its readers, then lets go.
+    ///
+    /// Nothing reports the result: the call that would have has already
+    /// answered. The task exists to keep the process alive until it ends of its
+    /// own accord, which is the whole of what detaching promised.
+    async fn hold(mut self) {
+        let _ = self.child.wait().await;
+        let _ = self.stdout_task.await;
+        let _ = self.stderr_task.await;
     }
 }
 
@@ -1848,6 +1985,49 @@ mod tests {
             structured["stdout"], "before\n",
             "the output produced before the cancellation is kept (FR-TOOL-BASH-5)"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_detached_call_reports_and_leaves_the_process_running() {
+        // The difference from cancelling, and the whole point: the call ends,
+        // the process does not. It keeps writing after the call returned.
+        let dir = temp_dir("detached");
+        let marker = dir.join("marker");
+        let later = dir.join("later");
+        let tool = ShellTool::new();
+        let context = ToolContext::new();
+        let signal = context.detach();
+        let watched = marker.clone();
+        tokio::spawn(async move {
+            // Detach only after the first line reached the pipe, so the
+            // assertion on the captured output is not a race with startup.
+            wait_for(&watched).await;
+            signal.cancel();
+        });
+
+        let script = format!(
+            "echo before; touch {}; sleep 1; touch {}",
+            marker.display(),
+            later.display()
+        );
+        let output = tool
+            .call_with_context(&context, request(&script))
+            .await
+            .expect("execute");
+
+        assert!(output.is_error, "a detached call is not a success");
+        let structured = structured(&output);
+        assert_eq!(structured["code"], "detached");
+        assert_eq!(structured["detached"], true);
+        assert_eq!(
+            structured["stdout"], "before\n",
+            "what arrived before the detach is kept"
+        );
+        // The process outlived the call: it writes its second marker a second
+        // after the call returned.
+        wait_for(&later).await;
+        assert!(later.exists(), "the process kept running after the detach");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

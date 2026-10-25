@@ -88,6 +88,13 @@ pub struct ToolContext {
     /// Free-form data the host attached to the call.
     pub metadata: BTreeMap<String, Value>,
     cancellation: Cancellation,
+    /// Asked to stop waiting without killing what it runs.
+    ///
+    /// It is not `cancellation`: a host that detaches a call wants the process
+    /// alive and its output still coming, which is the opposite of what
+    /// cancelling asks for. A tool that can honour it returns early; one that
+    /// cannot keeps running until its own bound, and the host is told so.
+    detach: Cancellation,
     progress: Option<Arc<dyn ProgressSink>>,
 }
 
@@ -100,6 +107,7 @@ impl ToolContext {
             call_id: None,
             metadata: BTreeMap::new(),
             cancellation: Cancellation::new(),
+            detach: Cancellation::new(),
             progress: None,
         }
     }
@@ -154,6 +162,30 @@ impl ToolContext {
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
         self.cancellation.is_cancelled()
+    }
+
+    /// Sets the token a host signals to detach the call.
+    #[must_use]
+    pub fn with_detach(mut self, detach: Cancellation) -> Self {
+        self.detach = detach;
+        self
+    }
+
+    /// The detach token, so a host can signal it from outside the call.
+    #[must_use]
+    pub fn detach(&self) -> Cancellation {
+        self.detach.clone()
+    }
+
+    /// Resolves when the call is asked to stop waiting (or at once if it was).
+    pub async fn detached(&self) {
+        self.detach.cancelled().await;
+    }
+
+    /// Whether the call was asked to stop waiting.
+    #[must_use]
+    pub fn is_detached(&self) -> bool {
+        self.detach.is_cancelled()
     }
 
     /// Best-effort progress. It is not a durability event: if the consumer is

@@ -6,7 +6,7 @@
 //!
 //! * **The host bounds; the request may only ask for less.** Timeouts, output
 //!   caps and the size of the text that reaches the model come from
-//!   [`CommandLimits`]; a request that asks for more is clamped, never obeyed.
+//!   [`ShellLimits`]; a request that asks for more is clamped, never obeyed.
 //! * **The host decides; the request cannot widen.** The process starts from the
 //!   host's environment and cannot override a variable the host set, and the
 //!   secrets the host declares are redacted from output, from the live stream
@@ -37,10 +37,10 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::time::timeout as with_timeout;
 
-/// The shell [`CommandRequest::shell`] runs with unless it names another one.
+/// The shell [`ShellRequest::shell`] runs with unless it names another one.
 pub const DEFAULT_SHELL: &str = "sh";
 
-/// The shell a [`CommandLine::Shell`] gets when the request omits one.
+/// The shell a [`ShellRequest::shell`] field gets when it is omitted.
 fn default_shell() -> String {
     DEFAULT_SHELL.to_owned()
 }
@@ -51,47 +51,8 @@ const REDACTED: &[u8] = b"[redacted]";
 /// How much one read from a pipe asks for.
 const READ_BUFFER: usize = 8192;
 
-/// Program invocation. Exactly one of a direct program or a shell script.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case", tag = "kind", deny_unknown_fields)]
-#[schemars(tag = "kind", rename_all = "snake_case")]
-#[non_exhaustive]
-pub enum CommandLine {
-    /// Run a program with its arguments, with no shell in between.
-    #[schemars(
-        example = serde_json::json!({"kind": "program", "program": "cargo", "args": ["test"]})
-    )]
-    Program {
-        /// The executable to run.
-        #[schemars(description = "The program to run.", example = &"cargo")]
-        program: String,
-        /// The arguments passed to `program`, in order.
-        #[serde(default)]
-        #[schemars(description = "The program's arguments, in order.")]
-        args: Vec<String>,
-    },
-    /// Run a script through `shell -c`.
-    #[schemars(
-        description = "Run a script with the shell's -c flag.",
-        example = serde_json::json!({"kind": "shell", "script": "echo $HOME"})
-    )]
-    Shell {
-        /// The interpreter; [`CommandRequest::shell`] fills in [`DEFAULT_SHELL`].
-        #[serde(default = "default_shell")]
-        #[schemars(
-            default = "default_shell",
-            description = "The shell to run the script with; defaults to sh.",
-            example = &"sh"
-        )]
-        shell: String,
-        /// The script passed to the shell.
-        #[schemars(description = "The script to run.")]
-        script: String,
-    },
-}
-
 /// What to run and how. Everything here is a *request*: each bound is clamped
-/// against the host's [`CommandLimits`], and no field can widen what the host
+/// against the host's [`ShellLimits`], and no field can widen what the host
 /// allows (FR-TOOL-BASH-1).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -99,9 +60,17 @@ pub enum CommandLine {
 #[schemars(
     description = "The command to run and the bounds for it. The host caps the run time and the output size, so asking for more than it allows is clamped, not honoured."
 )]
-pub struct CommandRequest {
-    /// What to run: a program with its arguments, or a script for a shell.
-    pub command: CommandLine,
+pub struct ShellRequest {
+    /// The script to run, passed to the shell with `-c`.
+    #[schemars(description = "The script to run.", example = &"cargo test")]
+    pub script: String,
+    /// The interpreter to run it with. `sh` when the request omits one.
+    #[serde(default = "default_shell")]
+    #[schemars(
+        default = "default_shell",
+        description = "The interpreter; defaults to sh."
+    )]
+    pub shell: String,
     /// Working directory for the process.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(example = &"/srv/app")]
@@ -120,7 +89,7 @@ pub struct CommandRequest {
     pub timeout_ms: Option<u64>,
     /// How many bytes of each stream the executor keeps. A value above the
     /// host's ceiling is clamped to it; the model sees at most
-    /// [`CommandLimits::max_model_bytes`] of it.
+    /// [`ShellLimits::max_model_bytes`] of it.
     #[schemars(
         description = "How many bytes of each stream to keep. Above the host's ceiling it is clamped to it, and what reaches you is capped further by the host."
     )]
@@ -149,10 +118,13 @@ pub struct CommandRequest {
     pub summary_lines: Option<usize>,
 }
 
-impl CommandRequest {
-    fn bare(command: CommandLine) -> Self {
+impl ShellRequest {
+    /// A request that runs `script` through `shell`.
+    #[must_use]
+    pub fn shell(script: impl Into<String>) -> Self {
         Self {
-            command,
+            script: script.into(),
+            shell: DEFAULT_SHELL.to_owned(),
             cwd: None,
             env: BTreeMap::new(),
             timeout_ms: None,
@@ -165,39 +137,10 @@ impl CommandRequest {
         }
     }
 
-    /// A request that runs `program` with no arguments.
-    #[must_use]
-    pub fn program(program: impl Into<String>) -> Self {
-        Self::bare(CommandLine::Program {
-            program: program.into(),
-            args: Vec::new(),
-        })
-    }
-
-    /// A request that runs `script` through [`DEFAULT_SHELL`].
-    #[must_use]
-    pub fn shell(script: impl Into<String>) -> Self {
-        Self::bare(CommandLine::Shell {
-            shell: DEFAULT_SHELL.to_owned(),
-            script: script.into(),
-        })
-    }
-
-    /// Adds arguments to a [`CommandLine::Program`]; ignored otherwise.
-    #[must_use]
-    pub fn with_args(mut self, args: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        if let CommandLine::Program { args: current, .. } = &mut self.command {
-            current.extend(args.into_iter().map(Into::into));
-        }
-        self
-    }
-
-    /// Runs the script through another shell; ignored for a program.
+    /// Runs the script through another shell.
     #[must_use]
     pub fn with_shell(mut self, shell: impl Into<String>) -> Self {
-        if let CommandLine::Shell { shell: current, .. } = &mut self.command {
-            *current = shell.into();
-        }
+        self.shell = shell.into();
         self
     }
 
@@ -273,7 +216,7 @@ impl CommandRequest {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
-pub enum CommandCode {
+pub enum ShellCode {
     /// The process exited zero and its output was read whole.
     Success,
     /// The process exited non-zero, of its own accord.
@@ -296,9 +239,9 @@ pub enum CommandCode {
 /// wrote, how it ended, and the digests that make it auditable
 /// (FR-TOOL-BASH-8).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CommandOutput {
+pub struct ShellOutput {
     /// How the invocation ended.
-    pub code: CommandCode,
+    pub code: ShellCode,
     /// The process's exit code, when it exited on its own.
     pub exit_code: Option<i32>,
     /// The signal that ended the process, when one did.
@@ -342,9 +285,9 @@ pub struct CommandOutput {
     pub ended_at: DateTime<Utc>,
 }
 
-impl CommandOutput {
+impl ShellOutput {
     fn failed(
-        code: CommandCode,
+        code: ShellCode,
         reason: impl Into<String>,
         duration: Duration,
         request_digest: Digest,
@@ -372,18 +315,18 @@ impl CommandOutput {
     }
 }
 
-/// Packs a [`CommandOutput`] into the text and structure the model receives.
-pub trait CommandRenderer: Send + Sync {
+/// Packs a [`ShellOutput`] into the text and structure the model receives.
+pub trait ShellRenderer: Send + Sync {
     /// Packs `output` into the text the model receives.
-    fn render(&self, output: &CommandOutput) -> String;
+    fn render(&self, output: &ShellOutput) -> String;
 }
 
 /// The default context renderer: enough for a model to decide what to do next.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct PlainCommandRenderer;
+pub struct PlainShellRenderer;
 
-impl CommandRenderer for PlainCommandRenderer {
-    fn render(&self, output: &CommandOutput) -> String {
+impl ShellRenderer for PlainShellRenderer {
+    fn render(&self, output: &ShellOutput) -> String {
         use std::fmt::Write as _;
 
         let mut rendered = String::new();
@@ -429,7 +372,7 @@ impl CommandRenderer for PlainCommandRenderer {
 /// may this run", "how much may it write" and "how long do I wait for the pipes
 /// once it is gone".
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct CommandLimits {
+pub struct ShellLimits {
     /// Used when the request does not ask for a time bound.
     pub default_timeout: Duration,
     /// Ceiling for a request's `timeout_ms`.
@@ -450,7 +393,7 @@ pub struct CommandLimits {
     pub tail_bytes: usize,
 }
 
-impl Default for CommandLimits {
+impl Default for ShellLimits {
     fn default() -> Self {
         Self {
             default_timeout: Duration::from_secs(120),
@@ -465,27 +408,32 @@ impl Default for CommandLimits {
 }
 
 /// The flagship tool of the default suite: a production-grade command executor.
+///
+/// It runs a shell script and nothing else. A program with arguments is a shell
+/// script too — `cargo test` is one — so the schema is flat and there is no
+/// variant for the model to get wrong: no discriminator to forget, no `args`
+/// array that only applies half the time.
 #[norte_core::tool(
-    name = "command",
-    description = "Run a program or shell script. Returns exit status, bounded stdout/stderr and a structured summary."
+    name = "shell",
+    description = "Run a shell script. Returns exit status, bounded stdout/stderr and a structured summary. It is a real shell, so pipes, redirection, variables and && all work."
 )]
 #[derive(Clone)]
-pub struct CommandTool {
-    limits: CommandLimits,
-    renderer: Arc<dyn CommandRenderer>,
+pub struct ShellTool {
+    limits: ShellLimits,
+    renderer: Arc<dyn ShellRenderer>,
     blobs: Option<Arc<dyn BlobStore>>,
     env: BTreeMap<String, String>,
     secrets: Arc<[String]>,
 }
 
-impl CommandTool {
+impl ShellTool {
     /// A command tool with the default limits, the plain renderer and no blob
     /// store.
     #[must_use]
     pub fn new() -> Self {
         Self {
-            limits: CommandLimits::default(),
-            renderer: Arc::new(PlainCommandRenderer),
+            limits: ShellLimits::default(),
+            renderer: Arc::new(PlainShellRenderer),
             blobs: None,
             env: BTreeMap::new(),
             secrets: Arc::from(Vec::new()),
@@ -494,14 +442,14 @@ impl CommandTool {
 
     /// Sets the host's bounds.
     #[must_use]
-    pub fn with_limits(mut self, limits: CommandLimits) -> Self {
+    pub fn with_limits(mut self, limits: ShellLimits) -> Self {
         self.limits = limits;
         self
     }
 
     /// Sets the renderer that shapes the text the model receives.
     #[must_use]
-    pub fn with_renderer(mut self, renderer: Arc<dyn CommandRenderer>) -> Self {
+    pub fn with_renderer(mut self, renderer: Arc<dyn ShellRenderer>) -> Self {
         self.renderer = renderer;
         self
     }
@@ -538,13 +486,13 @@ impl CommandTool {
 
     /// Turns the tool into a declaration the core registry accepts.
     #[must_use]
-    pub fn into_declaration(self) -> ToolDeclaration<CommandRequest> {
+    pub fn into_declaration(self) -> ToolDeclaration<ShellRequest> {
         ToolDeclaration::new(Self::NAME, Self::DESCRIPTION, Arc::new(self))
     }
 
     /// The time bound for this request: what it asked for, clamped to the
     /// host's ceiling, or the host's default.
-    fn timeout(&self, request: &CommandRequest) -> Duration {
+    fn timeout(&self, request: &ShellRequest) -> Duration {
         request
             .timeout_ms
             .map_or(self.limits.default_timeout, Duration::from_millis)
@@ -552,7 +500,7 @@ impl CommandTool {
     }
 
     /// The capture cap for this request, clamped to the host's ceiling.
-    fn output_cap(&self, request: &CommandRequest) -> usize {
+    fn output_cap(&self, request: &ShellRequest) -> usize {
         request
             .max_output_bytes
             .unwrap_or(self.limits.max_output_bytes)
@@ -562,13 +510,13 @@ impl CommandTool {
     /// The request with every declared secret replaced, for the audit digest:
     /// a digest of the raw request would leak a secret to anyone who can guess
     /// the rest of it.
-    fn digest(&self, request: &CommandRequest) -> Result<Digest> {
+    fn digest(&self, request: &ShellRequest) -> Result<Digest> {
         let mut value = serde_json::to_value(request)?;
         redact_value(&mut value, &self.secrets);
         Ok(Digest::of_json(&value))
     }
 
-    async fn stdin(&self, request: &CommandRequest) -> Result<Vec<u8>> {
+    async fn stdin(&self, request: &ShellRequest) -> Result<Vec<u8>> {
         if let Some(id) = request.stdin_blob {
             let blobs = self.blobs.as_ref().ok_or_else(|| {
                 Error::InvalidInput(
@@ -580,19 +528,9 @@ impl CommandTool {
         Ok(request.stdin.clone().unwrap_or_default().into_bytes())
     }
 
-    fn build_command(&self, request: &CommandRequest) -> Command {
-        let mut command = match &request.command {
-            CommandLine::Program { program, args } => {
-                let mut command = Command::new(program);
-                command.args(args);
-                command
-            }
-            CommandLine::Shell { shell, script } => {
-                let mut command = Command::new(shell);
-                command.arg("-c").arg(script);
-                command
-            }
-        };
+    fn build_command(&self, request: &ShellRequest) -> Command {
+        let mut command = Command::new(&request.shell);
+        command.arg("-c").arg(&request.script);
         command.env_clear();
         for (key, value) in &self.env {
             command.env(key, value);
@@ -618,20 +556,20 @@ impl CommandTool {
         command
     }
 
-    fn report(&self, output: &CommandOutput, command_line: &str) -> Result<ToolOutput> {
+    fn report(&self, output: &ShellOutput, command_line: &str) -> Result<ToolOutput> {
         audit(output, command_line);
         render(&*self.renderer, output)
     }
 
-    async fn run(&self, context: &ToolContext, request: &CommandRequest) -> Result<ToolOutput> {
+    async fn run(&self, context: &ToolContext, request: &ShellRequest) -> Result<ToolOutput> {
         let clock = Clock::start(self.digest(request)?);
-        let command_line = redact(&describe_command(&request.command), &self.secrets);
+        let command_line = redact(
+            &describe_command(&request.shell, &request.script),
+            &self.secrets,
+        );
 
         if context.is_cancelled() {
-            let output = clock.failed(
-                CommandCode::Cancelled,
-                "cancelled before the process started",
-            );
+            let output = clock.failed(ShellCode::Cancelled, "cancelled before the process started");
             return self.report(&output, &command_line);
         }
 
@@ -648,7 +586,7 @@ impl CommandTool {
             Ok(child) => child,
             Err(error) => {
                 let reason = format!("could not start `{command_line}`: {error}");
-                let output = clock.failed(CommandCode::SpawnFailed, reason);
+                let output = clock.failed(ShellCode::SpawnFailed, reason);
                 return self.report(&output, &command_line);
             }
         };
@@ -667,7 +605,7 @@ impl CommandTool {
     async fn execute(
         &self,
         context: &ToolContext,
-        request: &CommandRequest,
+        request: &ShellRequest,
         mut child: tokio::process::Child,
         clock: &Clock,
         command_line: &str,
@@ -733,7 +671,7 @@ impl CommandTool {
         let mut output_hash = decoded.stdout.as_bytes().to_vec();
         output_hash.extend_from_slice(decoded.stderr.as_bytes());
 
-        let output = CommandOutput {
+        let output = ShellOutput {
             code,
             exit_code,
             signal,
@@ -760,7 +698,7 @@ impl CommandTool {
     fn start_readers(
         &self,
         context: &ToolContext,
-        request: &CommandRequest,
+        request: &ShellRequest,
         child: &mut tokio::process::Child,
     ) -> (Streams, usize) {
         let cap = self.output_cap(request);
@@ -888,31 +826,31 @@ impl Streams {
     }
 }
 
-impl Default for CommandTool {
+impl Default for ShellTool {
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[async_trait::async_trait]
-impl FnExecutor<CommandRequest, ToolOutput> for CommandTool {
-    async fn call(&self, request: CommandRequest) -> Result<ToolOutput> {
+impl FnExecutor<ShellRequest, ToolOutput> for ShellTool {
+    async fn call(&self, request: ShellRequest) -> Result<ToolOutput> {
         self.run(&ToolContext::new(), &request).await
     }
 
     async fn call_with_context(
         &self,
         context: &ToolContext,
-        request: CommandRequest,
+        request: ShellRequest,
     ) -> Result<ToolOutput> {
         self.run(context, &request).await
     }
 }
 
-fn render(renderer: &dyn CommandRenderer, output: &CommandOutput) -> Result<ToolOutput> {
+fn render(renderer: &dyn ShellRenderer, output: &ShellOutput) -> Result<ToolOutput> {
     let body = renderer.render(output);
     let structured = serde_json::to_value(output)?;
-    let is_error = !matches!(output.code, CommandCode::Success);
+    let is_error = !matches!(output.code, ShellCode::Success);
     Ok(ToolOutput {
         parts: vec![Part::text(body)],
         structured: Some(structured),
@@ -922,18 +860,8 @@ fn render(renderer: &dyn CommandRenderer, output: &CommandOutput) -> Result<Tool
 
 /// The invocation as one line, for the audit record. It is redacted before it
 /// is logged, because an argument is often where a secret lives.
-fn describe_command(command: &CommandLine) -> String {
-    match command {
-        CommandLine::Program { program, args } => {
-            let mut line = program.clone();
-            for arg in args {
-                line.push(' ');
-                line.push_str(arg);
-            }
-            line
-        }
-        CommandLine::Shell { shell, script } => format!("{shell} -c {script}"),
-    }
+fn describe_command(shell: &str, script: &str) -> String {
+    format!("{shell} -c {script}")
 }
 
 /// Where a request's start time and identity came from, so a failure that
@@ -953,8 +881,8 @@ impl Clock {
         }
     }
 
-    fn failed(&self, code: CommandCode, reason: impl Into<String>) -> CommandOutput {
-        CommandOutput::failed(
+    fn failed(&self, code: ShellCode, reason: impl Into<String>) -> ShellOutput {
+        ShellOutput::failed(
             code,
             reason,
             self.started.elapsed(),
@@ -1301,7 +1229,7 @@ struct Decoded {
 
 /// The inputs of [`decode`].
 struct Decode<'a> {
-    request: &'a CommandRequest,
+    request: &'a ShellRequest,
     stdout: &'a Captured,
     stderr: &'a Captured,
     /// The merged streams, when the request asked for them.
@@ -1366,7 +1294,7 @@ fn build_views(input: &Decode<'_>) -> (String, Vec<String>) {
 /// The optional structured summary: the tail of the output and/or the lines
 /// that match any host-supplied literal pattern (FR-TOOL-BASH-3).
 fn build_summary(
-    request: &CommandRequest,
+    request: &ShellRequest,
     tail: &str,
     scan: &[String],
     budget: usize,
@@ -1455,23 +1383,23 @@ fn outcome(
     cancelled: bool,
     timed_out: bool,
     read_failed: bool,
-) -> (CommandCode, Option<i32>, Option<i32>) {
+) -> (ShellCode, Option<i32>, Option<i32>) {
     let (exit_code, signal) = match status {
         Ok(status) => decompose_status(*status),
         Err(_) => (None, None),
     };
     let code = if cancelled {
-        CommandCode::Cancelled
+        ShellCode::Cancelled
     } else if timed_out {
-        CommandCode::Timeout
+        ShellCode::Timeout
     } else if read_failed {
-        CommandCode::IoError
+        ShellCode::IoError
     } else {
         match status {
-            Ok(status) if status.success() => CommandCode::Success,
-            Ok(_) if signal.is_some() => CommandCode::Signaled,
-            Ok(_) => CommandCode::NonZeroExit,
-            Err(_) => CommandCode::IoError,
+            Ok(status) if status.success() => ShellCode::Success,
+            Ok(_) if signal.is_some() => ShellCode::Signaled,
+            Ok(_) => ShellCode::NonZeroExit,
+            Err(_) => ShellCode::IoError,
         }
     };
     (code, exit_code, signal)
@@ -1491,10 +1419,10 @@ fn append(reason: Option<String>, note: &str) -> String {
     }
 }
 
-fn stdin_code(error: &Error) -> CommandCode {
+fn stdin_code(error: &Error) -> ShellCode {
     match error {
-        Error::BlobNotFound(_) | Error::InvalidInput(_) => CommandCode::InvalidInput,
-        _ => CommandCode::IoError,
+        Error::BlobNotFound(_) | Error::InvalidInput(_) => ShellCode::InvalidInput,
+        _ => ShellCode::IoError,
     }
 }
 
@@ -1616,7 +1544,7 @@ fn lossy(bytes: &[u8]) -> String {
 /// Replaces every secret, longest first, in one buffer.
 ///
 /// The secrets are expected longest first, which is how
-/// [`CommandTool::with_secrets`] leaves them: replacing a shorter secret first
+/// [`ShellTool::with_secrets`] leaves them: replacing a shorter secret first
 /// would leave the tail of a longer one in place.
 fn redact_bytes(haystack: &[u8], secrets: &[String]) -> Vec<u8> {
     let mut clean = haystack.to_vec();
@@ -1668,7 +1596,7 @@ fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|window| window == needle)
 }
 
-fn audit(output: &CommandOutput, command_line: &str) {
+fn audit(output: &ShellOutput, command_line: &str) {
     tracing::info!(
         target: "norte.audit",
         command = command_line,
@@ -1692,8 +1620,8 @@ fn audit(output: &CommandOutput, command_line: &str) {
 
 /// Convenience: build the default suite's command tool as an erased function.
 #[must_use]
-pub fn command_tool() -> Arc<dyn norte_core::AnyFunction> {
-    Arc::new(CommandTool::new().into_declaration())
+pub fn shell_tool() -> Arc<dyn norte_core::AnyFunction> {
+    Arc::new(ShellTool::new().into_declaration())
 }
 
 #[cfg(test)]
@@ -1704,11 +1632,8 @@ mod tests {
 
     #[tokio::test]
     async fn captures_stdout_and_reports_success() {
-        let tool = CommandTool::new();
-        let output = tool
-            .call(request(program("echo", &["hello"])))
-            .await
-            .expect("execute");
+        let tool = ShellTool::new();
+        let output = tool.call(request("echo hello")).await.expect("execute");
         assert!(!output.is_error);
         let structured = structured(&output);
         assert_eq!(structured["code"], "success");
@@ -1719,14 +1644,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_non_zero_exit_is_reported_not_raised() {
-        let tool = CommandTool::new();
-        let output = tool
-            .call(request(CommandLine::Program {
-                program: "sh".to_owned(),
-                args: vec!["-c".to_owned(), "exit 7".to_owned()],
-            }))
-            .await
-            .expect("execute");
+        let tool = ShellTool::new();
+        let output = tool.call(request("exit 7")).await.expect("execute");
         assert!(output.is_error);
         let structured = structured(&output);
         assert_eq!(structured["code"], "non_zero_exit");
@@ -1735,11 +1654,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_signal_death_is_its_own_code() {
-        let tool = CommandTool::new();
-        let output = tool
-            .call(request(shell("kill -KILL $$")))
-            .await
-            .expect("execute");
+        let tool = ShellTool::new();
+        let output = tool.call(request("kill -KILL $$")).await.expect("execute");
         assert!(output.is_error);
         let structured = structured(&output);
         assert_eq!(structured["code"], "signaled");
@@ -1748,28 +1664,49 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_missing_program_is_a_spawn_failure_that_names_it() {
-        let tool = CommandTool::new();
+    async fn a_missing_program_is_reported_by_the_shell() {
+        // With a shell in front, a missing binary is the shell's own error:
+        // it starts, reports `command not found`, exits 127. That is a
+        // non-zero exit and not a spawn failure, and the model still learns
+        // which name was wrong from stderr.
+        let tool = ShellTool::new();
         let output = tool
-            .call(request(program("definitely-not-a-real-binary-xyz", &[])))
+            .call(request("definitely-not-a-real-binary-xyz"))
             .await
             .expect("execute");
         assert!(output.is_error);
         let structured = structured(&output);
+        assert_eq!(structured["code"], "non_zero_exit");
+        assert_eq!(structured["exit_code"], 127);
+        let stderr = structured["stderr"].as_str().expect("stderr");
+        assert!(
+            stderr.contains("definitely-not-a-real-binary-xyz"),
+            "the shell names what it could not find: {stderr}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_interpreter_that_does_not_exist_is_a_spawn_failure() {
+        // This is the remaining spawn failure: the shell itself cannot start.
+        let tool = ShellTool::new();
+        let mut request = request("true");
+        request.shell = "definitely-not-a-real-shell-xyz".to_owned();
+        let output = tool.call(request).await.expect("execute");
+        assert!(output.is_error);
+        let structured = structured(&output);
         assert_eq!(structured["code"], "spawn_failed");
-        assert_eq!(structured["stdout"], "");
         let reason = structured["reason"].as_str().expect("reason");
         assert!(
-            reason.contains("definitely-not-a-real-binary-xyz"),
+            reason.contains("definitely-not-a-real-shell-xyz"),
             "the reason names what could not start: {reason}"
         );
     }
 
     #[tokio::test]
     async fn excess_output_is_truncated_and_marked() {
-        let tool = CommandTool::new();
+        let tool = ShellTool::new();
         let request =
-            request(shell("for i in $(seq 1 200); do echo '0123456789'; done")).with_output_cap(64);
+            request("for i in $(seq 1 200); do echo '0123456789'; done").with_output_cap(64);
         let output = tool.call(request).await.expect("execute");
         assert!(!output.is_error, "a truncation is not a failure");
         let structured = structured(&output);
@@ -1789,15 +1726,13 @@ mod tests {
 
     #[tokio::test]
     async fn the_model_text_is_clipped_around_both_ends() {
-        let limits = CommandLimits {
+        let limits = ShellLimits {
             max_model_bytes: 256,
-            ..CommandLimits::default()
+            ..ShellLimits::default()
         };
-        let tool = CommandTool::new().with_limits(limits);
+        let tool = ShellTool::new().with_limits(limits);
         let output = tool
-            .call(request(shell(
-                "printf 'HEAD\\n'; seq 1 500; printf 'TAIL\\n'",
-            )))
+            .call(request("printf 'HEAD\\n'; seq 1 500; printf 'TAIL\\n'"))
             .await
             .expect("execute");
         let structured = structured(&output);
@@ -1813,10 +1748,10 @@ mod tests {
 
     #[tokio::test]
     async fn progress_does_not_outrun_the_capture_cap() {
-        let tool = CommandTool::new();
+        let tool = ShellTool::new();
         let sink = Arc::new(Sink::default());
         let context = ToolContext::new().with_progress(sink.clone());
-        let request = request(shell("seq 1 500")).with_output_cap(64);
+        let request = request("seq 1 500").with_output_cap(64);
         tool.call_with_context(&context, request)
             .await
             .expect("execute");
@@ -1835,8 +1770,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_timeout_is_reported_and_the_process_does_not_survive_it() {
-        let tool = CommandTool::new();
-        let request = request(shell("sleep 30")).with_timeout(Duration::from_millis(50));
+        let tool = ShellTool::new();
+        let request = request("sleep 30").with_timeout(Duration::from_millis(50));
         let output = tool.call(request).await.expect("execute");
         assert!(output.is_error);
         let structured = structured(&output);
@@ -1846,13 +1781,13 @@ mod tests {
 
     #[tokio::test]
     async fn a_request_cannot_extend_the_host_ceiling_on_time() {
-        let limits = CommandLimits {
+        let limits = ShellLimits {
             max_timeout: Duration::from_millis(200),
             grace: Duration::from_millis(50),
-            ..CommandLimits::default()
+            ..ShellLimits::default()
         };
-        let tool = CommandTool::new().with_limits(limits);
-        let request = request(shell("sleep 30")).with_timeout(Duration::from_secs(600));
+        let tool = ShellTool::new().with_limits(limits);
+        let request = request("sleep 30").with_timeout(Duration::from_secs(600));
         let output = tool.call(request).await.expect("execute");
         let structured = structured(&output);
         assert_eq!(
@@ -1865,13 +1800,13 @@ mod tests {
     async fn a_process_that_ignores_the_polite_signal_is_still_killed() {
         let dir = temp_dir("ignores-term");
         let pid_file = dir.join("pid");
-        let limits = CommandLimits {
+        let limits = ShellLimits {
             grace: Duration::from_millis(100),
-            ..CommandLimits::default()
+            ..ShellLimits::default()
         };
-        let tool = CommandTool::new().with_limits(limits);
+        let tool = ShellTool::new().with_limits(limits);
         let script = format!("echo $$ > {}; trap '' TERM; sleep 30", pid_file.display());
-        let request = request(shell(&script)).with_timeout(Duration::from_millis(100));
+        let request = request(&script).with_timeout(Duration::from_millis(100));
         let output = tool.call(request).await.expect("execute");
         assert_eq!(structured(&output)["code"], "timeout");
 
@@ -1890,7 +1825,7 @@ mod tests {
         let dir = temp_dir("cancelled-midway");
         let marker = dir.join("marked");
         let watched = marker.clone();
-        let tool = CommandTool::new();
+        let tool = ShellTool::new();
         let context = ToolContext::new();
         let signal = context.cancellation();
         tokio::spawn(async move {
@@ -1902,7 +1837,7 @@ mod tests {
         });
         let script = format!("echo before; touch {}; sleep 30", marker.display());
         let output = tool
-            .call_with_context(&context, request(shell(&script)))
+            .call_with_context(&context, request(&script))
             .await
             .expect("execute");
         assert!(output.is_error);
@@ -1920,12 +1855,12 @@ mod tests {
     async fn a_cancelled_context_never_spawns_the_process() {
         let dir = temp_dir("cancelled-first");
         let marker = dir.join("marker");
-        let tool = CommandTool::new();
+        let tool = ShellTool::new();
         let context = ToolContext::new();
         context.cancellation().cancel();
         let script = format!("touch {}", marker.display());
         let output = tool
-            .call_with_context(&context, request(shell(&script)))
+            .call_with_context(&context, request(&script))
             .await
             .expect("execute");
         assert_eq!(structured(&output)["code"], "cancelled");
@@ -1935,11 +1870,11 @@ mod tests {
 
     #[tokio::test]
     async fn output_is_streamed_back_as_progress() {
-        let tool = CommandTool::new();
+        let tool = ShellTool::new();
         let sink = Arc::new(Sink::default());
         let context = ToolContext::new().with_progress(sink.clone());
         let output = tool
-            .call_with_context(&context, request(shell("echo streamed")))
+            .call_with_context(&context, request("echo streamed"))
             .await
             .expect("execute");
         assert!(!output.is_error);
@@ -1961,13 +1896,13 @@ mod tests {
 
     #[tokio::test]
     async fn a_grandchild_holding_the_pipes_does_not_hang_the_call() {
-        let limits = CommandLimits {
+        let limits = ShellLimits {
             drain: Duration::from_millis(100),
-            ..CommandLimits::default()
+            ..ShellLimits::default()
         };
-        let tool = CommandTool::new().with_limits(limits);
+        let tool = ShellTool::new().with_limits(limits);
         let output = tool
-            .call(request(shell("sleep 30 & echo done")))
+            .call(request("sleep 30 & echo done"))
             .await
             .expect("execute");
         let structured = structured(&output);
@@ -1985,9 +1920,8 @@ mod tests {
 
     #[tokio::test]
     async fn the_summary_can_report_matched_patterns() {
-        let tool = CommandTool::new();
-        let request =
-            request(shell("printf 'alpha\\nbeta\\ngamma\\n'")).with_summary_pattern("beta");
+        let tool = ShellTool::new();
+        let request = request("printf 'alpha\\nbeta\\ngamma\\n'").with_summary_pattern("beta");
         let output = tool.call(request).await.expect("execute");
         let summary = structured(&output)["summary"]
             .as_str()
@@ -1999,9 +1933,8 @@ mod tests {
 
     #[tokio::test]
     async fn the_summary_sees_both_streams() {
-        let tool = CommandTool::new();
-        let request =
-            request(shell("echo out; echo 'error: bad' 1>&2")).with_summary_pattern("error");
+        let tool = ShellTool::new();
+        let request = request("echo out; echo 'error: bad' 1>&2").with_summary_pattern("error");
         let output = tool.call(request).await.expect("execute");
         let summary = structured(&output)["summary"]
             .as_str()
@@ -2015,8 +1948,8 @@ mod tests {
 
     #[tokio::test]
     async fn the_summary_tails_the_real_end_of_a_truncated_stream() {
-        let tool = CommandTool::new();
-        let request = request(shell("for i in $(seq 1 200); do echo line-$i; done"))
+        let tool = ShellTool::new();
+        let request = request("for i in $(seq 1 200); do echo line-$i; done")
             .with_output_cap(64)
             .with_summary_lines(2);
         let output = tool.call(request).await.expect("execute");
@@ -2031,9 +1964,9 @@ mod tests {
 
     #[tokio::test]
     async fn secrets_are_redacted_out_of_the_model_text() {
-        let tool = CommandTool::new().with_secrets(["hunter2hunter2"]);
+        let tool = ShellTool::new().with_secrets(["hunter2hunter2"]);
         let output = tool
-            .call(request(shell("printf 'token=%s\\n' hunter2hunter2")))
+            .call(request("printf 'token=%s\\n' hunter2hunter2"))
             .await
             .expect("execute");
         let structured = structured(&output);
@@ -2043,8 +1976,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_secret_is_redacted_before_the_cap_can_split_it() {
-        let tool = CommandTool::new().with_secrets(["SECRETVALUE"]);
-        let request = request(shell("printf 'xxxxxxxxxxSECRETVALUEyyyy'")).with_output_cap(12);
+        let tool = ShellTool::new().with_secrets(["SECRETVALUE"]);
+        let request = request("printf 'xxxxxxxxxxSECRETVALUEyyyy'").with_output_cap(12);
         let output = tool.call(request).await.expect("execute");
         let stdout = structured(&output)["stdout"]
             .as_str()
@@ -2059,10 +1992,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_secret_never_reaches_the_progress_stream() {
-        let tool = CommandTool::new().with_secrets(["hunter2hunter2"]);
+        let tool = ShellTool::new().with_secrets(["hunter2hunter2"]);
         let sink = Arc::new(Sink::default());
         let context = ToolContext::new().with_progress(sink.clone());
-        tool.call_with_context(&context, request(shell("echo hunter2hunter2")))
+        tool.call_with_context(&context, request("echo hunter2hunter2"))
             .await
             .expect("execute");
         let progress = sink.0.lock().expect("lock");
@@ -2077,13 +2010,10 @@ mod tests {
 
     #[tokio::test]
     async fn the_request_digest_does_not_carry_a_secret() {
-        let tool = CommandTool::new().with_secrets(["s3cr3t"]);
-        let with_secret = tool
-            .call(request(shell("echo s3cr3t")))
-            .await
-            .expect("execute");
+        let tool = ShellTool::new().with_secrets(["s3cr3t"]);
+        let with_secret = tool.call(request("echo s3cr3t")).await.expect("execute");
         let redacted = tool
-            .call(request(shell("echo [redacted]")))
+            .call(request("echo [redacted]"))
             .await
             .expect("execute");
         assert_eq!(
@@ -2106,11 +2036,8 @@ mod tests {
 
     #[tokio::test]
     async fn an_overlapping_shorter_secret_does_not_leave_the_tail_of_a_longer_one() {
-        let tool = CommandTool::new().with_secrets(["abc", "abcdef"]);
-        let output = tool
-            .call(request(shell("echo abcdef")))
-            .await
-            .expect("execute");
+        let tool = ShellTool::new().with_secrets(["abc", "abcdef"]);
+        let output = tool.call(request("echo abcdef")).await.expect("execute");
         assert_eq!(
             structured(&output)["stdout"],
             "[redacted]\n",
@@ -2120,11 +2047,8 @@ mod tests {
 
     #[tokio::test]
     async fn the_audit_record_carries_the_digests_and_timestamps() {
-        let tool = CommandTool::new();
-        let output = tool
-            .call(request(shell("echo audited")))
-            .await
-            .expect("execute");
+        let tool = ShellTool::new();
+        let output = tool.call(request("echo audited")).await.expect("execute");
         let structured = structured(&output);
         assert!(structured["request_digest"].is_string());
         assert!(structured["output_hash"].is_string());
@@ -2139,9 +2063,9 @@ mod tests {
 
     #[tokio::test]
     async fn the_output_hash_covers_both_streams() {
-        let tool = CommandTool::new();
+        let tool = ShellTool::new();
         let output = tool
-            .call(request(shell("echo out; echo err 1>&2")))
+            .call(request("echo out; echo err 1>&2"))
             .await
             .expect("execute");
         assert_eq!(
@@ -2152,11 +2076,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_request_cannot_override_a_host_variable() {
-        let tool = CommandTool::new().with_env(BTreeMap::from([(
+        let tool = ShellTool::new().with_env(BTreeMap::from([(
             "FROM_HOST".to_owned(),
             "host".to_owned(),
         )]));
-        let request = request(shell("echo $FROM_HOST")).with_env("FROM_HOST", "request");
+        let request = request("echo $FROM_HOST").with_env("FROM_HOST", "request");
         let output = tool.call(request).await.expect("execute");
         assert_eq!(structured(&output)["stdout"], "host\n");
     }
@@ -2168,9 +2092,9 @@ mod tests {
         let Some(home) = std::env::var_os("HOME") else {
             return;
         };
-        let tool = CommandTool::new();
+        let tool = ShellTool::new();
         let output = tool
-            .call(request(shell("printf '[%s]' \"${HOME:-}\"")))
+            .call(request("printf '[%s]' \"${HOME:-}\""))
             .await
             .expect("execute");
         assert_eq!(
@@ -2183,16 +2107,16 @@ mod tests {
 
     #[tokio::test]
     async fn a_request_may_add_a_variable_the_host_did_not_set() {
-        let tool = CommandTool::new();
-        let request = request(shell("echo $FROM_REQUEST")).with_env("FROM_REQUEST", "added");
+        let tool = ShellTool::new();
+        let request = request("echo $FROM_REQUEST").with_env("FROM_REQUEST", "added");
         let output = tool.call(request).await.expect("execute");
         assert_eq!(structured(&output)["stdout"], "added\n");
     }
 
     #[tokio::test]
     async fn stdin_can_be_inline_text() {
-        let tool = CommandTool::new();
-        let request = request(shell("read -r line; printf %s \"$line\"")).with_stdin("hello\n");
+        let tool = ShellTool::new();
+        let request = request("read -r line; printf %s \"$line\"").with_stdin("hello\n");
         let output = tool.call(request).await.expect("execute");
         assert_eq!(structured(&output)["stdout"], "hello");
     }
@@ -2201,16 +2125,16 @@ mod tests {
     async fn stdin_can_come_from_a_blob() {
         let blobs = Arc::new(Blobs::default());
         let id = blobs.put(b"hello from a blob").await.expect("put");
-        let tool = CommandTool::new().with_blobs(blobs);
-        let request = request(shell("read -r line; printf %s \"$line\"")).with_stdin_blob(id);
+        let tool = ShellTool::new().with_blobs(blobs);
+        let request = request("read -r line; printf %s \"$line\"").with_stdin_blob(id);
         let output = tool.call(request).await.expect("execute");
         assert_eq!(structured(&output)["stdout"], "hello from a blob");
     }
 
     #[tokio::test]
     async fn a_stdin_blob_without_a_store_is_invalid_input() {
-        let tool = CommandTool::new();
-        let request = request(shell("cat")).with_stdin_blob(BlobId::of(b"x"));
+        let tool = ShellTool::new();
+        let request = request("cat").with_stdin_blob(BlobId::of(b"x"));
         let output = tool.call(request).await.expect("execute");
         let structured = structured(&output);
         assert_eq!(structured["code"], "invalid_input");
@@ -2224,16 +2148,16 @@ mod tests {
 
     #[tokio::test]
     async fn a_blob_that_is_not_there_is_invalid_input() {
-        let tool = CommandTool::new().with_blobs(Arc::new(Blobs::default()));
-        let request = request(shell("cat")).with_stdin_blob(BlobId::of(b"absent"));
+        let tool = ShellTool::new().with_blobs(Arc::new(Blobs::default()));
+        let request = request("cat").with_stdin_blob(BlobId::of(b"absent"));
         let output = tool.call(request).await.expect("execute");
         assert_eq!(structured(&output)["code"], "invalid_input");
     }
 
     #[tokio::test]
     async fn stderr_can_be_merged_into_stdout() {
-        let tool = CommandTool::new();
-        let request = request(shell("echo out; echo err 1>&2")).merging_stderr();
+        let tool = ShellTool::new();
+        let request = request("echo out; echo err 1>&2").merging_stderr();
         let output = tool.call(request).await.expect("execute");
         let structured = structured(&output);
         let stdout = structured["stdout"].as_str().expect("stdout");
@@ -2245,9 +2169,9 @@ mod tests {
     #[tokio::test]
     async fn the_cwd_is_honoured() {
         let dir = temp_dir("cwd");
-        let tool = CommandTool::new();
+        let tool = ShellTool::new();
         let output = tool
-            .call(request(shell("pwd")).with_cwd(&dir))
+            .call(request("pwd").with_cwd(&dir))
             .await
             .expect("execute");
         let structured = structured(&output);
@@ -2270,7 +2194,7 @@ mod tests {
                 &ToolContext::new(),
                 &name,
                 serde_json::json!({
-                    "command": { "kind": "program", "program": "true" },
+                    "script": "true",
                     "oops": 1
                 }),
             )
@@ -2280,7 +2204,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unknown_fields_inside_the_command_line_are_rejected() {
+    async fn unknown_fields_inside_the_script_are_rejected() {
+        // The schema is flat now, so the only place an unknown field can hide
+        // is beside `script` — which the test above covers. This one keeps the
+        // nested form rejected too: an old client sending `command` must fail
+        // loudly rather than be silently understood.
         let (registry, name) = registered();
         let error = registry
             .execute(
@@ -2291,8 +2219,11 @@ mod tests {
                 }),
             )
             .await
-            .expect_err("the command line does not parse");
-        assert!(error.to_string().contains("oops"), "{error}");
+            .expect_err("the nested form is not the schema");
+        assert!(
+            error.to_string().contains("command") || error.to_string().contains("oops"),
+            "the nested form is refused: {error}"
+        );
     }
 
     #[tokio::test]
@@ -2301,7 +2232,7 @@ mod tests {
         let spec = registry.spec(&name).expect("spec");
         assert_eq!(
             spec.description,
-            <CommandTool as norte_core::ToolMetadata>::DESCRIPTION
+            <ShellTool as norte_core::ToolMetadata>::DESCRIPTION
         );
 
         let output = registry
@@ -2309,7 +2240,7 @@ mod tests {
                 &ToolContext::new(),
                 &name,
                 serde_json::json!({
-                    "command": { "kind": "program", "program": "echo", "args": ["hi"] }
+                    "script": "echo hi"
                 }),
             )
             .await
@@ -2322,30 +2253,15 @@ mod tests {
     fn registered() -> (norte_core::ToolRegistry, norte_core::ToolName) {
         let mut registry = norte_core::ToolRegistry::new();
         registry
-            .register_tool(&CommandTool::new())
+            .register_tool(&ShellTool::new())
             .expect("register command");
-        let name = norte_core::ToolName::new("command").expect("name");
+        let name = norte_core::ToolName::new("shell").expect("name");
         (registry, name)
     }
 
-    fn request(command: CommandLine) -> CommandRequest {
-        let mut request = CommandRequest::program("true");
-        request.command = command;
-        request
-    }
-
-    fn program(program: &str, args: &[&str]) -> CommandLine {
-        CommandLine::Program {
-            program: program.to_owned(),
-            args: args.iter().map(|arg| (*arg).to_owned()).collect(),
-        }
-    }
-
-    fn shell(script: &str) -> CommandLine {
-        CommandLine::Shell {
-            shell: DEFAULT_SHELL.to_owned(),
-            script: script.to_owned(),
-        }
+    /// A request that runs `script` through the default shell.
+    fn request(script: &str) -> ShellRequest {
+        ShellRequest::shell(script)
     }
 
     fn structured(output: &ToolOutput) -> Value {
@@ -2426,36 +2342,48 @@ mod tests {
     }
 
     #[test]
-    fn a_shell_command_defaults_its_interpreter() {
-        let request: CommandRequest = serde_json::from_value(serde_json::json!({
-            "command": {"kind": "shell", "script": "echo hi"}
+    fn the_shell_defaults_its_interpreter() {
+        let request: ShellRequest = serde_json::from_value(serde_json::json!({
+            "script": "echo hi"
         }))
-        .expect("shell command");
-        assert_eq!(
-            request.command,
-            CommandLine::Shell {
-                shell: DEFAULT_SHELL.to_owned(),
-                script: "echo hi".to_owned(),
-            }
-        );
+        .expect("a script is enough");
+        assert_eq!(request.shell, DEFAULT_SHELL);
+        assert_eq!(request.script, "echo hi");
     }
 
     #[test]
-    fn the_command_schema_leaves_the_shell_optional() {
-        let declaration = CommandTool::new().into_declaration();
+    fn the_schema_is_flat_and_the_shell_is_optional() {
+        // The point of the tool: no discriminator to forget and no nested
+        // `command` object. A model that sends `{"script": "cargo test"}` is
+        // always understood.
+        let declaration = ShellTool::new().into_declaration();
         let schema = serde_json::to_value(&declaration.parameters).expect("schema");
-        let shell = schema["$defs"]["CommandLine"]["oneOf"]
-            .as_array()
-            .expect("command variants")
-            .iter()
-            .find(|variant| variant["properties"]["kind"]["const"] == "shell")
-            .expect("shell variant");
+        let properties = schema["properties"].as_object().expect("properties");
         assert!(
-            !shell["required"]
-                .as_array()
-                .is_some_and(|required| required.iter().any(|field| field == "shell")),
-            "shell must stay optional: {shell}"
+            properties.contains_key("script"),
+            "script is a top-level field"
         );
-        assert_eq!(shell["properties"]["shell"]["default"], "sh");
+        assert!(
+            properties.contains_key("shell"),
+            "shell is a top-level field"
+        );
+        assert!(
+            !properties.contains_key("command"),
+            "there is no nested command object: {schema}"
+        );
+        assert!(
+            schema.get("oneOf").is_none(),
+            "no variant list to guess from: {schema}"
+        );
+        assert_eq!(properties["shell"]["default"], "sh");
+        let required = schema["required"].as_array().expect("required");
+        assert!(
+            !required.iter().any(|field| field == "shell"),
+            "shell stays optional: {schema}"
+        );
+        assert!(
+            required.iter().any(|field| field == "script"),
+            "script is required: {schema}"
+        );
     }
 }

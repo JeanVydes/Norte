@@ -1,13 +1,13 @@
 #![forbid(unsafe_code)]
-#![doc = "Default `Norte` tool suite: a command executor and the three file executors."]
+#![doc = "Default `Norte` tool suite: a shell executor and the three file executors."]
 
 mod fs;
 mod text;
 
 pub mod browser;
-pub mod command;
 pub mod edit;
 pub mod read;
+pub mod shell;
 pub mod write;
 
 pub use browser::{
@@ -15,15 +15,15 @@ pub use browser::{
     browser_tool,
 };
 
-pub use command::{
-    CommandCode, CommandLimits, CommandLine, CommandOutput, CommandRenderer, CommandRequest,
-    CommandTool, PlainCommandRenderer, command_tool,
-};
 pub use edit::{
     EditCode, EditFailure, EditFailureReason, EditLimits, EditMatch, EditOutcome, EditRequest,
     EditSpec, EditTool, MatchKind, Snippet, edit_tool,
 };
 pub use read::{
     LineRange, ReadLimits, ReadLine, ReadOutput, ReadRequest, ReadTool, TextKind, read_tool,
+};
+pub use shell::{
+    PlainShellRenderer, ShellCode, ShellLimits, ShellOutput, ShellRenderer, ShellRequest,
+    ShellTool, shell_tool,
 };
 pub use write::{WriteCode, WriteOutput, WriteRequest, WriteTool, write_tool};

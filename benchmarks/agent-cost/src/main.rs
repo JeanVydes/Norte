@@ -87,7 +87,7 @@ use norte_core::{
 use norte_harness::{Decision, InMemoryBlobStore, InMemoryStore, Policy, PolicySet, PolicyView};
 use norte_harness::{EngineEvent, StreamDelta};
 use norte_harness::{Harness, HarnessBuilder, HarnessConfig};
-use norte_tools::{CommandTool, EditTool, ReadTool, WriteTool};
+use norte_tools::{EditTool, ReadTool, ShellTool, WriteTool};
 use serde_json::{Value, json};
 
 /// The workflow every task follows: read what is on disk, change it in place,
@@ -886,7 +886,7 @@ fn call_reason(call: &Call) -> &'static str {
         || lower.contains("only `cargo`")
     {
         "policy"
-    } else if call.name == "command"
+    } else if call.name == "shell"
         && (lower.contains("error[")
             || lower.contains("could not compile")
             || lower.contains("test failed")
@@ -1566,7 +1566,7 @@ impl Policy for CargoOnly {
     }
 
     fn decide(&self, view: &PolicyView<'_>) -> Decision {
-        if view.call.name != "command" {
+        if view.call.name != "shell" {
             return Decision::Allow;
         }
         let mut arguments = view.call.arguments.clone();
@@ -1648,7 +1648,7 @@ fn engine(root: &Path, route: &Route) -> Result<Harness, Box<dyn Error>> {
     // it cannot surface in a tool result even if a command prints it.
     let mut env: BTreeMap<String, String> = std::env::vars().collect();
     env.remove("CARGO_TARGET_DIR");
-    let mut command = CommandTool::new().with_env(env);
+    let mut command = ShellTool::new().with_env(env);
     if let Ok(key) = std::env::var(&route.key_env) {
         command = command.with_secrets([key]);
     }
@@ -1756,24 +1756,24 @@ mod tests {
         };
         assert_eq!(
             call_reason(&call(
-                "command",
-                "the request needs `command` as an object with kind and program",
+                "shell",
+                "the request needs a `script` string, and this one carried none",
             )),
             "schema"
         );
         assert_eq!(
-            call_reason(&call("command", "the command is denied by policy")),
+            call_reason(&call("shell", "the shell is denied by policy")),
             "policy"
         );
         assert_eq!(
             call_reason(&call(
-                "command",
-                "command: only `cargo` runs here, and that request asks for `grep`",
+                "shell",
+                "shell: only `cargo` runs here, and that request asks for `grep`",
             )),
             "policy"
         );
         assert_eq!(
-            call_reason(&call("command", "error[E0425]: cannot find value")),
+            call_reason(&call("shell", "error[E0425]: cannot find value")),
             "compile"
         );
         assert_eq!(

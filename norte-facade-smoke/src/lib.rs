@@ -75,6 +75,6 @@ mod tests {
         assert_eq!(tools.len(), 1);
 
         // `tools` is an opt-in feature: naming the suite checks it is wired.
-        let _ = std::any::type_name::<CommandTool>();
+        let _ = std::any::type_name::<ShellTool>();
     }
 }

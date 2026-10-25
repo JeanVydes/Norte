@@ -8,16 +8,14 @@
 //! survives as a code span), never reaches the wire.
 
 use norte_core::{ToolRegistry, ToolSpec};
-use norte_tools::{CommandTool, EditTool, ReadTool, WriteTool};
+use norte_tools::{EditTool, ReadTool, ShellTool, WriteTool};
 
 fn specs() -> Vec<ToolSpec> {
     let mut registry = ToolRegistry::new();
     registry.register_tool(&ReadTool::new()).expect("read");
     registry.register_tool(&WriteTool::new()).expect("write");
     registry.register_tool(&EditTool::new()).expect("edit");
-    registry
-        .register_tool(&CommandTool::new())
-        .expect("command");
+    registry.register_tool(&ShellTool::new()).expect("command");
     registry.specs()
 }
 
@@ -77,26 +75,28 @@ fn the_model_never_reads_developer_prose() {
 }
 
 #[test]
-fn the_model_is_shown_the_nested_shapes() {
+fn the_shell_tool_is_flat_so_the_model_cannot_forget_a_tag() {
+    // The tool used to take a tagged union — `{"command": {"kind": "shell", ...}}`
+    // — and a model that omitted the tag or nested it wrong got a parse error.
+    // The schema is one flat object now: `script` at the top, `shell` beside it.
     let specs = specs();
-    // The tag that separates a program from a script comes from serde, not from
-    // schemars: only an example shows the model the key that carries it.
-    let program = spec(&specs, "command")
-        .parameters
-        .pointer("/properties/command/oneOf/0/examples")
-        .expect("the program variant carries an example")
-        .to_string();
-    assert!(program.contains("\"kind\":\"program\""), "{program}");
-    // And the tag is a property of the variant, not something the model has to
-    // infer from the example: a `oneOf` with no discriminator is an invitation to
-    // guess, and a guess costs a request.
-    let tag = spec(&specs, "command")
-        .parameters
-        .pointer("/properties/command/oneOf/0/properties/kind/const")
-        .expect("the program variant names its tag")
-        .as_str()
-        .expect("the tag is a string");
-    assert_eq!(tag, "program");
+    let parameters = &spec(&specs, "shell").parameters;
+    assert!(
+        parameters.pointer("/properties/script").is_some(),
+        "script is a top-level property: {parameters}"
+    );
+    assert!(
+        parameters.pointer("/properties/shell").is_some(),
+        "shell is a top-level property: {parameters}"
+    );
+    assert!(
+        parameters.pointer("/properties/command").is_none(),
+        "there is no nested command object: {parameters}"
+    );
+    assert!(
+        parameters.get("oneOf").is_none() && parameters.get("allOf").is_none(),
+        "no variant list to guess from: {parameters}"
+    );
     // Two shapes that are objects, where the field name alone does not say so.
     assert!(
         spec(&specs, "read")

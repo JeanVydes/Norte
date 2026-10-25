@@ -106,7 +106,7 @@ pub mod prelude {
     };
 
     #[cfg(feature = "tools")]
-    pub use norte_tools::{CommandTool, EditTool, ReadTool, WriteTool};
+    pub use norte_tools::{EditTool, ReadTool, ShellTool, WriteTool};
 }
 
 #[cfg(test)]

@@ -25,3 +25,6 @@ tmp/
 /fuzz/corpus
 /fuzz/coverage
 /guide/book
+
+# Commit-message drafts: written to run `git commit -F`, never part of the tree.
+/.commitmsg

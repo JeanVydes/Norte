@@ -33,6 +33,7 @@ pub mod approval;
 /// What the host decides about a call a policy parked.
 pub mod approvals;
 /// In-memory reference implementations of the ports.
+pub mod interceptor;
 pub mod memory;
 /// The tool-call decision: a rule over one call, evaluated before it runs.
 pub mod policy;
@@ -60,6 +61,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 pub use crate::approval::{ApprovalRecord, AuditAction};
+pub use crate::interceptor::{Interception, InterceptionContext, InterceptorSet, TurnInterceptor};
 pub use crate::policy::{
     Decision, Policy, PolicyDecision, PolicyOutcome, PolicySet, PolicyView, ToolApprovalPolicy,
     combine,
@@ -75,7 +77,6 @@ use norte_core::domain::session::Session;
 use norte_core::error::{Error, Result};
 use norte_core::event::{EngineEvent, EventSink, StreamDelta};
 use norte_core::id::{Digest, SessionId, ToolName};
-use norte_core::interceptor::{InterceptorSet, TurnInterceptor};
 use norte_core::layer::{Continuation, LayerContext, LayerStack};
 use norte_core::media_adapter::MediaAdapter;
 use norte_core::model::{

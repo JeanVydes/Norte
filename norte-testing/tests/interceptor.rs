@@ -3,12 +3,10 @@
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use norte_core::{
-    CallId, EngineEvent, FnExecutor, Interception, InterceptionContext, Message, Result, Role,
-    ToolRegistry, TurnInterceptor,
+use norte_core::{CallId, EngineEvent, FnExecutor, Message, Result, Role, ToolRegistry};
+use norte_harness::{
+    Harness, HarnessBuilder, Interception, InterceptionContext, Store, TurnInterceptor,
 };
-use norte_harness::Store;
-use norte_harness::{Harness, HarnessBuilder};
 use norte_testing::{InMemoryBlobStore, InMemoryStore, ScriptedModel, model};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

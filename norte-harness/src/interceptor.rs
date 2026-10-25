@@ -2,11 +2,11 @@
 
 use std::sync::Arc;
 
-use crate::domain::message::Message;
-use crate::domain::session::Phase;
-use crate::error::Result;
-use crate::event::EventSink;
-use crate::id::{NodeId, SessionId};
+use norte_core::domain::message::Message;
+use norte_core::domain::session::Phase;
+use norte_core::error::Result;
+use norte_core::event::EventSink;
+use norte_core::id::{NodeId, SessionId};
 
 /// What an interceptor decided about the turn.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

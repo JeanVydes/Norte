@@ -9,6 +9,7 @@
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use crate::interceptor::{Interception, InterceptionContext};
 use norte_core::domain::commit::Commit;
 use norte_core::domain::message::Message;
 use norte_core::domain::node::Node;
@@ -18,7 +19,6 @@ use norte_core::domain::session::{Phase, Session};
 use norte_core::error::{Error, Result};
 use norte_core::event::EngineEvent;
 use norte_core::id::{NodeId, SessionId};
-use norte_core::interceptor::{Interception, InterceptionContext};
 use norte_core::model::TurnOptions;
 
 use super::{ChannelSink, Consultation, Harness, TurnOutcome, session_turn_options, turn_metadata};
@@ -310,24 +310,6 @@ impl Harness {
                 Interception::Stop { reason } => {
                     // The host ended the turn on purpose; say so, so the client
                     // does not read it as a failure.
-                    self.emit(
-                        sender,
-                        EngineEvent::TurnStopped {
-                            session: session.id,
-                            interceptor: interceptor.name().to_owned(),
-                            reason: reason.clone(),
-                        },
-                    )
-                    .await;
-                    stop = Some(reason);
-                }
-                // A decision added to the core after this build: stop, like an
-                // explicit `Stop`, and name the interceptor so the client can
-                // tell where it came from.
-                other => {
-                    let reason = format!(
-                        "interceptor returned a decision this harness does not understand: {other:?}"
-                    );
                     self.emit(
                         sender,
                         EngineEvent::TurnStopped {

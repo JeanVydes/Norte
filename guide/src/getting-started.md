@@ -8,7 +8,7 @@ norte = "0.0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
 
-`norte` is the entrypoint: `norte-core` is at the root (`norte::Engine`,
+`norte` is the entrypoint: `norte-core` is at the root (`norte::Harness`,
 `norte::Message`) and every other crate is a module of its own name —
 `norte::openai`, `norte::anthropic`, `norte::gemini`, `norte::http`,
 `norte::tools`, `norte::media`, `norte::mcp`. The default feature is the OpenAI
@@ -26,9 +26,8 @@ items are reachable through the facade (`norte::Capabilities`,
 ```rust,ignore
 use std::sync::Arc;
 
-use norte_core::{
-    Capabilities, EngineBuilder, InMemoryBlobStore, InMemoryStore, Message, Modality, ToolRegistry,
-};
+use norte_core::{Capabilities, Message, Modality, ToolRegistry};
+use norte_harness::{HarnessBuilder, InMemoryBlobStore, InMemoryStore};
 use norte_openai::presets::openai;
 
 #[tokio::main]
@@ -41,7 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let model = openai("gpt-5", std::env::var("OPENAI_API_KEY")?, capabilities)?;
 
     // 2. The engine: one store, one blob store, one model, a tool registry.
-    let engine = EngineBuilder::new()
+    let engine = HarnessBuilder::new()
         .store(Arc::new(InMemoryStore::new()))
         .blobs(Arc::new(InMemoryBlobStore::new()))
         .model(Arc::new(model))
@@ -74,12 +73,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   right auth header, the right base `URL`. The generic form is a
   `VendorProfile` plus `OpenAiChat::new(..)`, for any `OpenAI`-compatible
   endpoint. See [Providers](concepts/providers.md).
-- `EngineBuilder` — `store`, `blobs` and `model` are required; everything else has
+- `HarnessBuilder` — `store`, `blobs` and `model` are required; everything else has
   a default. `build()` fails with `Error::InvalidInput` if one is missing.
 - `engine.create()` — creates a session, commits it, and emits `SessionCreated`.
   A session is durable from that moment.
 - `engine.send(id, message)` — opens a turn with a user message and returns an
-  `EngineStream`. `finish()` drains it and returns a `TurnOutcome` with the
+  `HarnessStream`. `finish()` drains it and returns a `TurnOutcome` with the
   session and the assistant message that was committed.
 - `outcome.message` is `Option<Message>`: a turn that ended in a tool call may
   commit no assistant message of its own.

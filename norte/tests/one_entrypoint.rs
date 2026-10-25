@@ -5,11 +5,10 @@
 
 use std::sync::Arc;
 
+use norte::harness::{HarnessBuilder, InMemoryStore};
 use norte::{
-    Capabilities, FnExecutor, InMemoryBlobStore, InMemoryStore, Modality, Result, ToolOutput,
-    ToolRegistry,
+    Capabilities, FnExecutor, InMemoryBlobStore, Modality, Result, ToolOutput, ToolRegistry,
 };
-use norte::harness::EngineBuilder;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -46,7 +45,7 @@ fn one_dependency_is_enough() {
     tools.register_tool(&Echo).expect("the tool registers");
     assert_eq!(tools.len(), 1);
 
-    let engine = EngineBuilder::new()
+    let engine = HarnessBuilder::new()
         .store(Arc::new(InMemoryStore::new()))
         .blobs(Arc::new(InMemoryBlobStore::new()))
         .model(Arc::new(model))

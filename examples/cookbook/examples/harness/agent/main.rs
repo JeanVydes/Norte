@@ -24,8 +24,14 @@ use std::error::Error;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
-use norte_core::{Capabilities, Decision, InMemoryBlobStore, InMemoryStore, Message, Modality, ModelId, ModelRef, Policy, PolicySet, PolicyView, ProviderId, StreamingGranularity, ToolKind, ToolRegistry, ToolResultPart, WireFamily};
-use norte_harness::{Engine, EngineBuilder};
+use norte_core::{
+    Capabilities, Message, Modality, ModelRef, StreamingGranularity, ToolKind, ToolRegistry,
+    ToolResultPart, WireFamily,
+};
+use norte_harness::{
+    Decision, Harness, HarnessBuilder, InMemoryBlobStore, InMemoryStore, Policy, PolicySet,
+    PolicyView,
+};
 use norte_http::{AuthScheme, VendorProfile};
 use norte_openai::{OpenAiChat, WIRE_CHAT};
 use norte_tools::{EditTool, ReadTool, WriteTool};
@@ -72,7 +78,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 /// One agent turn of its own: a session, the system prompt, and everything the
 /// engine did before it answered.
-async fn turn(engine: &Engine, prompt: &str) -> Result<(), Box<dyn Error>> {
+async fn turn(engine: &Harness, prompt: &str) -> Result<(), Box<dyn Error>> {
     let session = engine.create().await?;
     engine
         .append_history(session.id, vec![Message::system(SYSTEM)])
@@ -188,7 +194,7 @@ fn scratch() -> Result<PathBuf, Box<dyn Error>> {
 
 /// The wiring: the three file executors, the policy that decides their paths,
 /// and the model.
-fn engine(root: &Path) -> Result<Engine, Box<dyn Error>> {
+fn engine(root: &Path) -> Result<Harness, Box<dyn Error>> {
     let mut tools = ToolRegistry::new();
     tools.register_tool_declaration(ReadTool::new().into_declaration())?;
     tools.register_tool_declaration(WriteTool::new().into_declaration())?;
@@ -210,7 +216,7 @@ fn engine(root: &Path) -> Result<Engine, Box<dyn Error>> {
         .tool_kind(ToolKind::Function)
         .build();
     let model = openrouter(capabilities)?;
-    Ok(EngineBuilder::new()
+    Ok(HarnessBuilder::new()
         .store(Arc::new(InMemoryStore::new()))
         .blobs(Arc::new(InMemoryBlobStore::new()))
         .model(Arc::new(model))
@@ -228,14 +234,19 @@ fn required(name: &str, example: &str) -> Result<String, Box<dyn Error>> {
 
 /// Wires `OpenRouter`. An `OpenAI`-compatible vendor is a profile, not a preset.
 fn openrouter(capabilities: Capabilities) -> Result<OpenAiChat, Box<dyn Error>> {
-    let provider = ProviderId::new("openrouter")?;
-    let endpoint = required("COOKBOOK_ENDPOINT", "https://openrouter.ai/api/v1")?;
-    let profile = VendorProfile::new(provider.clone(), WireFamily::new(WIRE_CHAT)?, &endpoint)?
-        .with_auth(AuthScheme::bearer(std::env::var("OPENROUTER_API_KEY")?));
-    let id = required("COOKBOOK_MODEL", "deepseek/deepseek-v4.1-flash-1017")?;
     Ok(OpenAiChat::new(
-        ModelRef::new(provider, ModelId::new(&id)?),
-        profile,
+        ModelRef::new(
+            "openrouter".try_into()?,
+            required("COOKBOOK_MODEL", "deepseek/deepseek-v4.1-flash-1017")?
+                .as_str()
+                .try_into()?,
+        ),
+        VendorProfile::new(
+            "openrouter".try_into()?,
+            WireFamily::new(WIRE_CHAT)?,
+            &required("COOKBOOK_ENDPOINT", "https://openrouter.ai/api/v1")?,
+        )?
+        .with_auth(AuthScheme::bearer(std::env::var("OPENROUTER_API_KEY")?)),
         capabilities,
     )?)
 }

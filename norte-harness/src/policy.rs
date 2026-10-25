@@ -3,11 +3,11 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::capability::Capabilities;
-use crate::domain::message::Message;
-use crate::domain::part::{ToolCallPart, ToolResultPart};
-use crate::domain::session::Session;
-use crate::id::{ModelRef, ToolName};
+use norte_core::capability::Capabilities;
+use norte_core::domain::message::Message;
+use norte_core::domain::part::{ToolCallPart, ToolResultPart};
+use norte_core::domain::session::Session;
+use norte_core::id::{ModelRef, ToolName};
 
 /// A typed view of the request a policy decides on. Policies perform no I/O:
 /// anything external is fetched by a layer and placed in session metadata.
@@ -31,7 +31,7 @@ pub struct PolicyView<'a> {
     /// because none of the message's calls has run yet when they are started in
     /// parallel; a call the policy defers is evaluated later, on the normal
     /// path, and then sees whatever already ran. A policy that depends on it
-    /// must leave `EngineConfig::early_tool_execution` off.
+    /// must leave `norte_harness::HarnessConfig::early_tool_execution` off.
     pub results: &'a [ToolResultPart],
     /// The messages of the request in flight: from the last user message to the
     /// assistant message carrying this call, inclusive, including the tool
@@ -252,7 +252,7 @@ mod tests {
     use std::str::FromStr;
 
     use super::*;
-    use crate::id::{CallId, ModelRef};
+    use norte_core::id::{CallId, ModelRef};
 
     struct Deny;
 

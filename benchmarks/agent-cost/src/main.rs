@@ -80,8 +80,12 @@ use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
 use norte_bench_support::report::{Align, Report};
 use norte_bench_support::{Mode, RecordingOpenAi, Route, Run, captured as new_capture};
-use norte_core::{CallId, Capabilities, Decision, EngineEvent, InMemoryBlobStore, InMemoryStore, Message, Modality, Part, Policy, PolicySet, PolicyView, SessionId, StreamDelta, StreamingGranularity, ToolKind, ToolRegistry, Usage};
-use norte_harness::{Engine, EngineBuilder, EngineConfig};
+use norte_core::{
+    CallId, Capabilities, EngineEvent, Message, Modality, Part, SessionId, StreamDelta,
+    StreamingGranularity, ToolKind, ToolRegistry, Usage,
+};
+use norte_harness::{Decision, InMemoryBlobStore, InMemoryStore, Policy, PolicySet, PolicyView};
+use norte_harness::{Harness, HarnessBuilder, HarnessConfig};
 use norte_tools::{CommandTool, EditTool, ReadTool, WriteTool};
 use serde_json::{Value, json};
 
@@ -642,7 +646,7 @@ impl Screen {
     /// Renders one event, billing the previous iteration as the next one opens.
     async fn event(
         &mut self,
-        engine: &Engine,
+        engine: &Harness,
         session: SessionId,
         event: &EngineEvent,
     ) -> Result<(), Box<dyn Error>> {
@@ -701,7 +705,7 @@ impl Screen {
     /// stream at all. History is where both land, and the moment they land is
     /// the moment the next request is about to be built out of them — the moment
     /// worth showing.
-    async fn settle(&mut self, engine: &Engine, session: SessionId) -> Result<(), Box<dyn Error>> {
+    async fn settle(&mut self, engine: &Harness, session: SessionId) -> Result<(), Box<dyn Error>> {
         let history = engine.history(session).await?;
         for message in history.iter().skip(self.billed) {
             if let Some(usage) = message.origin.as_ref().map(|origin| &origin.usage) {
@@ -1632,7 +1636,7 @@ fn scratch() -> Result<PathBuf, Box<dyn Error>> {
 
 /// The wiring: the four executors, the policies that decide their paths and the
 /// one program the command tool may run, and the model the route names.
-fn engine(root: &Path, route: &Route) -> Result<Engine, Box<dyn Error>> {
+fn engine(root: &Path, route: &Route) -> Result<Harness, Box<dyn Error>> {
     let mut tools = ToolRegistry::new();
     tools.register_tool_declaration(ReadTool::new().into_declaration())?;
     tools.register_tool_declaration(WriteTool::new().into_declaration())?;
@@ -1669,7 +1673,7 @@ fn engine(root: &Path, route: &Route) -> Result<Engine, Box<dyn Error>> {
         .build();
     let adapter = route.openai(capabilities)?;
     let probe = RecordingOpenAi::new(adapter, new_capture(), route.pause());
-    let engine = EngineBuilder::new()
+    let engine = HarnessBuilder::new()
         .store(Arc::new(InMemoryStore::new()))
         .blobs(Arc::new(InMemoryBlobStore::new()))
         .model(Arc::new(probe))
@@ -1678,9 +1682,9 @@ fn engine(root: &Path, route: &Route) -> Result<Engine, Box<dyn Error>> {
         // A real coding agent reads, edits and reads back over a dozen times; the
         // default budget of 16 is a chat turn's, not a session's, and a request
         // that runs out of budget is one the provider already billed.
-        .config(EngineConfig {
+        .config(HarnessConfig {
             max_iterations: BUDGET,
-            ..EngineConfig::default()
+            ..HarnessConfig::default()
         })
         .build()?;
     Ok(engine)

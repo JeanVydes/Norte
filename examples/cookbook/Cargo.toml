@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
-description = "Small, runnable recipes for specific Norte engine tasks."
+description = "Small, runnable recipes for Norte: the core alone at the root, the harness and media in their own folders."
 
 [dependencies]
 norte-core = { workspace = true }
@@ -24,3 +24,52 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 
 [lints]
 workspace = true
+
+# Nested under a topic folder, which Cargo's autodiscovery does not reach.
+[[example]]
+name = "agent"
+path = "examples/harness/agent/main.rs"
+
+[[example]]
+name = "approval"
+path = "examples/harness/approval/main.rs"
+
+[[example]]
+name = "branching"
+path = "examples/harness/branching/main.rs"
+
+[[example]]
+name = "events"
+path = "examples/harness/events/main.rs"
+
+[[example]]
+name = "export_import"
+path = "examples/harness/export_import/main.rs"
+
+[[example]]
+name = "observers"
+path = "examples/harness/observers/main.rs"
+
+[[example]]
+name = "policy"
+path = "examples/harness/policy/main.rs"
+
+[[example]]
+name = "policy_context"
+path = "examples/harness/policy_context/main.rs"
+
+[[example]]
+name = "rate_limit"
+path = "examples/harness/rate_limit/main.rs"
+
+[[example]]
+name = "streaming"
+path = "examples/harness/streaming/main.rs"
+
+[[example]]
+name = "media"
+path = "examples/media/media/main.rs"
+
+[[example]]
+name = "provider_files"
+path = "examples/media/provider_files/main.rs"

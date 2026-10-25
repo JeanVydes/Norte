@@ -1,10 +1,10 @@
 use chrono::Duration;
 
 use norte_core::{
-    ApprovalRecord, CallId, Commit, ContinuityFragment, ContinuityScope, ContinuitySemantics,
-    Error, Message, Model, ModelRef, Node, NodeId, Phase, ReplayDecision, SessionId, Store,
-    ToolName,
+    CallId, Commit, ContinuityFragment, ContinuityScope, ContinuitySemantics, Error, Message,
+    Model, ModelRef, Node, NodeId, Phase, ReplayDecision, SessionId, ToolName,
 };
+use norte_harness::{ApprovalRecord, Store};
 
 /// Runs the [`Model`] contract every adapter must satisfy (FR-TEST-1).
 ///

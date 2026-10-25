@@ -1,6 +1,6 @@
+use crate::blob::BlobStore;
 use crate::domain::media::{MediaKind, MediaPart, MimeType, ProviderFileRef};
 use crate::error::Result;
-use crate::store::BlobStore;
 
 /// The seam where media meets a vendor wire format.
 ///

@@ -33,17 +33,21 @@
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 
-use norte_core::{Capabilities, Commit, ContinuityAdapter, Digest, InMemoryBlobStore, InMemoryStore, Message, Modality, Model, ModelId, ModelRef, ModelRequest, ModelStream, Node, NodeId, Phase, ProviderId, Session, Store, StreamingGranularity, ToolKind, ToolRegistry, TurnOptions, WireFamily};
-use norte_harness::{Engine, EngineBuilder};
+use norte_core::{
+    Capabilities, Commit, ContinuityAdapter, Digest, Message, Modality, Model, ModelRef,
+    ModelRequest, ModelStream, Node, NodeId, Phase, Session, StreamingGranularity, ToolKind,
+    ToolRegistry, TurnOptions, WireFamily,
+};
+use norte_harness::{Harness, HarnessBuilder, InMemoryBlobStore, InMemoryStore, Store};
 use norte_http::{AuthScheme, VendorProfile};
 use norte_openai::{OpenAiChat, WIRE_CHAT};
 use serde_json::{Value, json};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let (engine, store, captured) = new_engine()?;
-    let session = engine.create().await?;
-    engine
+    let (harness, store, captured) = new_engine()?;
+    let session = harness.create().await?;
+    harness
         .append_history(session.id, vec![Message::system(manual())])
         .await?;
 
@@ -57,7 +61,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
 
     println!("--- branch A: two turns");
-    let first = engine
+    let first = harness
         .turn(session.id)
         .input(Message::user(ASK_A))
         .options(options.clone())
@@ -65,13 +69,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .finish()
         .await?;
     report("turn 1", first.message.as_ref());
-    let fork_point = engine
+    let fork_point = harness
         .session(session.id)
         .await?
         .head
         .expect("the first turn committed a node");
 
-    let second = engine
+    let second = harness
         .turn(session.id)
         .input(Message::user(ASK_B))
         .options(options.clone())
@@ -83,14 +87,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     println!("\n--- rewind to the first answer");
     println!("fork point: {fork_point}");
-    let state = engine.session(session.id).await?;
+    let state = harness.session(session.id).await?;
     let branch_head = branch_from(&store, &state, fork_point, Message::user(ASK_C)).await?;
     println!(
         "the fork now has {} children; the head moved without rewriting a node",
         store.children(fork_point).await?.len()
     );
 
-    let branch_turn = engine
+    let branch_turn = harness
         .turn(session.id)
         .options(options.clone())
         .start()
@@ -106,7 +110,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let fork_depth = store.ancestors(branch_head).await?.len() - 1;
     let prefix_stable = compare("shared with branch A", &branch_a, &branch_b, fork_depth);
 
-    let next = engine
+    let next = harness
         .turn(session.id)
         .input(Message::user(ASK_D))
         .options(options.clone())
@@ -306,20 +310,20 @@ impl Model for Probe {
     }
 }
 
-fn new_engine() -> Result<(Engine, Arc<InMemoryStore>, Captured), Box<dyn Error>> {
+fn new_engine() -> Result<(Harness, Arc<InMemoryStore>, Captured), Box<dyn Error>> {
     let captured: Captured = Arc::new(Mutex::new(Vec::new()));
     let model = Probe {
         inner: openrouter()?,
         captured: Arc::clone(&captured),
     };
     let store = Arc::new(InMemoryStore::new());
-    let engine = EngineBuilder::new()
+    let harness = HarnessBuilder::new()
         .store(store.clone())
         .blobs(Arc::new(InMemoryBlobStore::new()))
         .model(Arc::new(model))
         .tools(ToolRegistry::new())
         .build()?;
-    Ok((engine, store, captured))
+    Ok((harness, store, captured))
 }
 
 fn capabilities() -> Capabilities {
@@ -358,14 +362,19 @@ fn required(name: &str, example: &str) -> Result<String, Box<dyn Error>> {
 
 /// Wires `OpenRouter`. An `OpenAI`-compatible vendor is a profile, not a preset.
 fn openrouter() -> Result<OpenAiChat, Box<dyn Error>> {
-    let provider = ProviderId::new("openrouter")?;
-    let endpoint = required("COOKBOOK_ENDPOINT", "https://openrouter.ai/api/v1")?;
-    let profile = VendorProfile::new(provider.clone(), WireFamily::new(WIRE_CHAT)?, &endpoint)?
-        .with_auth(AuthScheme::bearer(std::env::var("OPENROUTER_API_KEY")?));
-    let id = required("COOKBOOK_MODEL", "deepseek/deepseek-v4.1-flash-1017")?;
     Ok(OpenAiChat::new(
-        ModelRef::new(provider, ModelId::new(&id)?),
-        profile,
+        ModelRef::new(
+            "openrouter".try_into()?,
+            required("COOKBOOK_MODEL", "deepseek/deepseek-v4.1-flash-1017")?
+                .as_str()
+                .try_into()?,
+        ),
+        VendorProfile::new(
+            "openrouter".try_into()?,
+            WireFamily::new(WIRE_CHAT)?,
+            &required("COOKBOOK_ENDPOINT", "https://openrouter.ai/api/v1")?,
+        )?
+        .with_auth(AuthScheme::bearer(std::env::var("OPENROUTER_API_KEY")?)),
         capabilities(),
     )?)
 }

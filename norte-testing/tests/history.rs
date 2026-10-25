@@ -4,16 +4,17 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use norte_core::{Commit, EngineEvent, Error, Message, Observer, Phase, SessionId, Store};
-use norte_harness::{Engine, EngineBuilder};
+use norte_core::{Commit, EngineEvent, Error, Message, Observer, Phase, SessionId};
+use norte_harness::Store;
+use norte_harness::{Harness, HarnessBuilder};
 use norte_testing::{InMemoryBlobStore, InMemoryStore, RecordingObserver, ScriptedModel, model};
 
 fn build(
     scripted: Arc<ScriptedModel>,
     store: Arc<InMemoryStore>,
     observers: Vec<Arc<dyn Observer>>,
-) -> Engine {
-    EngineBuilder::new()
+) -> Harness {
+    HarnessBuilder::new()
         .store(store)
         .blobs(Arc::new(InMemoryBlobStore::new()))
         .model(scripted)

@@ -18,7 +18,7 @@ let scripted = ScriptedModel::new(model("test/scripted"))
     .turn_tool_call(call_id, "read", &json!({ "path": "src/lib.rs" }))
     .turn_text("It exports `Config`.");
 
-let engine = EngineBuilder::new()
+let engine = HarnessBuilder::new()
     .store(Arc::new(InMemoryStore::new()))
     .blobs(Arc::new(InMemoryBlobStore::new()))
     .model(Arc::new(scripted.clone()))

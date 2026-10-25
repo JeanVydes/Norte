@@ -7,22 +7,26 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use norte_core::{Capabilities, Continuation, Decision, FnExecutor, InMemoryBlobStore, InMemoryStore, Layer, LayerContext, Message, Modality, ModelId, ModelRef, ModelRequest, ModelStream, Policy, PolicySet, PolicyView, ProviderId, Result, ToolOutput, ToolRegistry, WireFamily};
-use norte_harness::{Engine, EngineBuilder};
+use norte_core::{
+    Capabilities, Continuation, FnExecutor, Layer, LayerContext, Message, Modality, ModelId,
+    ModelRef, ModelRequest, ModelStream, ProviderId, Result, ToolOutput, ToolRegistry, WireFamily,
+};
+use norte_harness::{Decision, InMemoryBlobStore, InMemoryStore, Policy, PolicySet, PolicyView};
+use norte_harness::{Harness, HarnessBuilder};
 use norte_http::{AuthScheme, VendorProfile};
 use norte_openai::{OpenAiChat, WIRE_CHAT, presets::openai};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// `getting-started.md`: the three native presets and the engine wiring.
-fn getting_started_engine() -> Result<Engine> {
+fn getting_started_engine() -> Result<Harness> {
     let capabilities = Capabilities::builder()
         .input(Modality::Text)
         .output(Modality::Text)
         .build();
     let model = openai("gpt-5", "sk-test", capabilities)?;
 
-    EngineBuilder::new()
+    HarnessBuilder::new()
         .store(Arc::new(InMemoryStore::new()))
         .blobs(Arc::new(InMemoryBlobStore::new()))
         .model(Arc::new(model))
@@ -31,7 +35,7 @@ fn getting_started_engine() -> Result<Engine> {
 }
 
 /// `getting-started.md`: any `OpenAI`-compatible endpoint is a profile.
-fn compatible_endpoint() -> Result<Engine> {
+fn compatible_endpoint() -> Result<Harness> {
     let capabilities = Capabilities::builder()
         .input(Modality::Text)
         .output(Modality::Text)
@@ -49,7 +53,7 @@ fn compatible_endpoint() -> Result<Engine> {
         capabilities,
     )?;
 
-    EngineBuilder::new()
+    HarnessBuilder::new()
         .store(Arc::new(InMemoryStore::new()))
         .blobs(Arc::new(InMemoryBlobStore::new()))
         .model(Arc::new(model))

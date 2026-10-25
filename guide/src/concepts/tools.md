@@ -162,9 +162,9 @@ a provider on the engine:
 
 ```rust,ignore
 use std::collections::BTreeMap;
-use norte_core::EngineBuilder;
+use norte_harness::HarnessBuilder;
 
-let engine = EngineBuilder::new()
+let engine = HarnessBuilder::new()
     /* .. */
     .tool_metadata(|info| {
         let mut map = BTreeMap::new();

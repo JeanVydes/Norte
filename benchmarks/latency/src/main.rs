@@ -28,8 +28,11 @@ use std::time::{Duration, Instant};
 use futures_util::StreamExt as _;
 use norte_bench_support::report::{Align, Report};
 use norte_bench_support::{Mode, Run, captured as new_capture};
-use norte_core::{Capabilities, EngineEvent, InMemoryBlobStore, InMemoryStore, Message, Modality, Role, StreamDelta, StreamingGranularity, Usage};
-use norte_harness::{Engine, EngineBuilder};
+use norte_core::{
+    Capabilities, EngineEvent, Message, Modality, Role, StreamDelta, StreamingGranularity, Usage,
+};
+use norte_harness::{Harness, HarnessBuilder};
+use norte_harness::{InMemoryBlobStore, InMemoryStore};
 use serde::Serialize;
 
 const DEFAULT_PROMPT: &str = "Write a four-line haiku about latency.";
@@ -121,12 +124,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn build_engine(route: &norte_bench_support::Route) -> Result<Engine, Box<dyn Error>> {
+fn build_engine(route: &norte_bench_support::Route) -> Result<Harness, Box<dyn Error>> {
     let adapter = route.openai(text_capabilities())?;
     // The pause is taken by the benchmark, before the clock starts, so it does
     // not land in either latency figure.
     let probe = norte_bench_support::RecordingOpenAi::new(adapter, new_capture(), Duration::ZERO);
-    Ok(EngineBuilder::new()
+    Ok(HarnessBuilder::new()
         .store(Arc::new(InMemoryStore::new()))
         .blobs(Arc::new(InMemoryBlobStore::new()))
         .model(Arc::new(probe))
@@ -143,7 +146,7 @@ fn text_capabilities() -> Capabilities {
 
 /// Consumes the stream event by event, so the first delta has a timestamp.
 async fn measure_streaming(
-    engine: &Engine,
+    engine: &Harness,
     prompt: &str,
     options: norte_core::TurnOptions,
     round: u64,
@@ -200,7 +203,7 @@ async fn measure_streaming(
 
 /// Calls `finish()` and never looks at an event.
 async fn measure_buffered(
-    engine: &Engine,
+    engine: &Harness,
     prompt: &str,
     options: norte_core::TurnOptions,
     round: u64,
@@ -276,7 +279,7 @@ fn assemble(mode: &str, round: u64, counts: &Counts, usage: &Usage) -> Round {
 }
 
 /// The usage the provider reported for the turn just committed.
-async fn usage(engine: &Engine, session: norte_core::SessionId) -> Usage {
+async fn usage(engine: &Harness, session: norte_core::SessionId) -> Usage {
     engine
         .history(session)
         .await

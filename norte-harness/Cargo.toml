@@ -16,6 +16,7 @@ categories = ["asynchronous", "concurrency"]
 norte-core = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 futures-core = { workspace = true }
 futures-util = { workspace = true }

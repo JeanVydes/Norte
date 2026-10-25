@@ -39,14 +39,14 @@ mod tests {
     use norte::prelude::*;
 
     /// The README quickstart, without the calls that need a network.
-    fn quickstart_engine() -> Result<Engine, Box<dyn std::error::Error>> {
+    fn quickstart_engine() -> Result<Harness, Box<dyn std::error::Error>> {
         let capabilities = Capabilities::builder()
             .input(Modality::Text)
             .output(Modality::Text)
             .build();
         let model = norte::presets::openai("gpt-5", "sk-test", capabilities)?;
 
-        let engine = EngineBuilder::new()
+        let engine = HarnessBuilder::new()
             .store(Arc::new(InMemoryStore::new()))
             .blobs(Arc::new(InMemoryBlobStore::new()))
             .model(Arc::new(model))

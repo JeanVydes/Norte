@@ -2,7 +2,7 @@
 #![doc = "Scripted models, fixture replay, request probes and conformance suites for `Norte`. Production code does not depend on this crate."]
 
 /// Conformance suites that check a [`Model`](norte_core::Model) or a
-/// [`Store`](norte_core::Store) against its contract.
+/// [`Store`](norte_harness::Store) against its contract.
 pub mod conformance;
 /// Convenience builders for common messages.
 pub mod fixtures;
@@ -18,7 +18,8 @@ pub use fixtures::{model, system, user};
 pub use model::{
     FailingModel, OpaqueContinuity, ScriptedModel, StrictContinuity, text_capabilities,
 };
-pub use norte_core::memory::{InMemoryBlobStore, InMemoryStore};
+pub use norte_core::blob::InMemoryBlobStore;
+pub use norte_harness::InMemoryStore;
 pub use observer::RecordingObserver;
 pub use probe::ProbeModel;
 

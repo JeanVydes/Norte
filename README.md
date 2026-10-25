@@ -12,11 +12,30 @@
 </p>
 
 **Provider-agnostic infrastructure for AI agents in Rust.** One core, three
-first-class provider SDKs, and a streaming, durable engine.
+first-class provider SDKs, a durable conversation model, and a reference agent
+loop you may take or leave.
 
 Nothing in your application names a vendor, and no model catalogue is baked in:
-you declare what your models can do, and the engine does the rest, every call
-under a policy you write, every turn in a history you can audit.
+you declare what your models can do, and the requests follow, every call under a
+policy you write, every turn in a history you can audit.
+
+## The core does not know what an agent is
+
+Norte is split so that the agent part is *optional*, not assumed.
+
+- **`norte-core`** owns what a conversation *is*: `Message`, `Part`, `Session`,
+  `Commit`, and the ports a provider or a store implements — `Model`,
+  `BlobStore`, `ToolRegistry`, `Layer`, `Observer`, `Capability`. Nothing in it
+  knows there is a turn loop, and it does not commit to one.
+- **`norte-harness`** owns one way of driving that: `Harness` walks a session
+  forward a turn at a time, with the tool loop, approvals, policies and the
+  session store. It is the loop most applications want, and it is *a* harness
+  rather than *the* harness.
+
+A host that wants a different turn policy — its own scheduling, a graph instead
+of a session, a batch job with no loop at all — depends on `norte-core` alone
+and never sees the harness. That is the point of the split: the contracts are the
+product, and the loop is one consumer of them.
 
 ## Why Norte
 
@@ -67,44 +86,95 @@ and a key.
 
 ```toml
 [dependencies]
-norte = "0.0.1"
+norte = { version = "0.0.1", features = ["harness", "tools"] }
 ```
 
+The core, the providers and their contracts come by default. `harness` adds the
+agent loop, `tools` the default tool suite; a host that writes its own loop
+leaves `harness` out and never compiles it.
+
 ## Quickstart
+
+The core is a model port and the value types a conversation is made of. No
+harness, no session, no framework — one request, every event:
+
+```rust
+use std::error::Error;
+
+use futures_util::StreamExt;
+use norte_core::{Capabilities, Message, Modality, Model, ModelRef, ModelRequest, StreamingGranularity, WireFamily};
+use norte_http::{AuthScheme, VendorProfile};
+use norte_openai::{OpenAiChat, WIRE_CHAT};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+    let model = OpenAiChat::new(
+        ModelRef::new(
+            "openrouter".try_into()?,
+            std::env::var("COOKBOOK_MODEL")?.as_str().try_into()?,
+        ),
+        VendorProfile::new(
+            "openrouter".try_into()?,
+            WireFamily::new(WIRE_CHAT)?,
+            &std::env::var("COOKBOOK_ENDPOINT")?,
+        )?
+        .with_auth(AuthScheme::bearer(std::env::var("OPENROUTER_API_KEY")?)),
+        Capabilities::builder()
+            .input(Modality::Text)
+            .output(Modality::Text)
+            .streaming(StreamingGranularity::Delta)
+            .build(),
+    )?;
+
+    let mut stream = model
+        .stream(ModelRequest::new(
+            model.reference().clone(),
+            vec![
+                Message::system("Answer in one sentence."),
+                Message::user("What is a prompt cache?"),
+            ],
+        ))
+        .await?;
+
+    while let Some(event) = stream.next().await {
+        println!("{:?}", event?);
+    }
+
+    Ok(())
+}
+```
+
+A model id and a profile are all the configuration a call needs: the adapter is
+chosen by name, the endpoint is a `URL`, and the key comes from the environment.
+
+To drive a *session* instead — history, tools, approvals, one atomic commit per
+turn — reach for the harness, which is one client of this port among others:
 
 ```rust
 use std::sync::Arc;
 
 use norte::prelude::*;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let capabilities = Capabilities::builder()
-        .input(Modality::Text)
-        .output(Modality::Text)
-        .build();
-    let model = norte::presets::openai("gpt-5", std::env::var("OPENAI_API_KEY")?, capabilities)?;
+let harness = HarnessBuilder::new()
+    .store(Arc::new(InMemoryStore::new()))
+    .blobs(Arc::new(InMemoryBlobStore::new()))
+    .model(Arc::new(model))
+    .tools(ToolRegistry::new())
+    .build()?;
 
-    let engine = EngineBuilder::new()
-        .store(Arc::new(InMemoryStore::new()))
-        .blobs(Arc::new(InMemoryBlobStore::new()))
-        .model(Arc::new(model))
-        .tools(ToolRegistry::new())
-        .build()?;
-
-    let session = engine.create().await?;
-    let outcome = engine.send(session.id, Message::user("Hello!")).finish().await?;
-    println!("{}", outcome.message.as_ref().map(Message::text).unwrap_or_default());
-    Ok(())
-}
+let session = harness.create().await?;
+let outcome = harness
+    .send(session.id, Message::user("Hello!"))
+    .finish()
+    .await?;
+println!("{}", outcome.message.as_ref().map(Message::text).unwrap_or_default());
 ```
 
-`Store` and `BlobStore` are ports. The in-memory pair above is ready to use and
-implements the whole contract — one atomic commit per turn, optimistic
-concurrency, the tool-approval ledger, content-addressed bytes. It is the right
-default for a CLI, a desktop app, a prototype or a single-process worker; when a
-session has to outlive the process, implement the two traits over your own
-database and object storage. Nothing else in the engine touches infrastructure.
+`Store` and `BlobStore` are ports. The in-memory pair above implements the whole
+contract — one atomic commit per turn, optimistic concurrency, the approval
+ledger, content-addressed bytes — and is the right default for a CLI, a desktop
+app or a single-process worker. When a session has to outlive the process,
+implement the two traits over your own database and object storage.
 
 ## Examples
 

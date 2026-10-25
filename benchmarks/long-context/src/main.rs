@@ -44,8 +44,9 @@ use norte_bench_support::{
     Counters, Mode, RecordingOpenAi, Route, Run, as_f64, captured as new_capture, cost_of,
     duration as fmt_duration, money_opt, percent,
 };
-use norte_core::{Capabilities, Digest, InMemoryBlobStore, InMemoryStore, Message, Modality, StreamingGranularity, TurnOptions};
-use norte_harness::{EngineBuilder};
+use norte_core::{Capabilities, Digest, Message, Modality, StreamingGranularity, TurnOptions};
+use norte_harness::InMemoryStore;
+use norte_harness::{HarnessBuilder, InMemoryBlobStore};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -255,7 +256,7 @@ async fn run_arm(
         .openai(text_capabilities())
         .map_err(|error| error.to_string())?;
     let model = RecordingOpenAi::new(adapter, Arc::clone(&captured), route.pause());
-    let engine = EngineBuilder::new()
+    let engine = HarnessBuilder::new()
         .store(Arc::new(InMemoryStore::new()))
         .blobs(Arc::new(InMemoryBlobStore::new()))
         .model(Arc::new(model))

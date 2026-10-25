@@ -73,7 +73,7 @@ let mut tools = ToolRegistry::new();
 tools.register_tool_declaration(declaration)?;
 tools.register_tool(&WordCount)?;   // register_declarator if `call` returns a plain result
 
-let engine = EngineBuilder::new()
+let engine = HarnessBuilder::new()
     .store(store)
     .blobs(blobs)
     .model(model)
@@ -121,7 +121,7 @@ promise a fixed number of extra requests.
 A tool that touches the world gets a policy:
 
 ```rust,ignore
-use norte_core::{Decision, Policy, PolicySet, PolicyView};
+use norte_harness::{Decision, Policy, PolicySet, PolicyView};
 
 struct WordCountIsHarmless;
 
@@ -141,7 +141,7 @@ impl Policy for WordCountIsHarmless {
     }
 }
 
-let engine = EngineBuilder::new()
+let engine = HarnessBuilder::new()
     // ..
     .policies(PolicySet::new(vec![std::sync::Arc::new(WordCountIsHarmless)]))
     .build()?;

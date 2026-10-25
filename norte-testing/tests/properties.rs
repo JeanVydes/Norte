@@ -10,9 +10,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use norte_anthropic::{AnthropicContinuity, WIRE_MESSAGES};
-use norte_core::{ContinuityAdapter, ContinuityFragment, ContinuityScope, ContinuitySemantics, ContinuityToken, Conversation, Decision, Digest, Message, Model, ModelRef, ModelRequest, PolicyDecision, PolicyOutcome, Store, WireFamily, combine};
-use norte_harness::{Engine, EngineBuilder};
+use norte_core::{
+    ContinuityAdapter, ContinuityFragment, ContinuityScope, ContinuitySemantics, ContinuityToken,
+    Conversation, Digest, Message, Model, ModelRef, ModelRequest, WireFamily,
+};
 use norte_gemini::{GeminiContinuity, WIRE_GENERATE};
+use norte_harness::{Decision, PolicyDecision, PolicyOutcome, Store, combine};
+use norte_harness::{Harness, HarnessBuilder};
 use norte_openai::{OpenAiContinuity, WIRE_RESPONSES};
 use norte_testing::{InMemoryBlobStore, InMemoryStore, ScriptedModel, model, model_conformance};
 
@@ -221,7 +225,7 @@ fn scripted(turns: usize, rng: &mut Rng) -> Arc<ScriptedModel> {
 }
 
 struct World {
-    engine: Engine,
+    engine: Harness,
     store: Arc<InMemoryStore>,
     model: Arc<ScriptedModel>,
 }
@@ -229,7 +233,7 @@ struct World {
 fn world(turns: usize, rng: &mut Rng) -> World {
     let store = Arc::new(InMemoryStore::new());
     let model = scripted(turns, rng);
-    let engine = EngineBuilder::new()
+    let engine = HarnessBuilder::new()
         .store(store.clone())
         .blobs(Arc::new(InMemoryBlobStore::new()))
         .model(model.clone() as Arc<dyn Model>)
@@ -366,7 +370,7 @@ async fn conversation_export_import_is_lossless_and_byte_stable() {
 
     // Import into a fresh, identically configured engine.
     let store = Arc::new(InMemoryStore::new());
-    let engine = EngineBuilder::new()
+    let engine = HarnessBuilder::new()
         .store(store)
         .blobs(Arc::new(InMemoryBlobStore::new()))
         .model(world.model.clone() as Arc<dyn Model>)

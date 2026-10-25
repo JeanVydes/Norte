@@ -119,5 +119,5 @@ Alongside the grants, the record keeps an audit trail — `Requested`, `Granted`
 `Denied`, `Revoked`, `Edited`, `Expired`, `Replayed` — so what was approved, by
 whom and when is in the store, not only in a log.
 
-`EngineConfig::approval_ttl` (ten minutes by default) is how long a pending
+`HarnessConfig::approval_ttl` (ten minutes by default) is how long a pending
 request lives.

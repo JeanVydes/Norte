@@ -19,8 +19,14 @@
 use std::error::Error;
 use std::sync::Arc;
 
-use norte_core::{Capabilities, Decision, FnExecutor, InMemoryBlobStore, InMemoryStore, Message, Modality, ModelId, ModelRef, Part, Policy, PolicySet, PolicyView, ProviderId, StreamingGranularity, ToolKind, ToolRegistry, ToolResultPart, WireFamily};
-use norte_harness::{Engine, EngineBuilder};
+use norte_core::{
+    Capabilities, FnExecutor, Message, Modality, ModelRef, Part, StreamingGranularity, ToolKind,
+    ToolRegistry, ToolResultPart, WireFamily,
+};
+use norte_harness::{
+    Decision, Harness, HarnessBuilder, InMemoryBlobStore, InMemoryStore, Policy, PolicySet,
+    PolicyView,
+};
 use norte_http::{AuthScheme, VendorProfile};
 use norte_openai::{OpenAiChat, WIRE_CHAT};
 use schemars::JsonSchema;
@@ -107,7 +113,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .tool_kind(ToolKind::Function)
         .build();
     let model = openrouter(capabilities)?;
-    let engine = EngineBuilder::new()
+    let harness = HarnessBuilder::new()
         .store(Arc::new(InMemoryStore::new()))
         .blobs(Arc::new(InMemoryBlobStore::new()))
         .model(Arc::new(model))
@@ -116,27 +122,27 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .build()?;
 
     println!("--- one policy denies the call, and the model gets the refusal back");
-    ask(&engine, "Delete secrets/notes.txt.").await?;
+    ask(&harness, "Delete secrets/notes.txt.").await?;
 
     println!("\n--- another policy rewrites the call before the tool runs");
-    ask(&engine, "Delete /tmp/notes.txt.").await?;
+    ask(&harness, "Delete /tmp/notes.txt.").await?;
     Ok(())
 }
 
 /// One turn: the calls the model asked for, what the engine did with them, and
 /// the answer.
-async fn ask(engine: &Engine, prompt: &str) -> Result<(), Box<dyn Error>> {
-    let session = engine.create().await?;
-    engine
+async fn ask(harness: &Harness, prompt: &str) -> Result<(), Box<dyn Error>> {
+    let session = harness.create().await?;
+    harness
         .append_history(session.id, vec![Message::system(SYSTEM)])
         .await?;
-    let outcome = engine
+    let outcome = harness
         .send(session.id, Message::user(prompt))
         .finish()
         .await?;
 
     let mut calls = 0_usize;
-    for message in engine.history(session.id).await? {
+    for message in harness.history(session.id).await? {
         for part in &message.parts {
             if let Some(call) = part.as_tool_call() {
                 println!("call: {}({})", call.name, call.arguments);
@@ -180,14 +186,19 @@ fn required(name: &str, example: &str) -> Result<String, Box<dyn Error>> {
 
 /// Wires `OpenRouter`. An `OpenAI`-compatible vendor is a profile, not a preset.
 fn openrouter(capabilities: Capabilities) -> Result<OpenAiChat, Box<dyn Error>> {
-    let provider = ProviderId::new("openrouter")?;
-    let endpoint = required("COOKBOOK_ENDPOINT", "https://openrouter.ai/api/v1")?;
-    let profile = VendorProfile::new(provider.clone(), WireFamily::new(WIRE_CHAT)?, &endpoint)?
-        .with_auth(AuthScheme::bearer(std::env::var("OPENROUTER_API_KEY")?));
-    let id = required("COOKBOOK_MODEL", "deepseek/deepseek-v4.1-flash-1017")?;
     Ok(OpenAiChat::new(
-        ModelRef::new(provider, ModelId::new(&id)?),
-        profile,
+        ModelRef::new(
+            "openrouter".try_into()?,
+            required("COOKBOOK_MODEL", "deepseek/deepseek-v4.1-flash-1017")?
+                .as_str()
+                .try_into()?,
+        ),
+        VendorProfile::new(
+            "openrouter".try_into()?,
+            WireFamily::new(WIRE_CHAT)?,
+            &required("COOKBOOK_ENDPOINT", "https://openrouter.ai/api/v1")?,
+        )?
+        .with_auth(AuthScheme::bearer(std::env::var("OPENROUTER_API_KEY")?)),
         capabilities,
     )?)
 }

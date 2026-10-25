@@ -3,16 +3,17 @@
 
 use chrono::Utc;
 
-use norte_core::approval::{ApprovalRecord, ApprovalStatus, GrantScope};
+use crate::approval::{ApprovalRecord, ApprovalStatus};
+use norte_core::approval::GrantScope;
 use norte_core::domain::commit::Commit;
 use norte_core::domain::session::Phase;
 use norte_core::error::{Error, Result};
 use norte_core::event::EngineEvent;
 use norte_core::id::{ApprovalId, GrantId, SessionId};
 
-use super::Engine;
+use super::Harness;
 
-impl Engine {
+impl Harness {
     /// The approvals the host still has to decide for the session: records that
     /// are pending and have not expired, oldest first. Decided and expired
     /// records stay in the store for audit rather than showing up here.

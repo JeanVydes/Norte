@@ -1,0 +1,42 @@
+refactor(norte-harness): move the runtime out of the core
+
+The engine was not the only runtime code in `norte-core`. The session store, its
+in-memory implementation, the tool-call policy and the approval record were there
+too, so the crate that is supposed to define *what a conversation is* also
+defined *how an agent runs one*. A host that wanted a different turn policy had
+nothing to build against: the loop, the policy it consulted and the store it
+committed through were all one crate.
+
+This moves the whole runtime to `norte-harness`, which already owned the turn
+loop:
+
+  * `store.rs` — the ports the runtime persists through.
+  * `memory.rs` — their in-memory implementations.
+  * `policy.rs` — `Decision`, `Policy`, `PolicyView`, `PolicySet`,
+    `ToolApprovalPolicy`. A policy decides over `PolicyView`, which is a view of
+    the turn *in flight* (phase, version, results so far, request in flight).
+    That is not a domain contract; a `Model` never sees any of it.
+  * `approval.rs` — split. `Grant` and `GrantScope` stay, because `Session` and
+    `Commit` carry grants and the wire serialises them; the record, its status
+    and its audit trail move, because the only consumer is the store the runtime
+    writes through.
+
+`BlobStore` stays in the core (as `norte_core::blob`) and so does
+`InMemoryBlobStore`. `MediaAdapter` names the port and
+`norte-http::HttpMedia` implements it, so moving it would have pointed an
+adapter at the harness. The reasoning is written down in that module.
+
+`norte-core` now holds what a provider serialises and what an adapter
+implements: the domain model, the ports, the capabilities and the errors.
+Nothing in it knows there is a turn loop.
+
+Consequences worth naming:
+
+  * `norte-testing` depends on the harness for real, not only as a dev
+    dependency: it exports `store_conformance`, which exercises the port the
+    harness owns.
+  * `scripts/check-dependencies.sh` gained the rule that enforces this: no
+    adapter depends on the harness, and the harness depends on nothing but the
+    core.
+  * `MessageOrigin` gained the `new`/`with_digest` constructor it always needed;
+    being `#[non_exhaustive]` without one made it unbuildable from outside.

@@ -32,7 +32,7 @@ impl Layer for PinRoute {
     }
 }
 
-let engine = EngineBuilder::new()
+let engine = HarnessBuilder::new()
     // ..
     .layers(LayerStack::new(vec![std::sync::Arc::new(PinRoute)]))
     .build()?;
@@ -69,7 +69,7 @@ impl Observer for Metrics {
     }
 }
 
-let engine = EngineBuilder::new()
+let engine = HarnessBuilder::new()
     // ..
     .observers(vec![std::sync::Arc::new(Metrics)])
     .build()?;
@@ -82,7 +82,7 @@ leaked into the stream, for instance). Register with `.transform(..)` or
 
 `ObserverSet::new(observers, buffer)` is the underlying type; it buffers events so
 a slow observer cannot stall a turn, and `dropped()` counts what did not fit —
-`EngineConfig::limits` bounds the same budget. Observer and transform names are
+`HarnessConfig::limits` bounds the same budget. Observer and transform names are
 recorded in the session metadata, so a stored session says how it was watched.
 
 ## Cache boundaries, seen from outside
@@ -101,7 +101,7 @@ messages, and the provider decides what it honours.
 
 ## Knobs on the engine
 
-`EngineConfig` holds the turn-level policy that is not a layer:
+`HarnessConfig` holds the turn-level policy that is not a layer:
 
 | Field | Default | What it does |
 | --- | --- | --- |

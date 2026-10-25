@@ -3,18 +3,19 @@
 
 use std::sync::Arc;
 
-use norte_core::{Capabilities, InMemoryBlobStore, InMemoryStore, Message, Modality, ToolRegistry};
-use norte_harness::{Engine, EngineBuilder};
+use norte_core::{Capabilities, Message, Modality, ToolRegistry};
+use norte_harness::InMemoryStore;
+use norte_harness::{Harness, HarnessBuilder, InMemoryBlobStore};
 use norte_openai::presets::openai;
 
-fn readme_engine() -> Result<Engine, Box<dyn std::error::Error>> {
+fn readme_engine() -> Result<Harness, Box<dyn std::error::Error>> {
     let capabilities = Capabilities::builder()
         .input(Modality::Text)
         .output(Modality::Text)
         .build();
     let model = openai("gpt-5", "sk-test", capabilities)?;
 
-    let engine = EngineBuilder::new()
+    let engine = HarnessBuilder::new()
         .store(Arc::new(InMemoryStore::new()))
         .blobs(Arc::new(InMemoryBlobStore::new()))
         .model(Arc::new(model))

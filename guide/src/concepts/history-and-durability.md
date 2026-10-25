@@ -47,7 +47,7 @@ host what it raced.
 
 `BlobStore` is content-addressed: `put` is idempotent, and the id is a hash of the
 bytes. A media part too large to sit inline in the history is stored as a blob
-and referenced from the part; `EngineConfig::inline_threshold` (64 KiB by
+and referenced from the part; `HarnessConfig::inline_threshold` (64 KiB by
 default) is where that line falls.
 
 ## Export and import

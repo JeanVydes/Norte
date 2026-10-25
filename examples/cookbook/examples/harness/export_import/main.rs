@@ -24,8 +24,11 @@
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 
-use norte_core::{Capabilities, ContinuityAdapter, Digest, InMemoryBlobStore, InMemoryStore, Message, Modality, Model, ModelId, ModelRef, ModelRequest, ModelStream, ProviderId, SessionId, StreamingGranularity, WireFamily};
-use norte_harness::{Engine, EngineBuilder};
+use norte_core::{
+    Capabilities, ContinuityAdapter, Digest, Message, Modality, Model, ModelRef, ModelRequest,
+    ModelStream, SessionId, StreamingGranularity, WireFamily,
+};
+use norte_harness::{Harness, HarnessBuilder, InMemoryBlobStore, InMemoryStore};
 use norte_http::{AuthScheme, VendorProfile};
 use norte_openai::{OpenAiChat, WIRE_CHAT};
 use serde_json::Value;
@@ -37,12 +40,12 @@ const NEXT: &str = "And of Spain?";
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     // --- one engine has a conversation -------------------------------------
-    let (engine, before) = new_engine()?;
-    let session = engine.create().await?;
-    engine
+    let (harness, before) = new_engine()?;
+    let session = harness.create().await?;
+    harness
         .append_history(session.id, vec![Message::system(SYSTEM)])
         .await?;
-    let outcome = engine
+    let outcome = harness
         .send(session.id, Message::user(FIRST))
         .finish()
         .await?;
@@ -51,7 +54,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("model {}", answer(outcome.message.as_ref()));
 
     // --- export: the transcript as data ------------------------------------
-    let conversation = engine.export(session.id).await?;
+    let conversation = harness.export(session.id).await?;
     let envelope = conversation.to_json()?;
     println!("\n--- export");
     println!(
@@ -80,7 +83,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
 
     // --- the next request, byte for byte -----------------------------------
-    engine
+    harness
         .send(session.id, Message::user(NEXT))
         .finish()
         .await?;
@@ -230,7 +233,7 @@ impl Model for Probe {
 }
 
 /// A fresh engine — its own store, its own probe — over the same model.
-fn new_engine() -> Result<(Engine, Captured), Box<dyn Error>> {
+fn new_engine() -> Result<(Harness, Captured), Box<dyn Error>> {
     let capabilities = Capabilities::builder()
         .input(Modality::Text)
         .output(Modality::Text)
@@ -241,12 +244,12 @@ fn new_engine() -> Result<(Engine, Captured), Box<dyn Error>> {
         inner: openrouter(capabilities)?,
         captured: Arc::clone(&captured),
     };
-    let engine = EngineBuilder::new()
+    let harness = HarnessBuilder::new()
         .store(Arc::new(InMemoryStore::new()))
         .blobs(Arc::new(InMemoryBlobStore::new()))
         .model(Arc::new(model))
         .build()?;
-    Ok((engine, captured))
+    Ok((harness, captured))
 }
 
 /// A value the run has to be given: nothing external is defaulted in the
@@ -258,14 +261,19 @@ fn required(name: &str, example: &str) -> Result<String, Box<dyn Error>> {
 
 /// Wires `OpenRouter`. An `OpenAI`-compatible vendor is a profile, not a preset.
 fn openrouter(capabilities: Capabilities) -> Result<OpenAiChat, Box<dyn Error>> {
-    let provider = ProviderId::new("openrouter")?;
-    let endpoint = required("COOKBOOK_ENDPOINT", "https://openrouter.ai/api/v1")?;
-    let profile = VendorProfile::new(provider.clone(), WireFamily::new(WIRE_CHAT)?, &endpoint)?
-        .with_auth(AuthScheme::bearer(std::env::var("OPENROUTER_API_KEY")?));
-    let id = required("COOKBOOK_MODEL", "deepseek/deepseek-v4.1-flash-1017")?;
     Ok(OpenAiChat::new(
-        ModelRef::new(provider, ModelId::new(&id)?),
-        profile,
+        ModelRef::new(
+            "openrouter".try_into()?,
+            required("COOKBOOK_MODEL", "deepseek/deepseek-v4.1-flash-1017")?
+                .as_str()
+                .try_into()?,
+        ),
+        VendorProfile::new(
+            "openrouter".try_into()?,
+            WireFamily::new(WIRE_CHAT)?,
+            &required("COOKBOOK_ENDPOINT", "https://openrouter.ai/api/v1")?,
+        )?
+        .with_auth(AuthScheme::bearer(std::env::var("OPENROUTER_API_KEY")?)),
         capabilities,
     )?)
 }

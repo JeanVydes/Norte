@@ -8,12 +8,13 @@
 
 use std::sync::Arc;
 
-use norte_core::{CacheClass, Commit, Message, ModelRequest, Node, Phase, Store};
-use norte_harness::{Engine, EngineBuilder};
+use norte_core::{CacheClass, Commit, Message, ModelRequest, Node, Phase};
+use norte_harness::Store;
+use norte_harness::{Harness, HarnessBuilder};
 use norte_testing::{InMemoryBlobStore, InMemoryStore, ScriptedModel, model};
 
-fn engine(scripted: Arc<ScriptedModel>, store: Arc<InMemoryStore>) -> Engine {
-    EngineBuilder::new()
+fn engine(scripted: Arc<ScriptedModel>, store: Arc<InMemoryStore>) -> Harness {
+    HarnessBuilder::new()
         .store(store)
         .blobs(Arc::new(InMemoryBlobStore::new()))
         .model(scripted)

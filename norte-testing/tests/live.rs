@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use norte_core::{Message, Model};
-use norte_harness::{EngineBuilder};
+use norte_harness::HarnessBuilder;
 use norte_testing::{InMemoryBlobStore, InMemoryStore, text_capabilities};
 
 fn live_key(variable: &str) -> Option<String> {
@@ -19,7 +19,7 @@ fn live_key(variable: &str) -> Option<String> {
 
 /// Runs one real turn through the full engine and returns the assistant text.
 async fn reply(model: Arc<dyn Model>) -> String {
-    let engine = EngineBuilder::new()
+    let engine = HarnessBuilder::new()
         .store(Arc::new(InMemoryStore::new()))
         .blobs(Arc::new(InMemoryBlobStore::new()))
         .model(model)

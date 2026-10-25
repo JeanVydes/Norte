@@ -33,6 +33,10 @@
 
 pub use norte_core::*;
 
+/// The reference blob store, so a host can build a harness — or its own loop —
+/// without reaching into `norte_core::blob`.
+pub use norte_core::blob::InMemoryBlobStore;
+
 /// The `#[tool]` attribute, with `ToolMetadata` resolved through this crate.
 pub use norte_macros::tool_via_facade as tool;
 
@@ -91,14 +95,16 @@ pub mod presets {
 /// The harness is not in the root re-export: an application that wants it names
 /// `norte::harness`, and one that writes its own loop never has to see it.
 pub mod prelude {
+    pub use norte_core::blob::InMemoryBlobStore;
     pub use norte_core::{
-        Capabilities, Decision, EngineEvent, Error, FnExecutor, InMemoryBlobStore, InMemoryStore,
-        Layer, Message, Modality, Model, ModelRef, Observer, Part, Policy, PolicySet, PolicyView,
-        Role, StreamDelta, ToolOutput, ToolRegistry, TurnOptions, Usage,
+        Capabilities, EngineEvent, Error, FnExecutor, Layer, Message, Modality, Model, ModelRef,
+        Observer, Part, Role, StreamDelta, ToolOutput, ToolRegistry, TurnOptions, Usage,
     };
 
     #[cfg(feature = "harness")]
-    pub use norte_harness::{Engine, EngineBuilder};
+    pub use norte_harness::{
+        Decision, Harness, HarnessBuilder, InMemoryStore, Policy, PolicySet, PolicyView,
+    };
 
     #[cfg(feature = "tools")]
     pub use norte_tools::{CommandTool, EditTool, ReadTool, WriteTool};
@@ -113,7 +119,8 @@ mod tests {
     #[cfg(all(feature = "openai", feature = "harness"))]
     #[test]
     fn a_turn_can_be_wired_through_the_facade_alone() {
-        use harness::EngineBuilder;
+        use harness::{HarnessBuilder, InMemoryStore};
+        use norte_core::blob::InMemoryBlobStore;
 
         let capabilities = Capabilities::builder()
             .input(Modality::Text)
@@ -121,7 +128,7 @@ mod tests {
             .build();
         let model = presets::openai("gpt-5", "sk-test", capabilities).expect("a model");
 
-        let engine = EngineBuilder::new()
+        let engine = HarnessBuilder::new()
             .store(Arc::new(InMemoryStore::new()))
             .blobs(Arc::new(InMemoryBlobStore::new()))
             .model(Arc::new(model))

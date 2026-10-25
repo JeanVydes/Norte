@@ -73,7 +73,7 @@ stream.cancel();          // asks the turn to stop
 let _ = stream.finish().await;   // waits for the commit that closes it
 ```
 
-Dropping an `EngineStream` cancels it. `finish()` is the only call that waits for
+Dropping an `HarnessStream` cancels it. `finish()` is the only call that waits for
 the commit, so call it even when you cancelled — a cancelled turn still has to
 leave the session in a consistent version.
 

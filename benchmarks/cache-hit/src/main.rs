@@ -69,8 +69,12 @@ use norte_bench_support::{
     Captured, Mode, RecordingOpenAi, RequestRecord, Route, Run, captured as new_capture, duration,
     money_opt, tokens,
 };
-use norte_core::{Capabilities, Digest, FnExecutor, GrantScope, InMemoryBlobStore, InMemoryStore, Message, Modality, PolicySet, Role, SessionId, StreamingGranularity, ToolApprovalPolicy, ToolKind, ToolName, ToolRegistry, TurnOptions, Usage};
-use norte_harness::{Engine, EngineBuilder};
+use norte_core::{
+    Capabilities, Digest, FnExecutor, GrantScope, Message, Modality, Role, SessionId,
+    StreamingGranularity, ToolKind, ToolName, ToolRegistry, TurnOptions, Usage,
+};
+use norte_harness::{Harness, HarnessBuilder, InMemoryBlobStore};
+use norte_harness::{InMemoryStore, PolicySet, ToolApprovalPolicy};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -168,7 +172,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 /// The normal case: the next turn re-sends the conversation, and that is all.
 async fn normal(
-    engine: &Engine,
+    engine: &Harness,
     session: SessionId,
     captured: &Captured,
     bench: &mut Bench,
@@ -227,7 +231,7 @@ async fn normal(
 
 /// After a tool call: the call and its result join the prefix, at the end.
 async fn after_tool(
-    engine: &Engine,
+    engine: &Harness,
     session: SessionId,
     captured: &Captured,
     bench: &mut Bench,
@@ -279,7 +283,7 @@ async fn after_tool(
 /// After approval: the parked turn is not rebuilt when it resumes — the resume
 /// re-sends the same prefix the park already sent.
 async fn after_approval(
-    engine: &Engine,
+    engine: &Harness,
     session: SessionId,
     captured: &Captured,
     bench: &mut Bench,
@@ -353,7 +357,7 @@ async fn after_approval(
 /// After an export: the conversation is imported into a fresh engine and asked
 /// to carry on — the transcript is new memory, the bytes must not be.
 async fn after_export(
-    engine: &Engine,
+    engine: &Harness,
     captured: &Captured,
     session: SessionId,
     bench: &mut Bench,
@@ -461,7 +465,7 @@ impl Bench {
     /// provider request is counted — including the one inside a tool loop.
     async fn collect(
         &mut self,
-        engine: &Engine,
+        engine: &Harness,
         session: SessionId,
         seen: &mut usize,
         phase: &'static str,
@@ -966,7 +970,7 @@ const DEPLOY: &str = "Deploy the service checkout to staging.";
 /// A fresh engine — its own store, its own probe — over the same model, with
 /// both tools declared from the start: changing the exposed set between turns
 /// would change the request for reasons that have nothing to do with caching.
-fn new_engine(route: &Route) -> Result<(Engine, Captured), Box<dyn Error>> {
+fn new_engine(route: &Route) -> Result<(Harness, Captured), Box<dyn Error>> {
     let mut tools = ToolRegistry::new();
     tools.register_declarator(&WordCount)?;
     tools.register_declarator(&Deploy)?;
@@ -981,7 +985,7 @@ fn new_engine(route: &Route) -> Result<(Engine, Captured), Box<dyn Error>> {
         Arc::clone(&captured),
         route.pause(),
     );
-    let engine = EngineBuilder::new()
+    let engine = HarnessBuilder::new()
         .store(Arc::new(InMemoryStore::new()))
         .blobs(Arc::new(InMemoryBlobStore::new()))
         .model(Arc::new(model))

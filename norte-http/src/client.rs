@@ -420,7 +420,7 @@ fn stalled(idle: Duration) -> Error {
 /// retries only a connection that never reached the provider (see
 /// [`TransportPolicy`]), since a retry after the provider started working can
 /// make it work twice. A host that retries these keeps the whole turn: a failed
-/// turn leaves the session resumable, so `Engine::resume` picks it up where it
+/// turn leaves the session resumable, so `Harness::resume` picks it up where it
 /// stopped — including any [`retry_after`](Error::retry_after) the provider
 /// asked for.
 #[must_use]

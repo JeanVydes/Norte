@@ -18,8 +18,13 @@
 use std::error::Error;
 use std::sync::Arc;
 
-use norte_core::{Capabilities, FnExecutor, GrantScope, InMemoryBlobStore, InMemoryStore, Message, Modality, ModelId, ModelRef, PolicySet, ProviderId, Role, SessionId, StreamingGranularity, ToolApprovalPolicy, ToolKind, ToolName, ToolRegistry, WireFamily};
-use norte_harness::{Engine, EngineBuilder};
+use norte_core::{
+    Capabilities, FnExecutor, GrantScope, Message, Modality, ModelRef, Role, SessionId,
+    StreamingGranularity, ToolKind, ToolName, ToolRegistry, WireFamily,
+};
+use norte_harness::{
+    Harness, HarnessBuilder, InMemoryBlobStore, InMemoryStore, PolicySet, ToolApprovalPolicy,
+};
 use norte_http::{AuthScheme, VendorProfile};
 use norte_openai::{OpenAiChat, WIRE_CHAT};
 use schemars::JsonSchema;
@@ -66,7 +71,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         vec![ToolName::new("deploy")?],
         "deploying touches production",
     ))]);
-    let engine = EngineBuilder::new()
+    let harness = HarnessBuilder::new()
         .store(Arc::new(InMemoryStore::new()))
         .blobs(Arc::new(InMemoryBlobStore::new()))
         .model(Arc::new(openrouter(tool_capabilities())?))
@@ -74,38 +79,38 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .policies(policies)
         .build()?;
 
-    let session = engine.create().await?;
-    engine
+    let session = harness.create().await?;
+    harness
         .append_history(session.id, vec![Message::system(SYSTEM)])
         .await?;
 
     // The turn stops at the gated call: the model already answered, the tool did
     // not run, and the session sits on a durable record.
-    let outcome = engine
+    let outcome = harness
         .send(session.id, Message::user("Deploy checkout to staging."))
         .finish()
         .await?;
     println!("phase: {:?}", outcome.session.phase);
 
-    for record in engine.pending_approvals(session.id).await? {
+    for record in harness.pending_approvals(session.id).await? {
         println!("waiting on {} (approval {})", record.tool, record.id);
         // `GrantScope::Call` authorizes this call, and only this one. `Tool`,
         // `Session` and `Global` would authorize later ones without asking.
-        engine
+        harness
             .approve(record.id, GrantScope::Call(record.call_id), "operator")
             .await?;
     }
 
     // Resuming does not ask the model again: it runs the call it was waiting for
     // and carries on from there.
-    let outcome = engine.resume(session.id).finish().await?;
+    let outcome = harness.resume(session.id).finish().await?;
     println!("phase: {:?}", outcome.session.phase);
     println!("answer: {}", answer(outcome.message.as_ref()));
-    print_tool_results(&engine, session.id).await
+    print_tool_results(&harness, session.id).await
 }
 
-async fn print_tool_results(engine: &Engine, session: SessionId) -> Result<(), Box<dyn Error>> {
-    for message in engine.history(session).await? {
+async fn print_tool_results(harness: &Harness, session: SessionId) -> Result<(), Box<dyn Error>> {
+    for message in harness.history(session).await? {
         if message.role != Role::Tool {
             continue;
         }
@@ -142,14 +147,19 @@ fn required(name: &str, example: &str) -> Result<String, Box<dyn Error>> {
 
 /// Wires `OpenRouter`. An `OpenAI`-compatible vendor is a profile, not a preset.
 fn openrouter(capabilities: Capabilities) -> Result<OpenAiChat, Box<dyn Error>> {
-    let provider = ProviderId::new("openrouter")?;
-    let endpoint = required("COOKBOOK_ENDPOINT", "https://openrouter.ai/api/v1")?;
-    let profile = VendorProfile::new(provider.clone(), WireFamily::new(WIRE_CHAT)?, &endpoint)?
-        .with_auth(AuthScheme::bearer(std::env::var("OPENROUTER_API_KEY")?));
-    let id = required("COOKBOOK_MODEL", "deepseek/deepseek-v4.1-flash-1017")?;
     Ok(OpenAiChat::new(
-        ModelRef::new(provider, ModelId::new(&id)?),
-        profile,
+        ModelRef::new(
+            "openrouter".try_into()?,
+            required("COOKBOOK_MODEL", "deepseek/deepseek-v4.1-flash-1017")?
+                .as_str()
+                .try_into()?,
+        ),
+        VendorProfile::new(
+            "openrouter".try_into()?,
+            WireFamily::new(WIRE_CHAT)?,
+            &required("COOKBOOK_ENDPOINT", "https://openrouter.ai/api/v1")?,
+        )?
+        .with_auth(AuthScheme::bearer(std::env::var("OPENROUTER_API_KEY")?)),
         capabilities,
     )?)
 }

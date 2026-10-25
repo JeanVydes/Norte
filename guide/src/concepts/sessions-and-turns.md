@@ -63,18 +63,18 @@ parked at `AwaitingApproval` or interrupted mid-loop.
 | `reasoning(ReasoningRequest)` | Ask for reasoning, and how much of it. |
 | `tools(impl IntoIterator<Item = ToolName>)` | Restrict the request to a subset of the registered tools. |
 | `extension(key, value)` | A vendor-specific knob, passed through to the wire. |
-| `start()` | Produce the `EngineStream`. |
+| `start()` | Produce the `HarnessStream`. |
 
 ### The outcome
 
-`EngineStream::finish()` returns `TurnOutcome { session, message }`:
+`HarnessStream::finish()` returns `TurnOutcome { session, message }`:
 
 - `session` is the session as committed — phase, version, head.
 - `message` is `Option<Message>`: the assistant message this turn committed, if
   it committed one. A turn that ends parked at a tool call may commit only a tool
   result.
 
-`EngineStream` also has `cancel()` and is a `Stream<Item = Result<EngineEvent>>`;
+`HarnessStream` also has `cancel()` and is a `Stream<Item = Result<EngineEvent>>`;
 dropping it cancels. See [Streaming](streaming.md).
 
 ## Commits

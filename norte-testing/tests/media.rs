@@ -5,8 +5,14 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use norte_core::{BlobId, BlobStore, CallId, Capabilities, FinishReason, FnExecutor, InMemoryBlobStore, InMemoryStore, MediaAdapter, MediaKind, MediaMetadata, MediaPart, MediaPayload, MediaPreprocessor, MediaSource, Message, MimeType, Modality, Part, ProviderFileRef, ProviderFiles, ProviderId, Result, Role, StreamEvent, StreamingGranularity, ToolKind, ToolOutput, ToolRegistry};
-use norte_harness::{EngineBuilder, EngineConfig};
+use norte_core::{
+    BlobId, BlobStore, CallId, Capabilities, FinishReason, FnExecutor, MediaAdapter, MediaKind,
+    MediaMetadata, MediaPart, MediaPayload, MediaPreprocessor, MediaSource, Message, MimeType,
+    Modality, Part, ProviderFileRef, ProviderFiles, ProviderId, Result, Role, StreamEvent,
+    StreamingGranularity, ToolKind, ToolOutput, ToolRegistry,
+};
+use norte_harness::InMemoryStore;
+use norte_harness::{HarnessBuilder, HarnessConfig, InMemoryBlobStore};
 use norte_http::{HttpClient, HttpMedia};
 use norte_testing::{ScriptedModel, model};
 use schemars::JsonSchema;
@@ -86,7 +92,7 @@ async fn input_media_is_preprocessed_then_materialized() {
             )
             .turn_text("seen"),
     );
-    let engine = EngineBuilder::new()
+    let engine = HarnessBuilder::new()
         .store(Arc::new(InMemoryStore::new()))
         .blobs(blobs)
         .model(scripted.clone())
@@ -146,15 +152,15 @@ async fn output_media_is_ingested_and_externalized() {
         },
         StreamEvent::Finish(FinishReason::Stop),
     ]));
-    let engine = EngineBuilder::new()
+    let engine = HarnessBuilder::new()
         .store(Arc::new(InMemoryStore::new()))
         .blobs(blobs.clone())
         .model(scripted)
         .tools(ToolRegistry::new())
         .media_adapter(adapter.clone())
-        .config(EngineConfig {
+        .config(HarnessConfig {
             inline_threshold: 8,
-            ..EngineConfig::default()
+            ..HarnessConfig::default()
         })
         .build()
         .expect("build engine");
@@ -248,7 +254,7 @@ async fn an_expired_provider_file_is_revived_once_and_the_prefix_stays_stable() 
             .turn_text("one")
             .turn_text("two"),
     );
-    let engine = EngineBuilder::new()
+    let engine = HarnessBuilder::new()
         .store(Arc::new(InMemoryStore::new()))
         .blobs(blobs)
         .model(scripted.clone())
@@ -386,7 +392,7 @@ async fn media_in_a_tool_result_is_materialized_for_the_next_request() {
     tools
         .register_tool(&Picture { blob: stored })
         .expect("register picture");
-    let engine = EngineBuilder::new()
+    let engine = HarnessBuilder::new()
         .store(Arc::new(InMemoryStore::new()))
         .blobs(blobs)
         .model(scripted.clone())

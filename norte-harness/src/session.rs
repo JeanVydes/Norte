@@ -12,9 +12,9 @@ use norte_core::event::EngineEvent;
 use norte_core::id::SessionId;
 use norte_core::model::TURN_OPTIONS_KEY;
 
-use super::Engine;
+use super::Harness;
 
-impl Engine {
+impl Harness {
     /// Creates an empty session (extension metadata records the registered
     /// observers and layers so a run stays reproducible).
     ///
@@ -89,7 +89,7 @@ impl Engine {
     /// conversation as an ordered `Vec<Message>` — a transcript it loaded,
     /// imported from another system or built in memory — persists it verbatim
     /// onto the current head. Nothing is sent to the model, so the next
-    /// [`send`](Engine::send) sees the seeded prefix unchanged and the provider
+    /// [`send`](Harness::send) sees the seeded prefix unchanged and the provider
     /// prompt cache keeps hitting (FR-RECON-2).
     ///
     /// Appending requires an `Idle` session: a running turn owns the head, and

@@ -14,8 +14,11 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use norte_core::{Capabilities, EngineEvent, InMemoryBlobStore, InMemoryStore, Message, Modality, ModelId, ModelRef, Observer, ProviderId, StreamDelta, StreamTransform, StreamingGranularity, WireFamily};
-use norte_harness::{EngineBuilder};
+use norte_core::{
+    Capabilities, EngineEvent, Message, Modality, ModelRef, Observer, StreamDelta, StreamTransform,
+    StreamingGranularity, WireFamily,
+};
+use norte_harness::{HarnessBuilder, InMemoryBlobStore, InMemoryStore};
 use norte_http::{AuthScheme, VendorProfile};
 use norte_openai::{OpenAiChat, WIRE_CHAT};
 
@@ -81,7 +84,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .streaming(StreamingGranularity::Delta)
         .build();
     let model = openrouter(capabilities)?;
-    let engine = EngineBuilder::new()
+    let harness = HarnessBuilder::new()
         .store(Arc::new(InMemoryStore::new()))
         .blobs(Arc::new(InMemoryBlobStore::new()))
         .model(Arc::new(model))
@@ -91,8 +94,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .transform(Arc::new(Shout))
         .build()?;
 
-    let session = engine.create().await?;
-    let mut stream = engine.send(
+    let session = harness.create().await?;
+    let mut stream = harness.send(
         session.id,
         Message::user("Say hello in exactly five words."),
     );
@@ -138,14 +141,19 @@ fn required(name: &str, example: &str) -> Result<String, Box<dyn Error>> {
 
 /// Wires `OpenRouter`. An `OpenAI`-compatible vendor is a profile, not a preset.
 fn openrouter(capabilities: Capabilities) -> Result<OpenAiChat, Box<dyn Error>> {
-    let provider = ProviderId::new("openrouter")?;
-    let endpoint = required("COOKBOOK_ENDPOINT", "https://openrouter.ai/api/v1")?;
-    let profile = VendorProfile::new(provider.clone(), WireFamily::new(WIRE_CHAT)?, &endpoint)?
-        .with_auth(AuthScheme::bearer(std::env::var("OPENROUTER_API_KEY")?));
-    let id = required("COOKBOOK_MODEL", "deepseek/deepseek-v4.1-flash-1017")?;
     Ok(OpenAiChat::new(
-        ModelRef::new(provider, ModelId::new(&id)?),
-        profile,
+        ModelRef::new(
+            "openrouter".try_into()?,
+            required("COOKBOOK_MODEL", "deepseek/deepseek-v4.1-flash-1017")?
+                .as_str()
+                .try_into()?,
+        ),
+        VendorProfile::new(
+            "openrouter".try_into()?,
+            WireFamily::new(WIRE_CHAT)?,
+            &required("COOKBOOK_ENDPOINT", "https://openrouter.ai/api/v1")?,
+        )?
+        .with_auth(AuthScheme::bearer(std::env::var("OPENROUTER_API_KEY")?)),
         capabilities,
     )?)
 }

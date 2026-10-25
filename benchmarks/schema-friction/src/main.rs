@@ -31,8 +31,12 @@ use std::time::Instant;
 
 use norte_bench_support::report::{Align, Report};
 use norte_bench_support::{Mode, Run, captured as new_capture};
-use norte_core::{Capabilities, FnExecutor, InMemoryBlobStore, InMemoryStore, Message, Modality, Part, Role, StreamingGranularity, ToolKind, ToolRegistry};
-use norte_harness::{EngineBuilder};
+use norte_core::{
+    Capabilities, FnExecutor, Message, Modality, Part, Role, StreamingGranularity, ToolKind,
+    ToolRegistry,
+};
+use norte_harness::InMemoryStore;
+use norte_harness::{HarnessBuilder, InMemoryBlobStore};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -388,7 +392,7 @@ async fn one_round(
         .map_err(|e| e.to_string())?;
     let probe =
         norte_bench_support::RecordingOpenAi::new(adapter, Arc::clone(&captured), route.pause());
-    let engine = EngineBuilder::new()
+    let engine = HarnessBuilder::new()
         .store(Arc::new(InMemoryStore::new()))
         .blobs(Arc::new(InMemoryBlobStore::new()))
         .model(Arc::new(probe))

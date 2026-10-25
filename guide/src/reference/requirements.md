@@ -150,7 +150,7 @@ A media source is one of: `Blob(BlobId)`, `Url`, `ProviderFile` (vendor file id 
 
 **FR-PART-3.** Model-generated media arrives as stream chunks and is written to `BlobStore` when its part ends, unless a host-supplied preprocessor reshapes it first.
 
-**Where it lives:** `norte-core/src/engine/mod.rs` (`preprocess_history`), `norte-testing/tests/media.rs`.
+**Where it lives:** `norte-harness/src/lib.rs` (`preprocess_history`), `norte-testing/tests/media.rs`.
 
 **FR-PART-4.** A `ProviderFile` reference that has expired shall be re-uploaded from the blob automatically when the blob still exists; otherwise the request fails with a typed error naming the part.
 
@@ -198,7 +198,7 @@ A continuity token is an opaque envelope: wire family, scope (exact model, model
 
 **FR-GRAPH-1.** The graph is a tree. Branches share a parent. Nodes belong to no session, so sessions may share ancestors.
 
-**Where it lives:** `examples/cookbook/examples/branching.rs`.
+**Where it lives:** `examples/cookbook/examples/harness/branching/main.rs`.
 
 **FR-GRAPH-2.** Nodes are immutable. `metadata` is host-owned and returned unchanged, except inside the reserved `norte.` namespace, which is the engine's own and where it writes exactly two keys: `norte.turn_options` (the per-turn overrides the node was generated under, FR-ENG-7) and `norte.partial_tools` (the results a parked message had already produced, FR-APPR-8). A host keeps its metadata outside that prefix; the rest of what the engine records about a node — model, usage, finish reason, generation id and request digest — lives in the node's own fields, not in its metadata.
 
@@ -230,7 +230,7 @@ Capabilities are data. Before every request the engine consults the model’s ca
 
 **FR-LP-1.** Token-level log probabilities are opt-in per turn: the turn asks for a count, and the engine rejects that turn with a typed error when the model does not declare `Feature::Logprobs`, or when the count exceeds the neutral cap of 20. Both failures are raised before the request is built, so a model that cannot report probabilities is never asked for them. Every other turn of the same session is unaffected.
 
-**Where it lives:** `norte-core/src/capability.rs` (`check_generation`), `norte-core/src/engine/mod.rs` (`TurnBuilder::logprobs`), `norte-core/src/model.rs`.
+**Where it lives:** `norte-core/src/capability.rs` (`check_generation`), `norte-harness/src/lib.rs` (`TurnBuilder::logprobs`), `norte-core/src/model.rs`.
 
 **Verified by:** `norte-core` (`capability.rs`) and `norte-testing` (`tests/engine.rs`, `tests/turn_options.rs`).
 
@@ -246,19 +246,19 @@ Streaming is the only primitive. A blocking call is obtained by collecting the s
 
 **FR-STREAM-3.** Cancellation of the stream is safe: the engine commits any completed parts, marks the assistant message `Interrupted`, and leaves the session resumable. The turn's cancellation token reaches every running tool through `ToolContext`, including a call started early, so a cooperative tool stops instead of running to completion; a turn cancelled while tools run commits no tool result and stays `AwaitingTool`, ready to resume.
 
-**FR-STREAM-4.** Tool calls may begin execution as soon as their arguments are complete, before the assistant message has finished streaming, under the control of the host’s tool policy. A wire whose tool blocks have an explicit boundary signals completion with a `ToolCallDone` stream event. When the host enables early tool execution (`EngineConfig::early_tool_execution`), the engine evaluates the tool policy against the assistant message as known so far and starts the call in a background task that runs while the remainder of the message streams; the results feed the normal tool turn without re-evaluation. Calls that need approval, are denied or are rate limited are always deferred to the normal path, and a call that did start early is recorded as a completed result of the message, so a later park for approval does not run it twice (FR-APPR-8). The capability is off by default, so default behaviour is unchanged.
+**FR-STREAM-4.** Tool calls may begin execution as soon as their arguments are complete, before the assistant message has finished streaming, under the control of the host’s tool policy. A wire whose tool blocks have an explicit boundary signals completion with a `ToolCallDone` stream event. When the host enables early tool execution (`HarnessConfig::early_tool_execution`), the engine evaluates the tool policy against the assistant message as known so far and starts the call in a background task that runs while the remainder of the message streams; the results feed the normal tool turn without re-evaluation. Calls that need approval, are denied or are rate limited are always deferred to the normal path, and a call that did start early is recorded as a completed result of the message, so a later park for approval does not run it twice (FR-APPR-8). The capability is off by default, so default behaviour is unchanged.
 
-**Where it lives:** `norte-core/src/engine/mod.rs` (`drain_stream`, `into_result`), `norte-core/src/policy.rs`, `norte-core/src/stream.rs` (`grow_tool_call`).
+**Where it lives:** `norte-harness/src/lib.rs` (`drain_stream`, `into_result`), `norte-core/src/policy.rs`, `norte-core/src/stream.rs` (`grow_tool_call`).
 
 **FR-STREAM-5.** Observers and stream transforms see every event in order and may not drop events that affect durability; they may only annotate, filter for logging, or produce additional side-channel events.
 
 **FR-LP-2.** Each token's probability arrives as an informational stream event tagged with the part index it belongs to: the chosen token, its raw bytes when the vendor reports them, the runner-up tokens, and any vendor field the neutral vocabulary does not model. The accumulator drops the event, so the committed message's parts and the reconstructed prefix are unchanged — asking for probabilities never moves a cache boundary. What records the request is the request digest in the message origin and the stored per-turn options (FR-EXP-7); the library persists no probabilities, and the host decides what to keep from the observer channel.
 
-**Where it lives:** `norte-core/src/domain/logprob.rs`, `norte-core/src/engine/mod.rs` (`stream_delta`), `norte-core/src/stream.rs` (`apply`).
+**Where it lives:** `norte-core/src/domain/logprob.rs`, `norte-harness/src/lib.rs` (`stream_delta`), `norte-core/src/stream.rs` (`apply`).
 
 **Verified by:** `norte-core` (`stream.rs`) and `norte-testing` (`tests/engine.rs`, `tests/scenarios.rs`, `tests/observers.rs`).
 
-## 7. Engine, Phases & Turns
+## 7. Harness, Phases & Turns
 
 The engine is a pure state machine over the session. It never holds long-lived network connections; adapters own the transport.
 
@@ -266,7 +266,7 @@ The engine is a pure state machine over the session. It never holds long-lived n
 
 **FR-ENG-2.** Each commit increments the session version. Concurrent writers detect conflicts via `expected_version` and must retry.
 
-**Where it lives:** `norte-core/src/engine/mod.rs` (`commit`).
+**Where it lives:** `norte-harness/src/lib.rs` (`commit`).
 
 **FR-ENG-3.** Steering messages reach the turn through a turn interceptor (FR-ENG-10), never through a field of the session: a message written to the session while a turn runs cannot be committed without racing that turn (FR-ENG-2), and the message would have to wait for the next turn instead of reaching the request already in flight.
 
@@ -276,23 +276,23 @@ The engine is a pure state machine over the session. It never holds long-lived n
 
 **FR-ENG-6.** A host may append an ordered sequence of messages to a session as durable history **without generating**, bridging a host-held message array (a loaded or imported transcript, or one built in memory) onto the graph. The append is a single version-checked commit (FR-ENG-2) that chains the messages onto the current head and leaves phase, turn and grants unchanged. It is append-only (FR-GRAPH-4) and prefix-stable (FR-RECON-2), so the next generation sees the seeded prefix byte-identical. It is only valid from `Idle`: a running turn owns the head. The engine reports the append (FR-EVT-1).
 
-**Where it lives:** `norte-core/src/engine/mod.rs` (`append_history`), `norte-core/src/event.rs`, `norte-testing/tests/history.rs`.
+**Where it lives:** `norte-harness/src/lib.rs` (`append_history`), `norte-core/src/event.rs`, `norte-testing/tests/history.rs`.
 
 **FR-ENG-7 — Per-turn request options.** A host configures a single turn with typed `TurnOptions`: generation parameters, the reasoning request, the exposed tool set and vendor request extras. Options are layered from least to most specific — **engine defaults ← session defaults (restored by an import, FR-EXP-7) ← per-turn overrides** — and the merge is **per field**: a field set on the turn replaces that field only; an unset field inherits from the layer below. The effective options are exactly what the adapter receives (FR-ENG-9). A **vendor extra** is a provider-wire field with no neutral equivalent (for example Gemini's `safetySettings`, `toolConfig`, `cachedContent` or `responseModalities`); it is keyed `<wire-family>:<dotted.field>` (Section 12), merged per key, and spliced into the body by the adapter whose wire family matches. `send` and `resume` remain the shortcuts that use the inherited layers with no overrides; the fluent turn builder is the primary surface.
 
-**Where it lives:** `norte-core/src/engine/mod.rs` (`drop`, `options`, `resume`, `spawn_with`), `norte-core/src/model.rs` (`is_default`, `over`), `norte-gemini/src/generate/mod.rs` (`count_tokens`), `norte-testing/tests/turn_options.rs`.
+**Where it lives:** `norte-harness/src/lib.rs` (`drop`, `options`, `resume`, `spawn_with`), `norte-core/src/model.rs` (`is_default`, `over`), `norte-gemini/src/generate/mod.rs` (`count_tokens`), `norte-testing/tests/turn_options.rs`.
 
 **FR-ENG-8 — Per-turn tool subset.** A turn may expose only a subset of the registered tools to the model, addressed by `ToolName`. An unknown name is a typed `ToolNotFound` error, never a silent drop. The emitted specs always follow the registry's canonical (name) order regardless of the order the host named them, so the wire stays deterministic (FR-RECON-1); duplicates collapse. `None` means every registered tool. The engine still executes only registered tools; the subset controls what the model may *call*, not what the engine may *run*. The exposed set is part of the request identity (FR-CACHE-5).
 
-**Where it lives:** `examples/cookbook/examples/branching.rs` (`capabilities`), `norte-core/src/engine/mod.rs` (`default_turn_options`, `drop`, `reasoning`, `resume`), `norte-core/src/model.rs` (`over`), `norte-testing/tests/turn_options.rs`.
+**Where it lives:** `examples/cookbook/examples/harness/branching/main.rs` (`capabilities`), `norte-harness/src/lib.rs` (`default_turn_options`, `drop`, `reasoning`, `resume`), `norte-core/src/model.rs` (`over`), `norte-testing/tests/turn_options.rs`.
 
 **FR-ENG-9 — Auditable effective request.** Every reconstructed request reports its effective request configuration — generation parameters, reasoning request and the ordered exposed tool names — together with its digest and cache boundaries (FR-EVT-4). A host or observer can therefore inspect, per send, exactly which parameters were used and which tools were enabled without re-deriving the layer merge.
 
 **FR-ENG-10 — Turn interceptor.** A host may register an interceptor the engine consults at the safe points of a running turn: before the turn's input, before every model request, and before the turn ends. An interceptor decides what the turn does next: it may let the turn go on, add messages to the session's history, or stop the turn with a reason. The engine chains the added messages onto the current head and commits them itself, so they are durable, part of the request digest (FR-ENG-4), visible to the policies, and free of a version race (FR-ENG-2): while a turn runs, the engine is the only writer. The consultation points are safe ones — the messages land before the turn's input or after the tool results of the previous step, never between a tool call and its result. An interceptor that adds nothing changes nothing, and the turn continues as it would have; a message the host was holding when the turn would have ended keeps the turn alive, so a steering message never waits for the next turn. The interceptor reads the history the request carries, so it can decide on the conversation itself. A layer (FR-LAYER-1) cannot serve this purpose: it sees the request after it was built, so what it adds is neither durable nor visible to the policies.
 
-**Where it lives:** `norte-core/src/interceptor.rs`, `norte-core/src/engine/mod.rs` (`consult`, `prepare_request`), `norte-testing/tests/interceptor.rs`.
+**Where it lives:** `norte-core/src/interceptor.rs`, `norte-harness/src/lib.rs` (`consult`, `prepare_request`), `norte-testing/tests/interceptor.rs`.
 
-**Where it lives:** `norte-core/src/engine/mod.rs` (`generate`), `norte-core/src/event.rs`, `norte-core/src/model.rs` (`over`), `norte-testing/tests/turn_options.rs`.
+**Where it lives:** `norte-harness/src/lib.rs` (`generate`), `norte-core/src/event.rs`, `norte-core/src/model.rs` (`over`), `norte-testing/tests/turn_options.rs`.
 
 **Verified by:** `norte-testing` (`tests/engine.rs`, `tests/history.rs`, `tests/turn_options.rs`, `tests/scenarios.rs`).
 
@@ -308,7 +308,7 @@ Providers cache the request prefix and bill cached input tokens at a fraction of
 
 **FR-RECON-2 — Prefix stability.** Appending new nodes must not alter the reconstruction of any previously committed message. Adding turn *N+1* must produce a sequence whose first *N* turns are byte-identical to the previous request. The cached prefix is preserved.
 
-**Where it lives:** `benchmarks/cache-hit/src/main.rs`, `norte-core/src/domain/conversation.rs`, `norte-core/src/engine/mod.rs` (`append_history`), `norte-testing/tests/history.rs` (`seeded_history_round_trips_and_keeps_the_prefix`), `norte-testing/tests/properties.rs`.
+**Where it lives:** `benchmarks/cache-hit/src/main.rs`, `norte-core/src/domain/conversation.rs`, `norte-harness/src/lib.rs` (`append_history`), `norte-testing/tests/history.rs` (`seeded_history_round_trips_and_keeps_the_prefix`), `norte-testing/tests/properties.rs`.
 
 **FR-RECON-3 — No per-request identifiers in the prefix.** Nothing inside the cache-critical prefix may embed values that change per request: signed URLs, freshly minted vendor file ids, nonces, timestamps or request ids. Any such value must either be persisted and reused, or placed only in the ephemeral tail.
 
@@ -319,7 +319,7 @@ Providers cache the request prefix and bill cached input tokens at a fraction of
 - **Media.** `Blob` and `Inline` materialize deterministically from content (content-addressed, so identical bytes produce an identical encoding). `ProviderFile` is reused while valid; on expiry it is re-uploaded from the blob (FR-PART-4) — a single, explicit cache invalidation point — and the fresh reference is remembered by the adapter for the rest of its life, so later turns reproduce it byte-for-byte. A restarted process re-uploads once, which is the same single invalidation point; the stored node is never rewritten (FR-GRAPH-2).
 - **Extension.** Round-trips byte-for-byte (FR-PART-1).
 
-**Where it lives:** `norte-core/src/engine/mod.rs` (`default`), `norte-core/src/media_adapter.rs` (`ingest`, `resolve`), `norte-http/src/media.rs`, `norte-testing/tests/media.rs` (`an_expired_provider_file_is_revived_once_and_the_prefix_stays_stable`).
+**Where it lives:** `norte-harness/src/lib.rs` (`default`), `norte-core/src/media_adapter.rs` (`ingest`, `resolve`), `norte-http/src/media.rs`, `norte-testing/tests/media.rs` (`an_expired_provider_file_is_revived_once_and_the_prefix_stays_stable`).
 
 **FR-RECON-5 — Cache-critical vs ephemeral.** The engine distinguishes cache-critical content (participates in the cached prefix) from ephemeral content (does not). Ephemeral messages — live run ids, volatile tool scratch, timestamps, UI hints — are marked by the host through the message’s typed cache class, a persisted field whose default is critical, and are materialized strictly after the cache-critical prefix rather than dropped. Granularity is the whole message: parts of one message are not classed separately, so volatile content that must not enter the prefix is sent as its own ephemeral message and message atomicity (a call and its results) is never split. Marking a message ephemeral is an explicit, persisted host decision.
 
@@ -331,11 +331,11 @@ Providers cache the request prefix and bill cached input tokens at a fraction of
 
 **FR-RECON-7 — Cache boundaries.** Where the host requests provider-side caching, the reconstructed sequence exposes deterministic boundary positions (for example after a stable system/developer prefix and after each completed turn). Boundaries never depend on the tail and never move when a new turn is appended.
 
-**Where it lives:** `norte-core/src/engine/mod.rs` (`default`, `dispatch_early`, `results_in_call_order`).
+**Where it lives:** `norte-harness/src/lib.rs` (`default`, `dispatch_early`, `results_in_call_order`).
 
 **FR-RECON-8 — Branch / rewind.** When a session’s `head` moves to another branch — rewind, retry, edit — reconstruction must reuse the longest common ancestor prefix unchanged. Rewinding to an ancestor whose prefix was already sent must reproduce that prefix byte-for-byte; only the divergent suffix may differ. Branching therefore reuses the provider’s cached prefix instead of paying for it again. A head moves by committing a node whose parent is an ancestor (FR-GRAPH-1): branching adds nodes and moves the pointer, the engine exposes no separate rewind call, and the ancestor itself is never rewritten.
 
-**Where it lives:** `examples/cookbook/examples/branching.rs`, `norte-testing/tests/reconstruction.rs` (`a_branch_from_an_ancestor_reproduces_the_shared_prefix_byte_for_byte`).
+**Where it lives:** `examples/cookbook/examples/harness/branching/main.rs`, `norte-testing/tests/reconstruction.rs` (`a_branch_from_an_ancestor_reproduces_the_shared_prefix_byte_for_byte`).
 
 **FR-RECON-9 — Prefix changes are explicit.** The engine never inserts, reorders or drops content during reconstruction on its own. If host content must precede earlier turns, it is appended as an ordinary message or carried in host metadata, and the resulting cache invalidation is reported (FR-EVT-4). Rewriting existing nodes to change the prefix is forbidden.
 
@@ -349,7 +349,7 @@ Providers cache the request prefix and bill cached input tokens at a fraction of
 
 **FR-RECON-12 — Auditable wire projection.** Each adapter exposes the exact JSON body it would `POST` for a reconstructed request as a pure, side-effect-free function of `(model reference, continuity state, request)`, without opening a connection. The projection is the same function used by the live send path, so a host or a test can diff the bytes a request would produce and attribute any cache-relevant change (FR-CACHE-1..4, FR-RECON-2) without spending tokens.
 
-**Where it lives:** `examples/cookbook/examples/branching.rs` (`stream`), `benchmarks/cache-hit/src/main.rs` (`stream`), `examples/cookbook/examples/export_import.rs` (`stream`), `norte-anthropic/src/messages/mod.rs` (`profile`), `norte-gemini/src/generate/mod.rs` (`profile`), `norte-openai/src/chat/mod.rs` (`profile`), `norte-openai/src/responses/mod.rs` (`profile`), `norte-testing/src/probe.rs` (`guard`), `norte-testing/tests/export.rs`.
+**Where it lives:** `examples/cookbook/examples/harness/branching/main.rs` (`stream`), `benchmarks/cache-hit/src/main.rs` (`stream`), `examples/cookbook/examples/harness/export_import/main.rs` (`stream`), `norte-anthropic/src/messages/mod.rs` (`profile`), `norte-gemini/src/generate/mod.rs` (`profile`), `norte-openai/src/chat/mod.rs` (`profile`), `norte-openai/src/responses/mod.rs` (`profile`), `norte-testing/src/probe.rs` (`guard`), `norte-testing/tests/export.rs`.
 
 ### 8.2 Conversation Export & Import
 
@@ -357,11 +357,11 @@ A conversation is portable data. A host can export a session as a self-contained
 
 **FR-EXP-1 — Self-contained envelope (approval ledger excluded).** Export yields a `Conversation`: the session identity, its durable phase and turn, host metadata, the ordered message history (oldest first) and, optionally, the effective request options of the last turn (FR-EXP-7). It contains no store-internal detail — node ids, session/node versions and timestamps are store bookkeeping, not conversation content (FR-GRAPH-4). The message list is the array form.
 
-**Where it lives:** `norte-core/src/domain/conversation.rs`, `norte-core/src/engine/mod.rs` (`append_history`), `norte-testing/tests/export.rs` (`a_parked_approval_survives_export_import`).
+**Where it lives:** `norte-core/src/domain/conversation.rs`, `norte-harness/src/lib.rs` (`append_history`), `norte-testing/tests/export.rs` (`a_parked_approval_survives_export_import`).
 
 **FR-EXP-2 — Lossless, byte-stable round-trip.** `Conversation` serializes to canonical JSON and deserializes back with zero information loss: `from_json(to_json(c)) == c` and `to_json(from_json(s))` reproduces `s` byte-for-byte for any JSON this build wrote. Serialization is deterministic: no map, set or object key order may vary the bytes, so two equal conversations always serialize identically. Property tests cover the invariant (FR-TEST-3).
 
-**Where it lives:** `examples/cookbook/examples/export_import.rs`, `norte-core/src/domain/conversation.rs`, `norte-core/src/engine/mod.rs` (`append_history`, `export`), `norte-testing/tests/export.rs` (`export_import_carries_signatures_that_the_same_model_replays`), `norte-testing/tests/properties.rs`.
+**Where it lives:** `examples/cookbook/examples/harness/export_import/main.rs`, `norte-core/src/domain/conversation.rs`, `norte-harness/src/lib.rs` (`append_history`, `export`), `norte-testing/tests/export.rs` (`export_import_carries_signatures_that_the_same_model_replays`), `norte-testing/tests/properties.rs`.
 
 **FR-EXP-3 — Versioned envelope.** The envelope carries a schema version. A reader that does not understand the version rejects the envelope with a typed error rather than guessing or partially applying it.
 
@@ -377,7 +377,7 @@ A conversation is portable data. A host can export a session as a self-contained
 
 **FR-EXP-7 — Request-config capture.** The envelope carries an optional `TurnOptions` recording the **effective request configuration of the last request** (FR-ENG-9). Export fills it when the exporting engine knows it (it does for a session it just ran); import restores it as the session’s defaults so a later `resume`/`turn` reproduces the **complete** request — history *and* config — without the host re-deriving the layer merge (FR-ENG-7). The history prefix stays independent: even when the options are absent (`None`), the exported messages reconstruct byte-identically and only the request-level fields fall back to the importing engine’s defaults.
 
-**Where it lives:** `norte-core/src/domain/conversation.rs`, `norte-core/src/engine/mod.rs` (`materialize_message`, `session_turn_options`), `norte-core/src/model.rs`.
+**Where it lives:** `norte-core/src/domain/conversation.rs`, `norte-harness/src/lib.rs` (`materialize_message`, `session_turn_options`), `norte-core/src/model.rs`.
 
 ### 8.3 Provider Cache Mapping (Adapter Obligations)
 
@@ -405,21 +405,21 @@ Approvals are first-class durable records, not ephemeral callbacks.
 
 **FR-APPR-2.** A tool call that requires approval blocks until a matching grant is present or the approval expires; the session phase becomes `AwaitingApproval`.
 
-**FR-APPR-3.** Grants may be scoped (single call, tool name, session, global) and may be revoked. Revocation is itself audited. Scope is enforced, not merely recorded: a call whose id has no decision yet is still authorized by a standing grant that covers it, so a tool- or session-scoped grant lets the agent keep working without asking the operator again. `Engine::revoke` takes a grant back: it audits the revocation and drops the grant from the session's standing grants in the same commit, so a revoked grant stops authorizing both the call it was issued for and the later calls it used to cover.
+**FR-APPR-3.** Grants may be scoped (single call, tool name, session, global) and may be revoked. Revocation is itself audited. Scope is enforced, not merely recorded: a call whose id has no decision yet is still authorized by a standing grant that covers it, so a tool- or session-scoped grant lets the agent keep working without asking the operator again. `Harness::revoke` takes a grant back: it audits the revocation and drops the grant from the session's standing grants in the same commit, so a revoked grant stops authorizing both the call it was issued for and the later calls it used to cover.
 
-**Where it lives:** `norte-core/src/engine/mod.rs` (`authorize`, `deny`), `norte-core/src/event.rs`.
+**Where it lives:** `norte-harness/src/lib.rs` (`authorize`, `deny`), `norte-core/src/event.rs`.
 
 **FR-APPR-4.** Tampering with the argument digest after a grant has been issued invalidates the grant: the call fails with the reason, rather than the session parking on a record whose digest can never match again.
 
-**Where it lives:** `norte-core/src/engine/mod.rs` (`authorize`), `norte-core/src/engine/tools.rs`.
+**Where it lives:** `norte-harness/src/lib.rs` (`authorize`), `norte-core/src/engine/tools.rs`.
 
 **FR-APPR-5.** The ledger is store state, not conversation content, so it does not travel in the export envelope (FR-EXP-1). A session in `AwaitingApproval` whose parked calls have no undecided record re-requests approval when it runs again: the engine re-derives the request from the head message's tool calls and the phase. This makes a parked conversation exportable, importable and resumable — the host is asked again, on the host that now holds the session — and it is also what delivers a denial, which otherwise has nothing to act on.
 
-**Where it lives:** `norte-core/src/engine/mod.rs` (`run`).
+**Where it lives:** `norte-harness/src/lib.rs` (`run`).
 
 **FR-APPR-6.** `Store::approvals` returns every approval record recorded for a session, decided or not, in request order; the engine's `pending_approvals` narrows that to the records still awaiting a decision (`Pending` and unexpired). A host that reads the port directly and offers every record it finds will re-ask questions that were already answered.
 
-**Where it lives:** `norte-core/src/engine/mod.rs` (`turn_metadata`).
+**Where it lives:** `norte-harness/src/lib.rs` (`turn_metadata`).
 
 **FR-APPR-7.** A denial is not a dead turn. The denied call comes back to the model as a failed tool result carrying the operator's reason, exactly like a policy denial or a failing tool (FR-TOOL-3), so the agent can adapt rather than the turn aborting. The record stays in the store with its audit trail (FR-APPR-1).
 
@@ -463,7 +463,7 @@ The default tools suite (`norte-tools`) ships a production-grade command executo
 
 **FR-TOOL-1.** Tools are registered with a unique name, JSON Schema (or a typed Rust schema that generates it), a human description, and an optional approval policy reference.
 
-**Where it lives:** `norte-core/src/engine/mod.rs` (`into_result`).
+**Where it lives:** `norte-harness/src/lib.rs` (`into_result`).
 
 **FR-TOOL-2.** Argument parsing is strict: unknown fields, type mismatches and constraint violations become typed errors before the tool body runs.
 
@@ -547,19 +547,19 @@ Policies are pure functions from a typed view of the current request (messages, 
 
 **FR-POL-1.** Built-in decision kinds include `Allow`, `Deny(reason)`, `RequireApproval`, `Transform(arguments)`, and `RateLimit`.
 
-**Where it lives:** `examples/cookbook/examples/agent.rs`, `norte-tools/src/command.rs`, `norte-tools/src/edit.rs` (`default`), `norte-tools/src/fs.rs` (`io_error`), `norte-tools/src/read.rs` (`default`), `norte-tools/src/write.rs` (`default`).
+**Where it lives:** `examples/cookbook/examples/harness/agent/main.rs`, `norte-tools/src/command.rs`, `norte-tools/src/edit.rs` (`default`), `norte-tools/src/fs.rs` (`io_error`), `norte-tools/src/read.rs` (`default`), `norte-tools/src/write.rs` (`default`).
 
 A policy decides what may be *attempted*; whether an attempt is *safe* is the sandbox's. The host tools do not confine paths and never canonicalize them (§10.4): a `Deny` is enforced by the OS sandbox the executor runs in — seccomp, a container, a bind mount, a dedicated user — which is the layer that holds even for a path no string-matching policy could have predicted (FR-TOOL-BASH-7). The file executors resolve a symbolic link at the last component so a write lands on what the name points at (FR-TOOL-FILE-4) and leave everything else — `..`, traversal, hard links — exactly as the request wrote it.
 
 **FR-POL-2.** Policies are evaluated in a fixed, declared order. Later policies see the decisions of earlier ones.
 
-**Where it lives:** `benchmarks/agent-cost/src/main.rs` (`turn_options`), `examples/cookbook/examples/agent.rs` (`answer`).
+**Where it lives:** `benchmarks/agent-cost/src/main.rs` (`turn_options`), `examples/cookbook/examples/harness/agent/main.rs` (`answer`).
 
 **FR-POL-3.** A policy must not perform I/O; any external lookup belongs in a layer that feeds data into the policy view.
 
-**FR-POL-4.** The view carries two views of the request in flight: `history`, the messages of the request, and `results`, the tool results the same assistant message has already produced, in call order. `results` is a sequential concept and its contents depend on the execution path: a call started early (`EngineConfig::early_tool_execution`, FR-STREAM-4) is evaluated before anything has run and sees an empty `results`, and a call deferred to the normal path is evaluated as the message's calls complete, so it sees every result produced so far — including those of calls that follow it in the message. A host whose policies depend on `results` must therefore leave early execution off, which is the default; the engine does not infer the dependency.
+**FR-POL-4.** The view carries two views of the request in flight: `history`, the messages of the request, and `results`, the tool results the same assistant message has already produced, in call order. `results` is a sequential concept and its contents depend on the execution path: a call started early (`HarnessConfig::early_tool_execution`, FR-STREAM-4) is evaluated before anything has run and sees an empty `results`, and a call deferred to the normal path is evaluated as the message's calls complete, so it sees every result produced so far — including those of calls that follow it in the message. A host whose policies depend on `results` must therefore leave early execution off, which is the default; the engine does not infer the dependency.
 
-**Where it lives:** `norte-core/src/engine/mod.rs` (`into_result`, `partial_results`, `request_messages`, `run_tools`), `norte-core/src/policy.rs`.
+**Where it lives:** `norte-harness/src/lib.rs` (`into_result`, `partial_results`, `request_messages`, `run_tools`), `norte-core/src/policy.rs`.
 
 ### 11.3 Observers & Stream Transforms
 
@@ -569,11 +569,11 @@ A policy decides what may be *attempted*; whether an attempt is *safe* is the sa
 
 **FR-OBS-2.** Stream transforms may annotate or project events for downstream consumers (UI, metrics) but may not drop or reorder events that the engine relies on for durability.
 
-**Where it lives:** `norte-core/src/engine/mod.rs` (`commit`, `observers`), `norte-core/src/observer.rs` (`transform_names`).
+**Where it lives:** `norte-harness/src/lib.rs` (`commit`, `observers`), `norte-core/src/observer.rs` (`transform_names`).
 
 **FR-OBS-3.** Both observers and transforms are registered with a unique name and appear in the session’s extension metadata so that runs remain reproducible.
 
-**Where it lives:** `norte-core/src/engine/mod.rs` (`observers`), `norte-core/src/observer.rs` (`names`), `norte-testing/tests/observers.rs` (`a_transform_projects_the_deltas_without_touching_the_commit`).
+**Where it lives:** `norte-harness/src/lib.rs` (`observers`), `norte-core/src/observer.rs` (`names`), `norte-testing/tests/observers.rs` (`a_transform_projects_the_deltas_without_touching_the_commit`).
 
 ### 11.4 Design Rationale
 
@@ -636,7 +636,7 @@ Model-generated media streams back through the same events: audio output arrives
 
 **FR-ADP-4.** Adapters implement media materialization (FR-RECON-4) and, where a vendor returns generated media as a URL or file, its ingestion into `BlobStore` (FR-PART-5). A vendor with a server-side file store also implements the host-wired `ProviderFiles` port — upload from bytes, download back — for the three vendors that document one (OpenAI, Anthropic and Gemini), so a `ProviderFile` reference that lapses can be re-created from its blob instead of dropped. The port is per vendor and off by default: a vendor with no file API leaves it unset, and the engine then fails an expired reference with a typed error naming the part rather than sending a request missing its media (FR-PART-4). Where a vendor documents the store but honours one direction only — Anthropic and Gemini download only files the vendor generated, never an uploaded one — the adapter surfaces the vendor's own typed error instead of pretending the direction exists. A Files call against a vendor that does not implement the route surfaces that vendor's typed error (a `404` read as `NotFound`), so a host that guessed wrong sees the cause rather than an empty reference.
 
-**Where it lives:** `norte-core/src/media_adapter.rs` (`ProviderFiles`), `norte-http/src/media.rs` (`with_provider_files`), `norte-openai/src/files.rs`, `norte-anthropic/src/files.rs`, `norte-gemini/src/files.rs`, `examples/cookbook/examples/provider_files.rs`.
+**Where it lives:** `norte-core/src/media_adapter.rs` (`ProviderFiles`), `norte-http/src/media.rs` (`with_provider_files`), `norte-openai/src/files.rs`, `norte-anthropic/src/files.rs`, `norte-gemini/src/files.rs`, `examples/cookbook/examples/media/provider_files/main.rs`.
 
 **FR-ADP-5.** A vendor usage object is read through a claim: the adapter takes the counters it models out of a copy of the payload, and every field no claim touched is kept verbatim in `Usage::vendor`. A counter the neutral vocabulary has no field for is therefore never dropped, and an adapter that stops claiming one duplicates it visibly in `vendor` instead of losing it silently. The map serializes only when non-empty, so a payload whose every field was claimed adds no bytes, and an Anthropic usage record spread over several events is merged before it is read once, so no field is claimed twice. Being key-ordered and made of `Eq` values, it keeps an export byte-identical across a round trip (FR-EXP-2).
 
@@ -674,7 +674,7 @@ The engine emits a typed event stream that observers and host code may subscribe
 
 **FR-EVT-4.** The engine reports cache-relevant facts — request digest, cache boundary positions, the effective request configuration (generation parameters, reasoning request and ordered exposed tool names; FR-ENG-9) and any prefix invalidation caused by a host action — so cache cost is observable and attributable per send.
 
-**Where it lives:** `norte-core/src/engine/mod.rs` (`preprocess_history`), `norte-core/src/event.rs`.
+**Where it lives:** `norte-harness/src/lib.rs` (`preprocess_history`), `norte-core/src/event.rs`.
 
 **Verified by:** `norte-core` (`event.rs`, `stream.rs`) and `norte-testing` (`tests/observers.rs`).
 

@@ -14,10 +14,10 @@ use std::collections::HashMap;
 
 use tokio::sync::RwLock;
 
-use crate::store::{BlobStore, Store};
-use crate::{
-    ApprovalId, ApprovalRecord, BlobId, Commit, Error, Node, NodeId, Result, Session, SessionId,
-};
+use crate::approval::ApprovalRecord;
+use crate::store::Store;
+use norte_core::Commit;
+use norte_core::{ApprovalId, Error, Node, NodeId, Result, Session, SessionId};
 
 #[derive(Default)]
 struct Tables {
@@ -179,60 +179,10 @@ impl Store for InMemoryStore {
     }
 }
 
-/// A content-addressed in-memory [`BlobStore`]; puts are idempotent.
-#[derive(Default)]
-pub struct InMemoryBlobStore {
-    blobs: RwLock<HashMap<BlobId, Vec<u8>>>,
-}
-
-impl InMemoryBlobStore {
-    /// Creates an empty blob store.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Number of distinct blobs held.
-    pub async fn len(&self) -> usize {
-        self.blobs.read().await.len()
-    }
-
-    /// Whether no blob is held.
-    pub async fn is_empty(&self) -> bool {
-        self.blobs.read().await.is_empty()
-    }
-}
-
-#[async_trait::async_trait]
-impl BlobStore for InMemoryBlobStore {
-    async fn put(&self, bytes: &[u8]) -> Result<BlobId> {
-        let id = BlobId::of(bytes);
-        self.blobs
-            .write()
-            .await
-            .entry(id)
-            .or_insert_with(|| bytes.to_vec());
-        Ok(id)
-    }
-
-    async fn get(&self, id: BlobId) -> Result<Vec<u8>> {
-        self.blobs
-            .read()
-            .await
-            .get(&id)
-            .cloned()
-            .ok_or(Error::BlobNotFound(id))
-    }
-
-    async fn contains(&self, id: BlobId) -> Result<bool> {
-        Ok(self.blobs.read().await.contains_key(&id))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Phase;
+    use norte_core::Phase;
 
     fn creation(session_id: SessionId) -> Commit {
         Commit {
@@ -259,21 +209,6 @@ mod tests {
         assert!(matches!(
             store.commit(creation(session_id)).await,
             Err(Error::StoreConflict { .. })
-        ));
-    }
-
-    #[tokio::test]
-    async fn blobs_are_content_addressed() {
-        let blobs = InMemoryBlobStore::new();
-        let first = blobs.put(b"hello").await.expect("put");
-        let second = blobs.put(b"hello").await.expect("put");
-        assert_eq!(first, second);
-        assert_eq!(blobs.get(first).await.expect("get"), b"hello");
-        assert!(blobs.contains(first).await.expect("contains"));
-        assert_eq!(blobs.len().await, 1);
-        assert!(matches!(
-            blobs.get(BlobId::of(b"absent")).await,
-            Err(Error::BlobNotFound(_))
         ));
     }
 }

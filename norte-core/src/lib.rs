@@ -1,10 +1,12 @@
 #![forbid(unsafe_code)]
-#![doc = "`Norte` core: the domain model, the streaming pipeline, capabilities and every contract."]
+#![doc = "`Norte` core: the domain model, the streaming pipeline, capabilities, and the contracts a provider or an adapter implements."]
 
 extern crate self as norte_core;
 
 /// Tool-call approval: records, grants and the audit trail.
 pub mod approval;
+/// The blob port: content-addressed bytes for media.
+pub mod blob;
 /// What a model declares it can do, and the typed features the engine checks.
 pub mod capability;
 /// Canonical byte encodings shared by persistence and the wire.
@@ -23,24 +25,19 @@ pub mod interceptor;
 pub mod layer;
 /// The provider-file seam for media parts.
 pub mod media_adapter;
-/// In-memory reference implementations of the store ports.
-pub mod memory;
 /// The model port and the request it receives.
 pub mod model;
 /// Observers and stream transforms that watch a turn.
 pub mod observer;
-/// Tool-call policy evaluation.
-pub mod policy;
 /// Media preprocessing before a request is built.
 pub mod preprocess;
-/// The durable ports: sessions and blobs.
-pub mod store;
 /// Stream events and the accumulator that folds them into parts.
 pub mod stream;
 /// Tool declarations, the registry and execution.
 pub mod tool;
 
-pub use approval::{ApprovalRecord, ApprovalStatus, AuditAction, AuditEntry, Grant, GrantScope};
+pub use approval::{Grant, GrantScope};
+pub use blob::BlobStore;
 pub use capability::{
     CacheMode, Capabilities, CapabilitiesBuilder, Feature, Modality, ModalityCapabilities,
     ModalityLimits, Reasoning, ReasoningEffort, ReasoningRequest, StreamingGranularity,
@@ -79,7 +76,6 @@ pub use layer::{
     synthetic_stream,
 };
 pub use media_adapter::{MediaAdapter, ProviderFiles};
-pub use memory::{InMemoryBlobStore, InMemoryStore};
 pub use model::{
     ContinuityAdapter, GenerationParams, MAX_TOP_LOGPROBS, Model, ModelRequest, ModelStream,
     PARTIAL_TOOLS_KEY, SESSION_EXTENSION, StreamLimits, TURN_OPTIONS_KEY, TurnOptions,
@@ -87,12 +83,7 @@ pub use model::{
 };
 pub use norte_macros::tool;
 pub use observer::{Observer, ObserverSet, StreamTransform};
-pub use policy::{
-    Decision, Policy, PolicyDecision, PolicyOutcome, PolicySet, PolicyView, ToolApprovalPolicy,
-    combine,
-};
 pub use preprocess::{MediaPayload, MediaPreprocessor};
-pub use store::{BlobStore, Store};
 pub use stream::{Accumulated, StreamAccumulator, StreamEvent};
 pub use tool::registry::{FnTool, ToolRegistry};
 pub use tool::{

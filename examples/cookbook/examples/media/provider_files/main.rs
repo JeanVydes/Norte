@@ -35,8 +35,12 @@ use std::sync::Arc;
 
 use base64::Engine as _;
 use chrono::DateTime;
-use norte_core::{BlobStore, Capabilities, InMemoryBlobStore, InMemoryStore, MediaAdapter, MediaKind, MediaPart, MediaSource, Message, MimeType, Modality, Part, ProviderFileRef, ProviderFiles, StreamingGranularity, ToolRegistry, TurnOptions};
-use norte_harness::{EngineBuilder};
+use norte_core::{
+    BlobStore, Capabilities, MediaAdapter, MediaKind, MediaPart, MediaSource, Message, MimeType,
+    Modality, Part, ProviderFileRef, ProviderFiles, StreamingGranularity, ToolRegistry,
+    TurnOptions,
+};
+use norte_harness::{HarnessBuilder, InMemoryBlobStore, InMemoryStore};
 use norte_http::{HttpClient, HttpMedia};
 use norte_openai::presets::openai;
 use norte_openai::{OpenAiFiles, presets::openai_profile};
@@ -115,14 +119,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     println!("\n--- 5. send the file in a conversation");
-    let engine = EngineBuilder::new()
+    let harness = HarnessBuilder::new()
         .store(Arc::new(InMemoryStore::new()))
         .blobs(blobs)
         .model(Arc::new(openai(&model, api_key.as_str(), capabilities())?))
         .tools(ToolRegistry::new())
         .media_adapter(media)
         .build()?;
-    let session = engine.create().await?;
+    let session = harness.create().await?;
     let mut message = Message::user("Describe the image in one sentence.");
     message.parts.push(Part::Media(MediaPart::new(
         MediaKind::Image,
@@ -131,7 +135,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     )));
     let mut options = TurnOptions::default();
     options.params.max_output_tokens = Some(128);
-    let outcome = engine
+    let outcome = harness
         .turn(session.id)
         .input(message)
         .options(options)

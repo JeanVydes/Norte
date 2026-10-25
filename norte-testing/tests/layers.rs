@@ -2,8 +2,12 @@
 
 use std::sync::{Arc, Mutex, PoisonError};
 
-use norte_core::{Continuation, Digest, EngineEvent, InMemoryBlobStore, InMemoryStore, Layer, LayerContext, Message, ModelRequest, ModelStream, Observer, Result};
-use norte_harness::{EngineBuilder};
+use norte_core::{
+    Continuation, Digest, EngineEvent, Layer, LayerContext, Message, ModelRequest, ModelStream,
+    Observer, Result,
+};
+use norte_harness::InMemoryStore;
+use norte_harness::{HarnessBuilder, InMemoryBlobStore};
 use norte_testing::{ScriptedModel, model};
 
 /// A layer that changes the request before it reaches the model.
@@ -58,7 +62,7 @@ async fn the_digest_describes_the_request_the_model_received() {
     let store = Arc::new(InMemoryStore::new());
     let seen: Arc<Mutex<Option<ModelRequest>>> = Arc::new(Mutex::new(None));
     let digests: Arc<Mutex<Vec<Digest>>> = Arc::new(Mutex::new(Vec::new()));
-    let engine = EngineBuilder::new()
+    let engine = HarnessBuilder::new()
         .store(store.clone())
         .blobs(Arc::new(InMemoryBlobStore::new()))
         .model(scripted.clone())

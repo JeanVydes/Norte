@@ -122,8 +122,20 @@ Draft. Not published.
 
 ### Changed
 
-- Provider tools stay untyped: `ToolSpec::declaration` is an opaque
-  `serde_json::Value`, re-emitted verbatim.
+- **The agent runtime is now its own crate.** `norte-core` no longer commits to
+  a turn loop: the engine — and with it the session store, its in-memory
+  implementation, the tool-call policy and the approval record — moved to the
+  new `norte-harness`, exposed as `norte::harness` behind a `harness` feature.
+  The type is `Harness` rather than `Engine`.
+  `norte-core` keeps what a provider serialises and what an adapter implements:
+  the domain model, the ports, and the capabilities. Nothing in it knows there is
+  a loop, so a host that wants a different turn policy depends on the core alone.
+- `MessageOrigin` gained `new` and `with_digest`. It was `#[non_exhaustive]` with
+  no constructor, so it could not be built from outside the core at all.
+- `BlobStore` stayed in the core (as `norte_core::blob`) because `MediaAdapter`
+  names it and `norte-http::HttpMedia` implements that port; moving it would have
+  pointed an adapter at the harness.
+- Provider tools stay untyped: `ToolSpec::declaration` is an opaque  `serde_json::Value`, re-emitted verbatim.
 - Retries and rate limiting are host policy. The engine does not retry; a
   transient error reaches the host with `Retry-After` and `is_transient`. Unary
   `stream: false` and the Realtime API are recorded as out of scope.

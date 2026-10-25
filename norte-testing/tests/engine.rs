@@ -1,4 +1,4 @@
-//! Engine integration tests driven by the scripted model.
+//! Harness integration tests driven by the scripted model.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -6,8 +6,13 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use norte_core::{CallId, ContinuityFragment, ContinuityScope, ContinuitySemantics, Decision, EngineEvent, Error, Feature, FinishReason, FnExecutor, LogprobValue, Message, MessageStatus, Part, Phase, Policy, PolicySet, PolicyView, Result, Role, Store, StreamEvent, TokenLogprob, ToolApprovalPolicy, ToolContext, ToolName, ToolRegistry, ToolResultPart, WireFamily};
-use norte_harness::{Engine, EngineBuilder, EngineConfig};
+use norte_core::{
+    CallId, ContinuityFragment, ContinuityScope, ContinuitySemantics, EngineEvent, Error, Feature,
+    FinishReason, FnExecutor, LogprobValue, Message, MessageStatus, Part, Phase, Result, Role,
+    StreamEvent, TokenLogprob, ToolContext, ToolName, ToolRegistry, ToolResultPart, WireFamily,
+};
+use norte_harness::{Decision, Policy, PolicySet, PolicyView, Store, ToolApprovalPolicy};
+use norte_harness::{Harness, HarnessBuilder, HarnessConfig};
 use norte_testing::{
     InMemoryBlobStore, InMemoryStore, ScriptedModel, StrictContinuity, model, text_capabilities,
 };
@@ -106,25 +111,25 @@ impl FnExecutor<EchoArgs, EchoResult> for Contextual {
     }
 }
 
-struct Harness {
-    engine: Engine,
+struct Fixture {
+    engine: Harness,
     store: Arc<InMemoryStore>,
     model: Arc<ScriptedModel>,
 }
 
-fn harness(model: Arc<ScriptedModel>, tools: ToolRegistry, policies: PolicySet) -> Harness {
-    harness_with_config(model, tools, policies, EngineConfig::default())
+fn fixture(model: Arc<ScriptedModel>, tools: ToolRegistry, policies: PolicySet) -> Fixture {
+    fixture_with_config(model, tools, policies, HarnessConfig::default())
 }
 
-fn harness_with_config(
+fn fixture_with_config(
     model: Arc<ScriptedModel>,
     tools: ToolRegistry,
     policies: PolicySet,
-    config: EngineConfig,
-) -> Harness {
+    config: HarnessConfig,
+) -> Fixture {
     let store = Arc::new(InMemoryStore::new());
     let blobs = Arc::new(InMemoryBlobStore::new());
-    let engine = EngineBuilder::new()
+    let engine = HarnessBuilder::new()
         .store(store.clone())
         .blobs(blobs)
         .model(model.clone())
@@ -133,7 +138,7 @@ fn harness_with_config(
         .config(config)
         .build()
         .expect("build engine");
-    Harness {
+    Fixture {
         engine,
         store,
         model,
@@ -143,7 +148,7 @@ fn harness_with_config(
 #[tokio::test]
 async fn a_text_turn_is_committed_and_reported() {
     let scripted = Arc::new(ScriptedModel::new(model("test/echo")).turn_text("hello world"));
-    let harness = harness(scripted, ToolRegistry::new(), PolicySet::default());
+    let harness = fixture(scripted, ToolRegistry::new(), PolicySet::default());
 
     let session = harness.engine.create().await.expect("create");
     let outcome = harness
@@ -182,7 +187,7 @@ async fn tool_calls_run_and_feed_the_next_turn() {
     let mut tools = ToolRegistry::new();
     tools.register_declarator(&Echo).expect("register echo");
 
-    let harness = harness(scripted, tools, PolicySet::default());
+    let harness = fixture(scripted, tools, PolicySet::default());
     let session = harness.engine.create().await.expect("create");
     let outcome = harness
         .engine
@@ -283,7 +288,7 @@ async fn two_calls_in_one_message_each_get_a_result() {
     let mut tools = ToolRegistry::new();
     tools.register_declarator(&Echo).expect("register echo");
 
-    let harness = harness(scripted, tools, PolicySet::default());
+    let harness = fixture(scripted, tools, PolicySet::default());
     let session = harness.engine.create().await.expect("create");
     let outcome = harness
         .engine
@@ -329,7 +334,7 @@ async fn a_park_after_a_call_does_not_run_that_call_again() {
             .turn_text("done"),
     );
     let (tools, plain_hits, guarded_hits) = counting_tools();
-    let harness = harness(scripted, tools, guarded_policy());
+    let harness = fixture(scripted, tools, guarded_policy());
 
     let session = harness.engine.create().await.expect("create");
     let outcome = harness
@@ -410,11 +415,11 @@ async fn early_tool_execution_does_not_run_a_call_twice_across_a_park() {
             .turn_text("done"),
     );
     let (tools, plain_hits, guarded_hits) = counting_tools();
-    let config = EngineConfig {
+    let config = HarnessConfig {
         early_tool_execution: true,
-        ..EngineConfig::default()
+        ..HarnessConfig::default()
     };
-    let harness = harness_with_config(scripted, tools, guarded_policy(), config);
+    let harness = fixture_with_config(scripted, tools, guarded_policy(), config);
 
     let session = harness.engine.create().await.expect("create");
     let outcome = harness
@@ -481,7 +486,7 @@ async fn early_tool_execution_does_not_run_a_call_twice_across_a_park() {
 
 /// Runs one echo turn and reports how many commits had succeeded when the tool
 /// finished, so early and sequential execution can be compared.
-async fn tool_finish_commit_offset(config: EngineConfig) -> usize {
+async fn tool_finish_commit_offset(config: HarnessConfig) -> usize {
     use futures_util::StreamExt;
 
     let call_id = CallId::new();
@@ -508,7 +513,7 @@ async fn tool_finish_commit_offset(config: EngineConfig) -> usize {
     let mut tools = ToolRegistry::new();
     tools.register_declarator(&Echo).expect("register echo");
 
-    let harness = harness_with_config(scripted, tools, PolicySet::default(), config);
+    let harness = fixture_with_config(scripted, tools, PolicySet::default(), config);
     let session = harness.engine.create().await.expect("create");
 
     let mut stream = harness
@@ -529,12 +534,12 @@ async fn tool_finish_commit_offset(config: EngineConfig) -> usize {
 
 #[tokio::test]
 async fn early_tool_execution_finishes_during_the_stream() {
-    let early = tool_finish_commit_offset(EngineConfig {
+    let early = tool_finish_commit_offset(HarnessConfig {
         early_tool_execution: true,
-        ..EngineConfig::default()
+        ..HarnessConfig::default()
     })
     .await;
-    let sequential = tool_finish_commit_offset(EngineConfig::default()).await;
+    let sequential = tool_finish_commit_offset(HarnessConfig::default()).await;
     assert!(
         early < sequential,
         "early execution finishes while the assistant message streams, before its commit"
@@ -554,7 +559,7 @@ async fn an_unknown_tool_is_reported_to_the_model_as_an_error() {
             .turn_tool_call(call_id, "missing", &json!({}))
             .turn_text("recovered"),
     );
-    let harness = harness(scripted, ToolRegistry::new(), PolicySet::default());
+    let harness = fixture(scripted, ToolRegistry::new(), PolicySet::default());
     let session = harness.engine.create().await.expect("create");
     let outcome = harness
         .engine
@@ -591,7 +596,7 @@ async fn a_required_approval_blocks_then_resumes() {
         vec![ToolName::new("echo").expect("tool")],
         "echo touches the world",
     ))]);
-    let harness = harness(scripted, tools, policies);
+    let harness = fixture(scripted, tools, policies);
 
     let session = harness.engine.create().await.expect("create");
     let outcome = harness
@@ -666,7 +671,7 @@ async fn a_later_transform_cannot_bypass_an_earlier_approval() {
         )),
         Arc::new(Rewrite),
     ]);
-    let harness = harness(scripted, tools, policies);
+    let harness = fixture(scripted, tools, policies);
 
     let session = harness.engine.create().await.expect("create");
     let outcome = harness
@@ -739,7 +744,7 @@ async fn an_earlier_transform_is_what_the_human_approves_and_runs() {
             "plain touches the world",
         )),
     ]);
-    let harness = harness(scripted, tools, policies);
+    let harness = fixture(scripted, tools, policies);
 
     let session = harness.engine.create().await.expect("create");
     let outcome = harness
@@ -794,7 +799,7 @@ async fn the_host_context_reaches_a_tool_that_resumes_after_approval() {
         "contextual touches the world",
     ))]);
 
-    let engine = EngineBuilder::new()
+    let engine = HarnessBuilder::new()
         .store(Arc::new(InMemoryStore::new()))
         .blobs(Arc::new(InMemoryBlobStore::new()))
         .model(scripted)
@@ -856,7 +861,7 @@ async fn a_denied_call_comes_back_to_the_model_as_a_failure() {
         vec![ToolName::new("echo").expect("tool")],
         "echo touches the world",
     ))]);
-    let harness = harness(scripted, tools, policies);
+    let harness = fixture(scripted, tools, policies);
 
     let session = harness.engine.create().await.expect("create");
     let outcome = harness
@@ -938,7 +943,7 @@ async fn a_tool_scoped_grant_covers_later_calls() {
         vec![ToolName::new("echo").expect("tool")],
         "echo touches the world",
     ))]);
-    let harness = harness(scripted, tools, policies);
+    let harness = fixture(scripted, tools, policies);
 
     let session = harness.engine.create().await.expect("create");
     let outcome = harness
@@ -1006,7 +1011,7 @@ async fn a_tool_scoped_grant_covers_later_calls() {
 #[tokio::test]
 async fn a_steering_message_lands_before_the_message_that_follows_it() {
     let scripted = Arc::new(ScriptedModel::new(model("test/echo")).turn_text("ok"));
-    let harness = harness(scripted, ToolRegistry::new(), PolicySet::default());
+    let harness = fixture(scripted, ToolRegistry::new(), PolicySet::default());
 
     let session = harness.engine.create().await.expect("create");
     let outcome = harness
@@ -1044,7 +1049,7 @@ async fn a_revoked_grant_stops_authorizing_the_call() {
         vec![ToolName::new("echo").expect("tool")],
         "echo touches the world",
     ))]);
-    let harness = harness(scripted, tools, policies);
+    let harness = fixture(scripted, tools, policies);
 
     let session = harness.engine.create().await.expect("create");
     let outcome = harness
@@ -1123,7 +1128,7 @@ async fn revoking_a_standing_grant_brings_the_question_back() {
         vec![ToolName::new("echo").expect("tool")],
         "echo touches the world",
     ))]);
-    let harness = harness(scripted, tools, policies);
+    let harness = fixture(scripted, tools, policies);
 
     let session = harness.engine.create().await.expect("create");
     let outcome = harness
@@ -1205,7 +1210,7 @@ async fn cancelling_a_turn_leaves_the_session_resumable() {
     let scripted = Arc::new(
         ScriptedModel::new(model("test/echo")).turn_delayed(events, Duration::from_millis(50)),
     );
-    let harness = harness(scripted, ToolRegistry::new(), PolicySet::default());
+    let harness = fixture(scripted, ToolRegistry::new(), PolicySet::default());
     let session = harness.engine.create().await.expect("create");
 
     let stream = harness.engine.send(session.id, Message::user("go"));
@@ -1234,7 +1239,7 @@ async fn an_unsupported_tool_shape_is_a_capability_error() {
             .turn_text("never"),
     );
 
-    let harness = harness(scripted, tools, PolicySet::default());
+    let harness = fixture(scripted, tools, PolicySet::default());
     let session = harness.engine.create().await.expect("create");
     let error = harness
         .engine
@@ -1250,7 +1255,7 @@ async fn a_failing_model_surfaces_a_typed_error() {
     let store = Arc::new(InMemoryStore::new());
     let blobs = Arc::new(InMemoryBlobStore::new());
     let failing = Arc::new(norte_testing::FailingModel::new(model("test/echo"), "boom"));
-    let engine = EngineBuilder::new()
+    let engine = HarnessBuilder::new()
         .store(store)
         .blobs(blobs)
         .model(failing)
@@ -1273,7 +1278,7 @@ async fn a_failing_model_surfaces_a_typed_error() {
 async fn a_failed_turn_is_resumed_where_it_stopped() {
     let store = Arc::new(InMemoryStore::new());
     let blobs = Arc::new(InMemoryBlobStore::new());
-    let failing = EngineBuilder::new()
+    let failing = HarnessBuilder::new()
         .store(store.clone())
         .blobs(blobs.clone())
         .model(Arc::new(norte_testing::FailingModel::new(
@@ -1298,7 +1303,7 @@ async fn a_failed_turn_is_resumed_where_it_stopped() {
     );
 
     // Another engine — another process, another model — takes the session over.
-    let resumed = EngineBuilder::new()
+    let resumed = HarnessBuilder::new()
         .store(store)
         .blobs(blobs)
         .model(Arc::new(
@@ -1360,7 +1365,7 @@ async fn tool_context_reaches_the_executor() {
     tools
         .register_declarator(&ContextProbe)
         .expect("register probe");
-    let harness = harness(scripted, tools, PolicySet::default());
+    let harness = fixture(scripted, tools, PolicySet::default());
     let session = harness.engine.create().await.expect("create");
     let outcome = harness
         .engine
@@ -1415,7 +1420,7 @@ async fn switching_models_mid_tool_loop_blocks_instead_of_dropping_tokens() {
     );
     let mut tools = ToolRegistry::new();
     tools.register_declarator(&Echo).expect("register echo");
-    let engine = EngineBuilder::new()
+    let engine = HarnessBuilder::new()
         .store(store.clone())
         .blobs(blobs.clone())
         .model(first)
@@ -1438,7 +1443,7 @@ async fn switching_models_mid_tool_loop_blocks_instead_of_dropping_tokens() {
     );
     let mut tools = ToolRegistry::new();
     tools.register_declarator(&Echo).expect("register echo");
-    let switched = EngineBuilder::new()
+    let switched = HarnessBuilder::new()
         .store(store.clone())
         .blobs(blobs)
         .model(second)
@@ -1485,7 +1490,7 @@ async fn a_policy_sees_the_results_of_earlier_calls_in_the_same_message() {
     let mut tools = ToolRegistry::new();
     tools.register_declarator(&Echo).expect("register echo");
     let policies = PolicySet::new(vec![Arc::new(ResultGate)]);
-    let harness = harness(scripted, tools, policies);
+    let harness = fixture(scripted, tools, policies);
 
     let session = harness.engine.create().await.expect("create");
     let outcome = harness
@@ -1544,7 +1549,7 @@ impl Policy for Probe {
     }
 }
 
-async fn probe_seen(config: EngineConfig) -> Vec<Seen> {
+async fn probe_seen(config: HarnessConfig) -> Vec<Seen> {
     let first = CallId::new();
     let second = CallId::new();
     let scripted = Arc::new(
@@ -1560,7 +1565,7 @@ async fn probe_seen(config: EngineConfig) -> Vec<Seen> {
     let probe = Probe::default();
     let seen = Arc::clone(&probe.seen);
     let policies = PolicySet::new(vec![Arc::new(probe)]);
-    let harness = harness_with_config(scripted, tools, policies, config);
+    let harness = fixture_with_config(scripted, tools, policies, config);
 
     let session = harness.engine.create().await.expect("create");
     harness
@@ -1574,7 +1579,7 @@ async fn probe_seen(config: EngineConfig) -> Vec<Seen> {
 
 #[tokio::test]
 async fn the_results_a_policy_sees_depend_on_the_execution_path() {
-    let sequential = probe_seen(EngineConfig::default()).await;
+    let sequential = probe_seen(HarnessConfig::default()).await;
     assert_eq!(sequential.len(), 2);
     assert_eq!(
         sequential[0].results, 0,
@@ -1590,9 +1595,9 @@ async fn the_results_a_policy_sees_depend_on_the_execution_path() {
     );
     assert_eq!(sequential[1].history, 2);
 
-    let parallel = probe_seen(EngineConfig {
+    let parallel = probe_seen(HarnessConfig {
         early_tool_execution: true,
-        ..EngineConfig::default()
+        ..HarnessConfig::default()
     })
     .await;
     assert_eq!(parallel.len(), 2);
@@ -1609,7 +1614,7 @@ async fn the_results_a_policy_sees_depend_on_the_execution_path() {
 #[tokio::test]
 async fn logprobs_without_the_capability_fail_before_the_request() {
     let scripted = Arc::new(ScriptedModel::new(model("test/echo")).turn_text("never"));
-    let harness = harness(scripted, ToolRegistry::new(), PolicySet::default());
+    let harness = fixture(scripted, ToolRegistry::new(), PolicySet::default());
     let session = harness.engine.create().await.expect("create");
 
     let error = harness
@@ -1639,7 +1644,7 @@ async fn a_logprob_count_above_the_cap_is_a_limit_error() {
             .with_capabilities(capabilities)
             .turn_text("never"),
     );
-    let harness = harness(scripted, ToolRegistry::new(), PolicySet::default());
+    let harness = fixture(scripted, ToolRegistry::new(), PolicySet::default());
     let session = harness.engine.create().await.expect("create");
 
     let error = harness
@@ -1659,7 +1664,7 @@ async fn a_logprob_count_above_the_cap_is_a_limit_error() {
 #[tokio::test]
 async fn requested_logprobs_never_change_the_committed_message() {
     let plain = Arc::new(ScriptedModel::new(model("test/echo")).turn_text("hello"));
-    let baseline = harness(plain, ToolRegistry::new(), PolicySet::default());
+    let baseline = fixture(plain, ToolRegistry::new(), PolicySet::default());
     let plain_session = baseline.engine.create().await.expect("create");
     let plain_outcome = baseline
         .engine
@@ -1694,7 +1699,7 @@ async fn requested_logprobs_never_change_the_committed_message() {
                 StreamEvent::Finish(FinishReason::Stop),
             ]),
     );
-    let harness = harness(scripted, ToolRegistry::new(), PolicySet::default());
+    let harness = fixture(scripted, ToolRegistry::new(), PolicySet::default());
     let session = harness.engine.create().await.expect("create");
     let outcome = harness
         .engine

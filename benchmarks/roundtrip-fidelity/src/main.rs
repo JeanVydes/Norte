@@ -36,8 +36,11 @@ use std::time::Instant;
 
 use norte_bench_support::report::{Align, Report};
 use norte_bench_support::{Mode, Run};
-use norte_core::{CacheClass, CallId, Conversation, Message, Model, ModelRef, ModelRequest, Part, Role, TextPart, ToolCallPart, ToolResultPart};
-use norte_harness::{Engine, EngineBuilder};
+use norte_core::{
+    CacheClass, CallId, Conversation, Message, Model, ModelRef, ModelRequest, Part, Role, TextPart,
+    ToolCallPart, ToolResultPart,
+};
+use norte_harness::{Harness, HarnessBuilder};
 use norte_testing::{InMemoryBlobStore, InMemoryStore, ProbeModel, text_capabilities};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -287,8 +290,8 @@ fn generate(rng: &mut Rng, _case: u64) -> Vec<Message> {
     messages
 }
 
-fn engine(model: Arc<dyn Model>, store: Arc<InMemoryStore>) -> Engine {
-    EngineBuilder::new()
+fn engine(model: Arc<dyn Model>, store: Arc<InMemoryStore>) -> Harness {
+    HarnessBuilder::new()
         .store(store)
         .blobs(Arc::new(InMemoryBlobStore::new()))
         .model(model)

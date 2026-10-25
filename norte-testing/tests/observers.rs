@@ -3,8 +3,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use norte_core::{EngineEvent, InMemoryBlobStore, InMemoryStore, Message, StreamDelta, StreamTransform, ToolRegistry};
-use norte_harness::{Engine, EngineBuilder};
+use norte_core::{EngineEvent, Message, StreamDelta, StreamTransform, ToolRegistry};
+use norte_harness::InMemoryStore;
+use norte_harness::{Harness, HarnessBuilder, InMemoryBlobStore};
 use norte_testing::{RecordingObserver, ScriptedModel, model};
 
 /// Upper-cases text deltas, the canonical "annotate for the UI" transform.
@@ -26,8 +27,8 @@ impl StreamTransform for Shout {
     }
 }
 
-fn engine(scripted: Arc<ScriptedModel>, recorder: Arc<RecordingObserver>) -> Engine {
-    EngineBuilder::new()
+fn engine(scripted: Arc<ScriptedModel>, recorder: Arc<RecordingObserver>) -> Harness {
+    HarnessBuilder::new()
         .store(Arc::new(InMemoryStore::new()))
         .blobs(Arc::new(InMemoryBlobStore::new()))
         .model(scripted)

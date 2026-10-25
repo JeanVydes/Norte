@@ -50,8 +50,13 @@ use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 
 use base64::Engine as _;
-use norte_core::{BlobId, BlobStore, CallId, Capabilities, ContinuityAdapter, InMemoryBlobStore, InMemoryStore, MediaAdapter, MediaKind, MediaPart, MediaSource, Message, MimeType, Modality, Model, ModelId, ModelRef, ModelRequest, ModelStream, Part, ProviderId, Role, SessionId, StreamingGranularity, ToolCallPart, ToolKind, ToolRegistry, ToolResultPart, TurnOptions, WireFamily};
-use norte_harness::{Engine, EngineBuilder, EngineConfig};
+use norte_core::{
+    BlobId, BlobStore, CallId, Capabilities, ContinuityAdapter, MediaAdapter, MediaKind, MediaPart,
+    MediaSource, Message, MimeType, Modality, Model, ModelRef, ModelRequest, ModelStream, Part,
+    Role, SessionId, StreamingGranularity, ToolCallPart, ToolKind, ToolRegistry, ToolResultPart,
+    TurnOptions, WireFamily,
+};
+use norte_harness::{Harness, HarnessBuilder, HarnessConfig, InMemoryBlobStore, InMemoryStore};
 use norte_http::{AuthScheme, HttpClient, HttpMedia, VendorProfile};
 use norte_openai::{OpenAiChat, WIRE_CHAT};
 use serde_json::Value;
@@ -143,23 +148,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
 fn new_engine(
     blobs: Arc<InMemoryBlobStore>,
     media: Arc<HttpMedia>,
-) -> Result<(Engine, Captured), Box<dyn Error>> {
+) -> Result<(Harness, Captured), Box<dyn Error>> {
     let captured: Captured = Arc::new(Mutex::new(Vec::new()));
     let model = Probe {
         inner: openrouter(vision_capabilities())?,
         captured: Arc::clone(&captured),
     };
-    let engine = EngineBuilder::new()
+    let engine = HarnessBuilder::new()
         .store(Arc::new(InMemoryStore::new()))
         .blobs(blobs)
         .model(Arc::new(model))
         .tools(ToolRegistry::new())
         .media_adapter(media)
-        .config(EngineConfig {
+        .config(HarnessConfig {
             // A normal host leaves this at 64 KiB; a comment here and there is
             // fine to keep the transcript readable.
             inline_threshold: 64 * 1024,
-            ..EngineConfig::default()
+            ..HarnessConfig::default()
         })
         .build()?;
     Ok((engine, captured))
@@ -170,7 +175,7 @@ fn new_engine(
 /// result with the media dropped. Responses, Anthropic and Gemini carry the same
 /// part; on those wires the model would see the image (FR-TOOL-3).
 async fn tool_result_media(
-    engine: &Engine,
+    engine: &Harness,
     blobs: Arc<InMemoryBlobStore>,
     options: &TurnOptions,
 ) -> Result<String, Box<dyn Error>> {
@@ -274,14 +279,19 @@ fn options() -> TurnOptions {
 
 /// Wires `OpenRouter`. An `OpenAI`-compatible vendor is a profile, not a preset.
 fn openrouter(capabilities: Capabilities) -> Result<OpenAiChat, Box<dyn Error>> {
-    let provider = ProviderId::new("openrouter")?;
-    let endpoint = required("COOKBOOK_ENDPOINT", "https://openrouter.ai/api/v1")?;
-    let profile = VendorProfile::new(provider.clone(), WireFamily::new(WIRE_CHAT)?, &endpoint)?
-        .with_auth(AuthScheme::bearer(std::env::var("OPENROUTER_API_KEY")?));
-    let id = required("COOKBOOK_MODEL", "openai/gpt-6-luna")?;
     Ok(OpenAiChat::new(
-        ModelRef::new(provider, ModelId::new(&id)?),
-        profile,
+        ModelRef::new(
+            "openrouter".try_into()?,
+            required("COOKBOOK_MODEL", "openai/gpt-6-luna")?
+                .as_str()
+                .try_into()?,
+        ),
+        VendorProfile::new(
+            "openrouter".try_into()?,
+            WireFamily::new(WIRE_CHAT)?,
+            &required("COOKBOOK_ENDPOINT", "https://openrouter.ai/api/v1")?,
+        )?
+        .with_auth(AuthScheme::bearer(std::env::var("OPENROUTER_API_KEY")?)),
         capabilities,
     )?)
 }
@@ -332,7 +342,7 @@ fn answer(message: Option<&Message>) -> String {
 
 /// Every media part in the session's history, in the form the graph stores it —
 /// descending into tool results, which is the whole of the FR-TOOL-3 fix.
-async fn graph_media(engine: &Engine, session: SessionId) -> Result<Vec<String>, Box<dyn Error>> {
+async fn graph_media(engine: &Harness, session: SessionId) -> Result<Vec<String>, Box<dyn Error>> {
     let mut out = Vec::new();
     for message in engine.history(session).await? {
         for part in &message.parts {

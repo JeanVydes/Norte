@@ -9,8 +9,12 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use norte_core::{Conversation, Digest, EngineEvent, Error, Feature, FnExecutor, GenerationParams, Message, Model, ModelRequest, Observer, ReasoningEffort, ReasoningRequest, Result, ToolName, ToolRegistry, TurnOptions};
-use norte_harness::{Engine, EngineBuilder, EngineConfig};
+use norte_core::{
+    Conversation, Digest, EngineEvent, Error, Feature, FnExecutor, GenerationParams, Message,
+    Model, ModelRequest, Observer, ReasoningEffort, ReasoningRequest, Result, ToolName,
+    ToolRegistry, TurnOptions,
+};
+use norte_harness::{Harness, HarnessBuilder, HarnessConfig};
 use norte_testing::{
     InMemoryBlobStore, InMemoryStore, ProbeModel, RecordingObserver, ScriptedModel, model,
     text_capabilities,
@@ -82,9 +86,9 @@ fn build(
     probe: Arc<ProbeModel>,
     tools: ToolRegistry,
     observers: Vec<Arc<dyn Observer>>,
-    config: EngineConfig,
-) -> Engine {
-    EngineBuilder::new()
+    config: HarnessConfig,
+) -> Harness {
+    HarnessBuilder::new()
         .store(Arc::new(InMemoryStore::new()))
         .blobs(Arc::new(InMemoryBlobStore::new()))
         .model(probe as Arc<dyn Model>)
@@ -95,7 +99,7 @@ fn build(
         .expect("engine")
 }
 
-async fn request_for(engine: &Engine, probe: &ProbeModel, options: TurnOptions) -> ModelRequest {
+async fn request_for(engine: &Harness, probe: &ProbeModel, options: TurnOptions) -> ModelRequest {
     let session = engine.create().await.expect("create");
     engine
         .turn(session.id)
@@ -136,13 +140,13 @@ async fn wait_for_event(
 #[tokio::test]
 async fn parameters_overlay_per_field() {
     let probe = probe();
-    let defaults = EngineConfig {
+    let defaults = HarnessConfig {
         params: GenerationParams {
             top_k: Some(40),
             top_p: Some(0.5),
             ..GenerationParams::default()
         },
-        ..EngineConfig::default()
+        ..HarnessConfig::default()
     };
     let engine = build(probe.clone(), registry(), Vec::new(), defaults.clone());
 
@@ -171,9 +175,9 @@ async fn every_parameter_vector_is_reflected() {
         top_p: Some(0.5),
         ..GenerationParams::default()
     };
-    let config = EngineConfig {
+    let config = HarnessConfig {
         params: defaults.clone(),
-        ..EngineConfig::default()
+        ..HarnessConfig::default()
     };
     let probe = probe();
     let engine = build(probe.clone(), registry(), Vec::new(), config);
@@ -257,7 +261,7 @@ async fn every_reasoning_mode_is_reflected() {
         probe.clone(),
         registry(),
         Vec::new(),
-        EngineConfig::default(),
+        HarnessConfig::default(),
     );
 
     let modes = [
@@ -292,7 +296,7 @@ async fn tool_subset_is_canonical_and_deduplicated() {
         probe.clone(),
         registry(),
         Vec::new(),
-        EngineConfig::default(),
+        HarnessConfig::default(),
     );
 
     let all = request_for(&engine, &probe, TurnOptions::default()).await;
@@ -336,7 +340,7 @@ async fn tool_subset_is_canonical_and_deduplicated() {
 /// imported copy reconstructs exactly those messages: no generated origin,
 /// timestamp or id can differ between runs.
 async fn seed_conversation() -> Conversation {
-    let engine = build(probe(), registry(), Vec::new(), EngineConfig::default());
+    let engine = build(probe(), registry(), Vec::new(), HarnessConfig::default());
     let session = engine.create().await.expect("create");
     engine
         .append_history(
@@ -362,7 +366,7 @@ async fn seeded_request(conversation: &Conversation, tools: Vec<ToolName>) -> Mo
         probe.clone(),
         registry(),
         Vec::new(),
-        EngineConfig::default(),
+        HarnessConfig::default(),
     );
     let imported = engine.import(conversation.clone()).await.expect("import");
     engine
@@ -412,7 +416,7 @@ async fn an_unknown_tool_is_a_typed_error() {
         probe.clone(),
         registry(),
         Vec::new(),
-        EngineConfig::default(),
+        HarnessConfig::default(),
     );
     let session = engine.create().await.expect("create");
 
@@ -435,7 +439,7 @@ async fn the_audit_event_reports_the_effective_config() {
         probe.clone(),
         registry(),
         vec![recorder.clone()],
-        EngineConfig::default(),
+        HarnessConfig::default(),
     );
     let session = engine.create().await.expect("create");
 
@@ -472,12 +476,12 @@ async fn the_audit_event_reports_the_effective_config() {
 
 #[tokio::test]
 async fn export_captures_and_import_restores_request_config() {
-    let config = EngineConfig {
+    let config = HarnessConfig {
         params: GenerationParams {
             top_p: Some(0.5),
             ..GenerationParams::default()
         },
-        ..EngineConfig::default()
+        ..HarnessConfig::default()
     };
     let options = TurnOptions {
         params: GenerationParams {
@@ -582,7 +586,7 @@ async fn the_builder_sets_vendor_extensions_on_the_request() {
         probe.clone(),
         registry(),
         Vec::new(),
-        EngineConfig::default(),
+        HarnessConfig::default(),
     );
     let session = engine.create().await.expect("create");
     engine

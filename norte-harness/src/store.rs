@@ -1,10 +1,10 @@
 use crate::approval::ApprovalRecord;
-use crate::domain::commit::Commit;
-use crate::domain::message::Message;
-use crate::domain::node::Node;
-use crate::domain::session::Session;
-use crate::error::Result;
-use crate::id::{ApprovalId, BlobId, NodeId, SessionId};
+use norte_core::domain::commit::Commit;
+use norte_core::domain::message::Message;
+use norte_core::domain::node::Node;
+use norte_core::domain::session::Session;
+use norte_core::error::Result;
+use norte_core::id::{ApprovalId, BlobId, NodeId, SessionId};
 
 /// Persistence port for sessions, the conversation graph and approvals.
 ///
@@ -13,7 +13,7 @@ use crate::id::{ApprovalId, BlobId, NodeId, SessionId};
 #[async_trait::async_trait]
 pub trait Store: Send + Sync {
     /// Applies one commit. Returns the new session state on success and
-    /// [`crate::Error::StoreConflict`] when the version does not match.
+    /// [`norte_core::Error::StoreConflict`] when the version does not match.
     async fn commit(&self, commit: Commit) -> Result<Session>;
 
     /// Loads a session, including its head and phase.
@@ -35,8 +35,8 @@ pub trait Store: Send + Sync {
     async fn approval(&self, id: ApprovalId) -> Result<Option<ApprovalRecord>>;
 
     /// Every approval record recorded for the session, decided or not, oldest
-    /// first. The engine reads it to resolve a call; the host-facing view of
-    /// what still needs a decision is [`crate::Engine::pending_approvals`].
+    /// first. The host-facing view of what still needs a decision is
+    /// `norte_harness::Harness::pending_approvals`, which this port backs.
     async fn approvals(&self, session: SessionId) -> Result<Vec<ApprovalRecord>>;
 
     /// The conversation the model sees: every ancestor message, root first.

@@ -21,8 +21,11 @@ use std::error::Error;
 use std::sync::Arc;
 use std::time::Duration;
 
-use norte_core::{Capabilities, Error as NorteError, InMemoryBlobStore, InMemoryStore, Message, Modality, ModelId, ModelRef, ProviderError, ProviderErrorKind, ProviderId, SessionId, StreamingGranularity, ToolRegistry, WireFamily};
-use norte_harness::{Engine, EngineBuilder, TurnOutcome};
+use norte_core::{
+    Capabilities, Error as NorteError, Message, Modality, ModelId, ModelRef, ProviderError,
+    ProviderErrorKind, ProviderId, SessionId, StreamingGranularity, ToolRegistry, WireFamily,
+};
+use norte_harness::{Harness, HarnessBuilder, InMemoryBlobStore, InMemoryStore, TurnOutcome};
 use norte_http::{AuthScheme, VendorProfile, is_transient};
 use norte_openai::{OpenAiChat, WIRE_CHAT};
 
@@ -51,10 +54,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     println!("\n── 2. a real turn, wrapped in the host policy ───────");
 
-    let engine = new_engine()?;
-    let session = engine.create().await?;
+    let harness = new_engine()?;
+    let session = harness.create().await?;
     let outcome = run_with_retry(
-        &engine,
+        &harness,
         session.id,
         Message::user("Reply with the single word: ok."),
     )
@@ -79,11 +82,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
 /// are not run again (FR-ERR-5). The loop is bounded: a provider that keeps
 /// answering `429` eventually surfaces the error to the caller.
 async fn run_with_retry(
-    engine: &Engine,
+    harness: &Harness,
     session: SessionId,
     message: Message,
 ) -> Result<TurnOutcome, Box<dyn Error>> {
-    let mut stream = engine.send(session, message);
+    let mut stream = harness.send(session, message);
     let mut attempt = 1;
 
     loop {
@@ -94,7 +97,7 @@ async fn run_with_retry(
                 println!("attempt {attempt}: transient failure, waiting {wait:?} then resuming");
                 tokio::time::sleep(wait).await;
                 attempt += 1;
-                stream = engine.resume(session);
+                stream = harness.resume(session);
             }
             Err(error) => return Err(error.into()),
         }
@@ -108,27 +111,25 @@ fn backoff(attempt: u32) -> Duration {
 }
 
 /// The engine, wired to `OpenRouter` through the `OpenAI` Chat adapter.
-fn new_engine() -> Result<Engine, Box<dyn Error>> {
+fn new_engine() -> Result<Harness, Box<dyn Error>> {
     let capabilities = Capabilities::builder()
         .input(Modality::Text)
         .output(Modality::Text)
         .streaming(StreamingGranularity::Delta)
         .build();
 
-    let provider = ProviderId::new("openrouter")?;
+    let provider: ProviderId = "openrouter".try_into()?;
     let endpoint = required("COOKBOOK_ENDPOINT", "https://openrouter.ai/api/v1")?;
     let profile =
         VendorProfile::new(provider.clone(), WireFamily::new(WIRE_CHAT)?, &endpoint)?.with_auth(
             AuthScheme::bearer(required("OPENROUTER_API_KEY", "sk-or-...")?),
         );
-    let id = required("COOKBOOK_MODEL", "deepseek/deepseek-v4.1-flash-1017")?;
-    let model = OpenAiChat::new(
-        ModelRef::new(provider, ModelId::new(&id)?),
-        profile,
-        capabilities,
-    )?;
+    let id: ModelId = required("COOKBOOK_MODEL", "deepseek/deepseek-v4.1-flash-1017")?
+        .as_str()
+        .try_into()?;
+    let model = OpenAiChat::new(ModelRef::new(provider, id), profile, capabilities)?;
 
-    Ok(EngineBuilder::new()
+    Ok(HarnessBuilder::new()
         .store(Arc::new(InMemoryStore::new()))
         .blobs(Arc::new(InMemoryBlobStore::new()))
         .model(Arc::new(model))

@@ -18,13 +18,13 @@ head and any new approval, together. Compare-and-swap on `expected_version`.
 an encrypted reasoning block) that must be returned unchanged on the next request.
 Carried on a `Part` as `continuity`.
 
-**Conversation** — the portable, versioned document produced by `Engine::export`
-and consumed by `Engine::import`. Deterministic and append-only.
+**Conversation** — the portable, versioned document produced by `Harness::export`
+and consumed by `Harness::import`. Deterministic and append-only.
 
 **Digest** — a content hash. `RequestReconstructed::digest` is the hash of a
 whole assembled request.
 
-**Engine** — the object that owns the store, the blob store, the model, the tool
+**Harness** — the object that owns the store, the blob store, the model, the tool
 registry, the policies, the layers and the observers, and runs turns.
 
 **EngineEvent** — the lifecycle of a turn: phase changes, deltas, part

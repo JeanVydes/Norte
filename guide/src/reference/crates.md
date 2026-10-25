@@ -1,12 +1,13 @@
 # Crates
 
-The workspace is one core, three wires, a handful of helpers, and — outside the
-published set — an examples crate, a benchmark and a facade check.
+The workspace is one core, one harness, three wires, a handful of helpers, and —
+outside the published set — an examples crate, benchmarks and a facade check.
 
 | Crate | Depends on | What it owns |
 | --- | --- | --- |
-| `norte` | every crate below | The entrypoint. Re-exports `norte-core` at the root and every other crate as a module of its own name, each behind a feature, plus the merged `presets` and a `prelude`. It adds no behaviour of its own. |
-| `norte-core` | nothing internal | The neutral domain model, the engine, the streaming pipeline, policies, layers, capabilities, and every contract (port). No vendor name, no model table, no external persistence. |
+| `norte` | every crate below | The entrypoint. Re-exports `norte-core` at the root (`norte::Harness` lives in `norte::harness`) and every other crate as a module of its own name, each behind a feature, plus the merged `presets` and a `prelude`. It adds no behaviour of its own. |
+| `norte-core` | nothing internal | The neutral domain model, the streaming pipeline, layers, capabilities, and every contract a provider or adapter implements. No vendor name, no model table, no external persistence, and **no runtime**: the contracts are what an agent is built *on*, not one way of building it. |
+| `norte-harness` | core | One reference harness over those contracts: `Harness` walks a session forward a turn at a time, with the tool loop, approvals and halt-on-cancel. **The runtime lives here, not in the core** — the session store, its in-memory implementation, and the tool-call policy are all things that exist because there is a loop. Deliberately *a* harness, not *the* harness: a host with a different turn policy depends on `norte-core` alone and writes its own. |
 | `norte-http` | core | Shared HTTP transport, `VendorProfile`, auth schemes, secrets, quirks, SSE decoding, `HttpMedia`. |
 | `norte-openai` | core, http | The `Responses` and `Chat Completions` wires, `OpenAiMedia`, presets. |
 | `norte-anthropic` | core, http | The `Messages` wire, media, presets. |
@@ -14,7 +15,7 @@ published set — an examples crate, a benchmark and a facade check.
 | `norte-tools` | core (http for media) | `read`, `write`, `edit`, `command` — the default host tools, and their policies' building blocks. |
 | `norte-media` | core | Media preprocessing: `ImagePreprocessor`, `ImageOutput`. |
 | `norte-mcp` | core | Model Context Protocol: client, server, stdio and channel transports, and remote tools as `AnyFunction`s. |
-| `norte-testing` | core | Scripted model, request probe, recording observer, fixtures, conformance suites. |
+| `norte-testing` | core, harness (dev) | Scripted model, request probe, recording observer, fixtures, conformance suites — including `store_conformance`, which exercises the port the harness owns. |
 | `norte-macros` | — | The procedural macros: `#[tool]`, `declare_function!`, `declare_tool!`. |
 
 ### The dependency rule
@@ -23,17 +24,20 @@ Dependencies point at core, and never sideways:
 
 - `norte-core` pulls in no HTTP, database, vendor or concrete-tool code.
 - No adapter depends on another adapter.
+- No crate depends on `norte-harness` except `norte`, which exposes it. The
+  harness is a consumer of the core like any other; nothing in the core knows it
+  exists, and a host is free to never use it.
 
 `norte` is the exception: it is a facade, it holds no logic, and it points at
 everything with every edge optional but the core's.
-`scripts/check-dependencies.sh` enforces the two rules above in CI, reading the
+`scripts/check-dependencies.sh` enforces the three rules above in CI, reading the
 *normal* (not dev, not build) dependency tree; the facade is exempt.
 
 ## Not crates
 
 | Path | What it is |
 | --- | --- |
-| `examples/cookbook` | Small, self-contained recipes: one file per topic, each wiring its own engine. Nothing is shared between them on purpose, so a recipe can be read and copied on its own. |
+| `examples/cookbook` | Small, self-contained recipes: nothing is shared between them on purpose, so a recipe can be read and copied on its own. The crate root holds the ones that use `norte-core` alone; `harness/` and `media/` hold the ones that need those crates. |
 | `norte-facade-smoke` | A package whose only dependency is `norte`: every path and every macro in it starts at the facade. Its test mirrors the README quickstart. |
 | `benchmarks/agent-cost` | What a coding agent costs on an existing crate, with one report per run under `results/`. |
 | `guide/src/reference/requirements.md` | The requirements ledger: every id, the code that enforces it and the suite or CI job that checks it. |
@@ -42,7 +46,7 @@ everything with every edge optional but the core's.
 
 ## Publishing
 
-The eleven crates are published together, with `cargo publish --workspace`, which
+The twelve crates are published together, with `cargo publish --workspace`, which
 goes in dependency order and leaves `norte` for last. They share the version in
 `[workspace.package]`, and they are never published one by one from their
 directory: a crate cannot point at a version the index does not have yet.

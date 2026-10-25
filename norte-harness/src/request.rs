@@ -13,6 +13,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+use crate::policy::{PolicyOutcome, PolicyView, combine};
 use norte_core::domain::continuity::{ContinuityToken, ReplayDecision};
 use norte_core::domain::media::{MediaPart, MediaSource};
 use norte_core::domain::message::{FinishReason, Message, MessageOrigin, MessageStatus};
@@ -24,16 +25,15 @@ use norte_core::event::{EngineEvent, StreamDelta};
 use norte_core::id::{CallId, Digest, GenerationId, ModelRef, ToolName};
 use norte_core::layer::LayerContext;
 use norte_core::model::{ModelRequest, ModelStream, SESSION_EXTENSION, TurnOptions};
-use norte_core::policy::{PolicyOutcome, PolicyView, combine};
 use norte_core::preprocess::MediaPayload;
 use norte_core::stream::{Accumulated, StreamAccumulator, StreamEvent};
 
 use super::{
-    CallSite, ChannelSink, Digesting, Engine, PreparedCall, Reconstructed, cache_boundaries,
+    CallSite, ChannelSink, Digesting, Harness, PreparedCall, Reconstructed, cache_boundaries,
     digest_of, execute_call, materialize_message, request_messages, stream_delta,
 };
 
-impl Engine {
+impl Harness {
     pub(super) async fn generate(
         &self,
         session: &Session,
@@ -162,18 +162,16 @@ impl Engine {
         } else {
             MessageStatus::Complete
         };
-        Ok(
-            Message::new(Role::Assistant, parts).with_origin(
-                MessageOrigin::new(
-                    model,
-                    GenerationId::new(),
-                    finish_reason,
-                    accumulated.usage,
-                    status,
-                )
-                .with_digest(request_digest)
+        Ok(Message::new(Role::Assistant, parts).with_origin(
+            MessageOrigin::new(
+                model,
+                GenerationId::new(),
+                finish_reason,
+                accumulated.usage,
+                status,
             )
-        )
+            .with_digest(request_digest),
+        ))
     }
 
     async fn drain_stream(
@@ -324,11 +322,9 @@ impl Engine {
         let arguments = match combine(&decisions) {
             PolicyOutcome::Allow => call.arguments.clone(),
             PolicyOutcome::Transform { arguments, .. } => arguments,
-            PolicyOutcome::Deny { .. }
-            | PolicyOutcome::RateLimit { .. }
-            | PolicyOutcome::RequireApproval { .. } => return None,
-            // `#[non_exhaustive]`: an outcome this build cannot read is not an
-            // approval, so the speculative run does not happen.
+            // `#[non_exhaustive]`: anything that is not an allow, a transform
+            // or an explicit approval is not something to run speculatively —
+            // including an outcome a future core adds and this build cannot read.
             _ => return None,
         };
         let metadata = self.call_metadata(session, call, &tool_name, &arguments);
@@ -386,12 +382,11 @@ impl Engine {
         };
         match self.model.continuity().replay(target, history, &token) {
             ReplayDecision::Replay => Ok(part),
-            ReplayDecision::Drop => Ok(part.without_continuity()),
             ReplayDecision::Downgrade(replacement) => Ok(*replacement),
             ReplayDecision::Block(reason) => Err(Error::ContinuityBlocked(reason)),
-            // `#[non_exhaustive]`: a decision this build does not know is one
-            // whose continuity promises it cannot keep, so the token is dropped
-            // rather than sent.
+            // `Drop`, and any decision a future core adds that this build cannot
+            // read, mean the same thing here: leave the token out. Dropping is
+            // the safe reading of an unknown continuity decision.
             _ => Ok(part.without_continuity()),
         }
     }

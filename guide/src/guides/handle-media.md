@@ -27,17 +27,17 @@ side — so they can go stale, and that is what the media adapter is for.
 
 ## Blobs and the inline threshold
 
-Above the inline threshold — 64 KiB by default, `EngineConfig::inline_threshold`
-by way of `EngineBuilder::config` — the engine writes inline input bytes into
+Above the inline threshold — 64 KiB by default, `HarnessConfig::inline_threshold`
+by way of `HarnessBuilder::config` — the engine writes inline input bytes into
 the blob store and rewrites the part to a `Blob` before the message is
 committed, so a graph node stays small and cheap to load (FR-PART-2). Wire the
 store and it does this for you:
 
 ```rust,ignore
 use std::sync::Arc;
-use norte_core::{EngineBuilder, InMemoryBlobStore};
+use norte_harness::{HarnessBuilder, InMemoryBlobStore};
 
-let engine = EngineBuilder::new()
+let engine = HarnessBuilder::new()
     .store(store)
     .blobs(Arc::new(InMemoryBlobStore::new()))
     .model(model)
@@ -67,7 +67,7 @@ use std::sync::Arc;
 use norte_http::{HttpClient, HttpMedia};
 
 let media = Arc::new(HttpMedia::new(&HttpClient::new()?));
-let engine = EngineBuilder::new()
+let engine = HarnessBuilder::new()
     /* .. */
     .media_adapter(media)
     .build()?;
@@ -136,8 +136,8 @@ media (FR-TOOL-3).
 
 Two runnable recipes cover this end to end:
 
-- `examples/cookbook/examples/media.rs` — inline, blob, URL ingestion and a tool
+- `examples/cookbook/examples/media/media/main.rs` — inline, blob, URL ingestion and a tool
   result carrying an image, against OpenRouter.
-- `examples/cookbook/examples/provider_files.rs` — the vendor-file lifecycle
+- `examples/cookbook/examples/media/provider_files/main.rs` — the vendor-file lifecycle
   alone: upload, download, revive an expired reference, and what happens when a
   vendor has no file API.

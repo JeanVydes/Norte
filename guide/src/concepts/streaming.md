@@ -15,7 +15,7 @@ while let Some(event) = stream.next().await {
 let outcome = stream.finish().await?;
 ```
 
-`EngineStream` is a `Stream<Item = Result<EngineEvent>>` with `cancel()`. If it is
+`HarnessStream` is a `Stream<Item = Result<EngineEvent>>` with `cancel()`. If it is
 dropped without `finish()`, the turn is cancelled — `finish()` takes ownership on
 purpose, because it is the call that waits for the commit.
 

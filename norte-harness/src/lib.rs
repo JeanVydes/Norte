@@ -4,7 +4,7 @@
 Norte's contracts live in [`norte_core`]: the [`Model`](norte_core::Model) port, the
 [`Store`](norte_core::Store), the [`ToolRegistry`](norte_core::ToolRegistry), the
 policies, the layers and the observers. This crate is one way to drive them:
-[`Engine`] walks a session forward one turn at a time.
+[`Harness`] walks a session forward one turn at a time.
 
 It is deliberately *a* harness and not *the* harness. Nothing in the core refers
 to it, nothing forces a host to use it, and a host that wants a different turn
@@ -12,11 +12,10 @@ policy — a different loop, its own scheduling, a graph instead of a session �
 depends on `norte-core` alone and writes it. What the core owns is the contracts
 and the durable state; what this crate owns is one order of operations over them.
 
-```
-use norte_core::{InMemoryBlobStore, InMemoryStore, Message};
-use norte_harness::EngineBuilder;
+```no_run
+use norte_harness::{HarnessBuilder, InMemoryBlobStore, InMemoryStore};
 # fn model() -> std::sync::Arc<dyn norte_core::Model> { todo!() }
-let engine = EngineBuilder::new()
+let harness = HarnessBuilder::new()
     .store(std::sync::Arc::new(InMemoryStore::default()))
     .blobs(std::sync::Arc::new(InMemoryBlobStore::default()))
     .model(model())
@@ -29,11 +28,24 @@ let engine = EngineBuilder::new()
 [`ToolRegistry`]: norte_core::ToolRegistry
 "]
 
-mod approvals;
-mod request;
-mod session;
-mod tools;
-mod turn;
+/// The record of an approval decision, and the grant it issues.
+pub mod approval;
+/// What the host decides about a call a policy parked.
+pub mod approvals;
+/// In-memory reference implementations of the ports.
+pub mod memory;
+/// The tool-call decision: a rule over one call, evaluated before it runs.
+pub mod policy;
+/// Building and reconstructing one request.
+pub mod request;
+/// Reading and committing a session's durable state.
+pub mod session;
+/// The ports the runtime persists through.
+pub mod store;
+/// Running the calls a model asked for.
+pub mod tools;
+/// The turn loop.
+pub mod turn;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::pin::Pin;
@@ -47,7 +59,13 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use norte_core::approval::{ApprovalRecord, AuditAction};
+pub use crate::approval::{ApprovalRecord, AuditAction};
+pub use crate::policy::{
+    Decision, Policy, PolicyDecision, PolicyOutcome, PolicySet, PolicyView, ToolApprovalPolicy,
+    combine,
+};
+pub use crate::store::Store;
+use norte_core::BlobStore;
 use norte_core::capability::{Capabilities, ReasoningRequest};
 use norte_core::domain::commit::Commit;
 use norte_core::domain::message::{Message, Usage};
@@ -65,9 +83,7 @@ use norte_core::model::{
     TURN_OPTIONS_KEY, TurnOptions,
 };
 use norte_core::observer::{Observer, ObserverSet, StreamTransform};
-use norte_core::policy::PolicySet;
 use norte_core::preprocess::MediaPreprocessor;
-use norte_core::store::{BlobStore, Store};
 use norte_core::stream::StreamEvent;
 use norte_core::tool::registry::ToolRegistry;
 use norte_core::tool::{ToolCallInfo, ToolContext, ToolMetadataProvider, ToolOutput, ToolSpec};
@@ -79,7 +95,7 @@ use norte_core::tool::{ToolCallInfo, ToolContext, ToolMetadataProvider, ToolOutp
 /// [`params`](Self::params)) are defaults, not floors: a turn overlays its own
 /// values per field. The rest are bounds the engine applies to every turn.
 #[derive(Clone, Debug)]
-pub struct EngineConfig {
+pub struct HarnessConfig {
     /// The reasoning ask a turn inherits when it does not set one.
     ///
     /// [`ReasoningRequest::Automatic`] by default: the engine asks for whatever
@@ -137,7 +153,7 @@ pub struct EngineConfig {
     pub tool_metadata: Option<ToolMetadataProvider>,
 }
 
-impl Default for EngineConfig {
+impl Default for HarnessConfig {
     fn default() -> Self {
         Self {
             reasoning: ReasoningRequest::default(),
@@ -325,7 +341,7 @@ fn denial_reason(record: &ApprovalRecord) -> String {
 /// piece of durable state lives in the store. One transition produces exactly
 /// one atomic commit.
 #[derive(Clone)]
-pub struct Engine {
+pub struct Harness {
     store: Arc<dyn Store>,
     blobs: Arc<dyn BlobStore>,
     model: Arc<dyn Model>,
@@ -334,21 +350,21 @@ pub struct Engine {
     layers: Arc<LayerStack>,
     interceptors: Arc<InterceptorSet>,
     observers: Arc<ObserverSet>,
-    config: Arc<EngineConfig>,
+    config: Arc<HarnessConfig>,
     media: Option<Arc<dyn MediaPreprocessor>>,
     media_adapter: Option<Arc<dyn MediaAdapter>>,
 }
 
-impl Engine {
+impl Harness {
     /// Starts a fluent builder.
     #[must_use]
-    pub fn builder() -> EngineBuilder {
-        EngineBuilder::default()
+    pub fn builder() -> HarnessBuilder {
+        HarnessBuilder::default()
     }
 
     /// The engine-level configuration.
     #[must_use]
-    pub fn config(&self) -> &EngineConfig {
+    pub fn config(&self) -> &HarnessConfig {
         &self.config
     }
 
@@ -360,13 +376,13 @@ impl Engine {
 
     /// Starts a turn with a new user message, using the inherited options.
     #[must_use]
-    pub fn send(&self, session: SessionId, message: Message) -> EngineStream {
+    pub fn send(&self, session: SessionId, message: Message) -> HarnessStream {
         self.turn(session).input(message).start()
     }
 
     /// Continues a session from its durable phase, using the inherited options.
     #[must_use]
-    pub fn resume(&self, session: SessionId) -> EngineStream {
+    pub fn resume(&self, session: SessionId) -> HarnessStream {
         self.turn(session).start()
     }
 
@@ -381,14 +397,14 @@ impl Engine {
         session: SessionId,
         input: Option<Message>,
         options: TurnOptions,
-    ) -> EngineStream {
+    ) -> HarnessStream {
         let (sender, receiver) = mpsc::channel(self.config.limits.max_buffered_events);
         let cancellation = CancellationToken::new();
         let engine = self.clone();
         let token = cancellation.clone();
         let task =
             tokio::spawn(async move { engine.run(session, input, options, sender, token).await });
-        EngineStream {
+        HarnessStream {
             receiver,
             task: Some(task),
             cancellation,
@@ -705,13 +721,13 @@ impl Continuation for Digesting<'_> {
 /// The agent-facing handle on a running turn: a typed event stream plus the
 /// final outcome. Dropping it cancels the turn at the next event and commits
 /// whatever completed, leaving the session resumable.
-pub struct EngineStream {
+pub struct HarnessStream {
     receiver: mpsc::Receiver<EngineEvent>,
     task: Option<JoinHandle<Result<TurnOutcome>>>,
     cancellation: CancellationToken,
 }
 
-impl EngineStream {
+impl HarnessStream {
     /// Asks the turn to stop.
     pub fn cancel(&self) {
         self.cancellation.cancel();
@@ -733,7 +749,7 @@ impl EngineStream {
     }
 }
 
-impl Stream for EngineStream {
+impl Stream for HarnessStream {
     type Item = Result<EngineEvent>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Option<Self::Item>> {
@@ -745,7 +761,7 @@ impl Stream for EngineStream {
     }
 }
 
-impl Drop for EngineStream {
+impl Drop for HarnessStream {
     fn drop(&mut self) {
         self.cancellation.cancel();
     }
@@ -754,12 +770,12 @@ impl Drop for EngineStream {
 /// Fluent builder for an engine.
 ///
 /// Three ports are required — a [`Store`], a [`BlobStore`] and a [`Model`] — and
-/// [`build`](EngineBuilder::build) fails with [`Error::InvalidInput`] naming the
+/// [`build`](HarnessBuilder::build) fails with [`Error::InvalidInput`] naming the
 /// one that is missing. Everything else has a default: an empty tool registry,
-/// no policies, no layers, no observers and [`EngineConfig::default`].
+/// no policies, no layers, no observers and [`HarnessConfig::default`].
 ///
 /// The ports are built once, at the edge of the program, from configuration; the
-/// rest of the application sees [`Engine`] and never a vendor. A knob left unset
+/// rest of the application sees [`Harness`] and never a vendor. A knob left unset
 /// keeps its default behaviour, so a builder lists only what the host decided.
 ///
 /// # Example
@@ -767,10 +783,8 @@ impl Drop for EngineStream {
 /// ```ignore
 /// use std::sync::Arc;
 ///
-/// use norte_core::{
-///     Capabilities, EngineBuilder, InMemoryBlobStore, InMemoryStore, Message, Modality,
-///     ToolRegistry,
-/// };
+/// use norte_core::{Capabilities, Message, Modality, ToolRegistry};
+/// use norte_harness::{HarnessBuilder, InMemoryBlobStore, InMemoryStore};
 /// use norte_openai::presets::openai;
 ///
 /// let capabilities = Capabilities::builder()
@@ -783,7 +797,7 @@ impl Drop for EngineStream {
 /// let key = std::env::var("OPENAI_API_KEY").expect("key");
 /// let model = Arc::new(openai("gpt-5", key, capabilities).expect("model"));
 ///
-/// let engine = EngineBuilder::new()
+/// let engine = HarnessBuilder::new()
 ///     .store(Arc::new(InMemoryStore::new()))
 ///     .blobs(Arc::new(InMemoryBlobStore::new()))
 ///     .model(model)
@@ -801,7 +815,7 @@ impl Drop for EngineStream {
 ///     .expect("turn");
 /// ```
 #[derive(Default)]
-pub struct EngineBuilder {
+pub struct HarnessBuilder {
     store: Option<Arc<dyn Store>>,
     blobs: Option<Arc<dyn BlobStore>>,
     model: Option<Arc<dyn Model>>,
@@ -811,7 +825,7 @@ pub struct EngineBuilder {
     interceptors: Vec<Arc<dyn TurnInterceptor>>,
     observers: Vec<Arc<dyn Observer>>,
     transforms: Vec<Arc<dyn StreamTransform>>,
-    config: EngineConfig,
+    config: HarnessConfig,
     media: Option<Arc<dyn MediaPreprocessor>>,
     media_adapter: Option<Arc<dyn MediaAdapter>>,
 }
@@ -819,7 +833,7 @@ pub struct EngineBuilder {
 /// Fluent builder for a single turn (FR-ENG-7, FR-ENG-8).
 ///
 /// It borrows the engine; [`start`](TurnBuilder::start) hands back an
-/// [`EngineStream`] and the borrow ends there. Every knob is optional and
+/// [`HarnessStream`] and the borrow ends there. Every knob is optional and
 /// overlays the inherited defaults per field: what a turn sets replaces that one
 /// field of the effective [`GenerationParams`] and nothing else, so a turn that
 /// only changes the temperature keeps the engine's other parameters.
@@ -841,14 +855,14 @@ pub struct EngineBuilder {
 ///     .expect("turn");
 /// ```
 pub struct TurnBuilder<'a> {
-    engine: &'a Engine,
+    engine: &'a Harness,
     session: SessionId,
     input: Option<Message>,
     options: TurnOptions,
 }
 
 impl<'a> TurnBuilder<'a> {
-    fn new(engine: &'a Engine, session: SessionId) -> Self {
+    fn new(engine: &'a Harness, session: SessionId) -> Self {
         Self {
             engine,
             session,
@@ -970,13 +984,13 @@ impl<'a> TurnBuilder<'a> {
 
     /// Spawns the turn and returns its event stream.
     #[must_use]
-    pub fn start(self) -> EngineStream {
+    pub fn start(self) -> HarnessStream {
         self.engine
             .spawn_with(self.session, self.input, self.options)
     }
 }
 
-impl EngineBuilder {
+impl HarnessBuilder {
     /// An empty builder: no store, no blob store, no model, and every optional
     /// piece at its default.
     #[must_use]
@@ -986,7 +1000,7 @@ impl EngineBuilder {
 
     /// Sets the session store: sessions, nodes, messages and approval records.
     ///
-    /// Required. [`InMemoryStore`](norte_core::InMemoryStore) is the reference
+    /// Required. [`InMemoryStore`](crate::InMemoryStore) is the reference
     /// implementation; a host whose sessions outlive the process implements
     /// [`Store`] over its own database.
     #[must_use]
@@ -998,7 +1012,7 @@ impl EngineBuilder {
     /// Sets the blob store that holds media bytes and large tool output by
     /// content hash.
     ///
-    /// Required. [`InMemoryBlobStore`](norte_core::InMemoryBlobStore) is the
+    /// Required. [`InMemoryBlobStore`](norte_harness::InMemoryBlobStore) is the
     /// reference implementation; the bytes live where the host puts them.
     #[must_use]
     pub fn blobs(mut self, blobs: Arc<dyn BlobStore>) -> Self {
@@ -1084,7 +1098,7 @@ impl EngineBuilder {
     /// Sets the engine-level configuration. Fields left at their default keep
     /// their default behaviour.
     #[must_use]
-    pub fn config(mut self, config: EngineConfig) -> Self {
+    pub fn config(mut self, config: HarnessConfig) -> Self {
         self.config = config;
         self
     }
@@ -1124,12 +1138,12 @@ impl EngineBuilder {
     /// Everything optional is folded in here: the registry, the policy set and
     /// the layer stack are shared behind an `Arc`, and the observers and
     /// transforms become one [`ObserverSet`] bounded by
-    /// [`EngineConfig::limits`](EngineConfig::limits).
+    /// [`HarnessConfig::limits`](HarnessConfig::limits).
     ///
     /// # Errors
     ///
     /// Returns [`Error::InvalidInput`] naming the port that is missing.
-    pub fn build(self) -> Result<Engine> {
+    pub fn build(self) -> Result<Harness> {
         let store = self
             .store
             .ok_or_else(|| Error::InvalidInput("engine requires a store".to_owned()))?;
@@ -1140,7 +1154,7 @@ impl EngineBuilder {
             .model
             .ok_or_else(|| Error::InvalidInput("engine requires a model".to_owned()))?;
         let buffer = self.config.limits.max_buffered_events;
-        Ok(Engine {
+        Ok(Harness {
             store,
             blobs,
             model,
@@ -1170,4 +1184,5 @@ pub fn usage_of(message: &Message) -> Usage {
         .unwrap_or_default()
 }
 
-pub use norte_core::memory::{InMemoryBlobStore, InMemoryStore};
+pub use crate::memory::InMemoryStore;
+pub use norte_core::blob::InMemoryBlobStore;

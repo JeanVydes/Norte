@@ -6,8 +6,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use norte_core::{CallId, Commit, EngineEvent, Error, FinishReason, FnExecutor, Message, MessageStatus, Node, Phase, Result, Role, SessionId, Store, StreamEvent, ToolContext, ToolRegistry};
-use norte_harness::{EngineBuilder, EngineConfig};
+use norte_core::{
+    CallId, Commit, EngineEvent, Error, FinishReason, FnExecutor, Message, MessageStatus, Node,
+    Phase, Result, Role, SessionId, StreamEvent, ToolContext, ToolRegistry,
+};
+use norte_harness::Store;
+use norte_harness::{HarnessBuilder, HarnessConfig};
 use norte_testing::{InMemoryBlobStore, InMemoryStore, ScriptedModel, model};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -54,7 +58,7 @@ async fn cancellation_interrupts_and_leaves_the_session_resumable() {
             .turn_delayed(events, Duration::from_millis(30))
             .turn_text("resumed"),
     );
-    let engine = EngineBuilder::new()
+    let engine = HarnessBuilder::new()
         .store(connection())
         .blobs(Arc::new(InMemoryBlobStore::new()))
         .model(scripted)
@@ -148,7 +152,7 @@ async fn cancelling_a_turn_reaches_the_running_tool() {
         StreamEvent::ToolCallDone { index: 0 },
         StreamEvent::Finish(FinishReason::ToolCalls),
     ]));
-    let engine = EngineBuilder::new()
+    let engine = HarnessBuilder::new()
         .store(Arc::clone(&store) as Arc<dyn Store>)
         .blobs(Arc::new(InMemoryBlobStore::new()))
         .model(scripted)
@@ -214,14 +218,14 @@ async fn cancelling_a_turn_reaches_an_early_tool() {
         StreamEvent::ToolCallDone { index: 0 },
         StreamEvent::Finish(FinishReason::ToolCalls),
     ]));
-    let engine = EngineBuilder::new()
+    let engine = HarnessBuilder::new()
         .store(Arc::clone(&store) as Arc<dyn Store>)
         .blobs(Arc::new(InMemoryBlobStore::new()))
         .model(scripted)
         .tools(tools)
-        .config(EngineConfig {
+        .config(HarnessConfig {
             early_tool_execution: true,
-            ..EngineConfig::default()
+            ..HarnessConfig::default()
         })
         .build()
         .expect("engine");

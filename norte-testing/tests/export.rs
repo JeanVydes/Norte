@@ -7,8 +7,13 @@
 
 use std::sync::Arc;
 
-use norte_core::{CallId, ContinuityScope, ContinuityToken, Conversation, Error, FnExecutor, GrantScope, Message, Model, ModelRef, ModelRequest, Part, Phase, PolicySet, ReasoningPart, ReasoningVisibility, Result, Role, TextPart, ToolApprovalPolicy, ToolCallPart, ToolName, ToolRegistry, ToolResultPart, WireFamily};
-use norte_harness::{Engine, EngineBuilder};
+use norte_core::{
+    CallId, ContinuityScope, ContinuityToken, Conversation, Error, FnExecutor, GrantScope, Message,
+    Model, ModelRef, ModelRequest, Part, Phase, ReasoningPart, ReasoningVisibility, Result, Role,
+    TextPart, ToolCallPart, ToolName, ToolRegistry, ToolResultPart, WireFamily,
+};
+use norte_harness::{Harness, HarnessBuilder};
+use norte_harness::{PolicySet, ToolApprovalPolicy};
 use norte_openai::OpenAiChat;
 use norte_testing::{
     InMemoryBlobStore, InMemoryStore, ProbeModel, ScriptedModel, StrictContinuity, model,
@@ -49,8 +54,8 @@ fn registry() -> ToolRegistry {
     tools
 }
 
-fn engine(model: Arc<dyn Model>, store: Arc<InMemoryStore>) -> Engine {
-    EngineBuilder::new()
+fn engine(model: Arc<dyn Model>, store: Arc<InMemoryStore>) -> Harness {
+    HarnessBuilder::new()
         .store(store)
         .blobs(Arc::new(InMemoryBlobStore::new()))
         .model(model)
@@ -222,7 +227,7 @@ async fn a_parked_approval_survives_export_import() {
             .turn_tool_call(call_id, "weather", &json!({ "city": "Paris" }))
             .turn_text("done"),
     );
-    let engine_a = EngineBuilder::new()
+    let engine_a = HarnessBuilder::new()
         .store(Arc::new(InMemoryStore::new()))
         .blobs(Arc::new(InMemoryBlobStore::new()))
         .model(scripted)
@@ -242,7 +247,7 @@ async fn a_parked_approval_survives_export_import() {
     let conversation = engine_a.export(session.id).await.expect("export");
     assert_eq!(conversation.phase, Phase::AwaitingApproval);
 
-    let engine_b = EngineBuilder::new()
+    let engine_b = HarnessBuilder::new()
         .store(Arc::new(InMemoryStore::new()))
         .blobs(Arc::new(InMemoryBlobStore::new()))
         .model(Arc::new(

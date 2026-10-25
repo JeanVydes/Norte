@@ -3,8 +3,12 @@
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use norte_core::{CallId, EngineEvent, FnExecutor, Interception, InterceptionContext, Message, Result, Role, Store, ToolRegistry, TurnInterceptor};
-use norte_harness::{Engine, EngineBuilder};
+use norte_core::{
+    CallId, EngineEvent, FnExecutor, Interception, InterceptionContext, Message, Result, Role,
+    ToolRegistry, TurnInterceptor,
+};
+use norte_harness::Store;
+use norte_harness::{Harness, HarnessBuilder};
 use norte_testing::{InMemoryBlobStore, InMemoryStore, ScriptedModel, model};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -94,11 +98,11 @@ impl TurnInterceptor for Reading {
 fn engine_with(
     scripted: Arc<ScriptedModel>,
     interceptor: Arc<dyn TurnInterceptor>,
-) -> (Engine, Arc<InMemoryStore>) {
+) -> (Harness, Arc<InMemoryStore>) {
     let mut tools = ToolRegistry::new();
     tools.register_declarator(&Echo).expect("register echo");
     let store = Arc::new(InMemoryStore::new());
-    let engine = EngineBuilder::new()
+    let engine = HarnessBuilder::new()
         .store(store.clone())
         .blobs(Arc::new(InMemoryBlobStore::new()))
         .model(scripted)

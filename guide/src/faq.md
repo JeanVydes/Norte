@@ -77,7 +77,7 @@ may serve the same model from different upstreams, and not all of them cache.
 
 ## Does it stream to a browser?
 
-The engine is transport-agnostic: `EngineStream` is a Rust `Stream`, and it is up
+The engine is transport-agnostic: `HarnessStream` is a Rust `Stream`, and it is up
 to you to forward events over SSE or a WebSocket. There is no HTTP server in the
 library on purpose.
 

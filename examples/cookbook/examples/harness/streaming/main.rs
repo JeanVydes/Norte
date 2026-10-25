@@ -13,8 +13,11 @@ use std::error::Error;
 use std::sync::Arc;
 
 use futures_util::StreamExt;
-use norte_core::{Capabilities, EngineEvent, InMemoryBlobStore, InMemoryStore, Message, Modality, ModelId, ModelRef, ProviderId, StreamDelta, StreamingGranularity, WireFamily};
-use norte_harness::{Engine, EngineBuilder};
+use norte_core::{
+    Capabilities, EngineEvent, Message, Modality, ModelRef, StreamDelta, StreamingGranularity,
+    WireFamily,
+};
+use norte_harness::{Harness, HarnessBuilder, InMemoryBlobStore, InMemoryStore};
 use norte_http::{AuthScheme, VendorProfile};
 use norte_openai::{OpenAiChat, WIRE_CHAT};
 
@@ -22,20 +25,20 @@ const PROMPT: &str = "Count from one to five, one number per line.";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let engine = engine()?;
+    let harness = engine()?;
 
     println!("--- live: the host reads every delta as it lands");
-    live(&engine).await?;
+    live(&harness).await?;
 
     println!("\n--- collected: the host ignores the stream entirely");
-    collected(&engine).await?;
+    collected(&harness).await?;
     Ok(())
 }
 
 /// Reads the stream event by event and prints the text as it arrives.
-async fn live(engine: &Engine) -> Result<(), Box<dyn Error>> {
-    let session = engine.create().await?;
-    let mut stream = engine.send(session.id, Message::user(PROMPT));
+async fn live(harness: &Harness) -> Result<(), Box<dyn Error>> {
+    let session = harness.create().await?;
+    let mut stream = harness.send(session.id, Message::user(PROMPT));
     while let Some(event) = stream.next().await {
         if let EngineEvent::StreamDelta {
             delta: StreamDelta::Text { text, .. },
@@ -55,9 +58,9 @@ async fn live(engine: &Engine) -> Result<(), Box<dyn Error>> {
 
 /// The idiomatic "I do not care about partial output": `finish()` drains the
 /// same stream and returns the committed outcome. Nothing is skipped.
-async fn collected(engine: &Engine) -> Result<(), Box<dyn Error>> {
-    let session = engine.create().await?;
-    let outcome = engine
+async fn collected(harness: &Harness) -> Result<(), Box<dyn Error>> {
+    let session = harness.create().await?;
+    let outcome = harness
         .send(session.id, Message::user(PROMPT))
         .finish()
         .await?;
@@ -70,14 +73,14 @@ fn text(message: Option<&Message>) -> String {
 }
 
 /// The wiring, once: a real model, its declared capabilities, and the store.
-fn engine() -> Result<Engine, Box<dyn Error>> {
+fn engine() -> Result<Harness, Box<dyn Error>> {
     let capabilities = Capabilities::builder()
         .input(Modality::Text)
         .output(Modality::Text)
         .streaming(StreamingGranularity::Delta)
         .build();
     let model = openrouter(capabilities)?;
-    Ok(EngineBuilder::new()
+    Ok(HarnessBuilder::new()
         .store(Arc::new(InMemoryStore::new()))
         .blobs(Arc::new(InMemoryBlobStore::new()))
         .model(Arc::new(model))
@@ -93,14 +96,19 @@ fn required(name: &str, example: &str) -> Result<String, Box<dyn Error>> {
 
 /// Wires `OpenRouter`. An `OpenAI`-compatible vendor is a profile, not a preset.
 fn openrouter(capabilities: Capabilities) -> Result<OpenAiChat, Box<dyn Error>> {
-    let provider = ProviderId::new("openrouter")?;
-    let endpoint = required("COOKBOOK_ENDPOINT", "https://openrouter.ai/api/v1")?;
-    let profile = VendorProfile::new(provider.clone(), WireFamily::new(WIRE_CHAT)?, &endpoint)?
-        .with_auth(AuthScheme::bearer(std::env::var("OPENROUTER_API_KEY")?));
-    let id = required("COOKBOOK_MODEL", "deepseek/deepseek-v4.1-flash-1017")?;
     Ok(OpenAiChat::new(
-        ModelRef::new(provider, ModelId::new(&id)?),
-        profile,
+        ModelRef::new(
+            "openrouter".try_into()?,
+            required("COOKBOOK_MODEL", "deepseek/deepseek-v4.1-flash-1017")?
+                .as_str()
+                .try_into()?,
+        ),
+        VendorProfile::new(
+            "openrouter".try_into()?,
+            WireFamily::new(WIRE_CHAT)?,
+            &required("COOKBOOK_ENDPOINT", "https://openrouter.ai/api/v1")?,
+        )?
+        .with_auth(AuthScheme::bearer(std::env::var("OPENROUTER_API_KEY")?)),
         capabilities,
     )?)
 }

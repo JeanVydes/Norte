@@ -11,11 +11,16 @@ workflow for contributing.
   is the crate an application should depend on.
 - `norte-facade-smoke/` — a package whose only dependency is `norte`, which uses
   the facade the way an application would.
-- `norte-core/` — the neutral domain model, engine, streaming pipeline,
-  policies, layers, capabilities and every contract (port). It carries
-  abstractions only — no vendor names, model tables or external persistence —
-  plus the in-memory `Store` and `BlobStore` implementations for running with
-  nothing else.
+- `norte-core/` — the neutral domain model, streaming pipeline, layers,
+  capabilities and every contract (port). It carries abstractions only — no
+  vendor names, model tables or external persistence — and **no agent
+  runtime**: nothing in it knows there is a turn loop. `Message`, `Part`,
+  `Session` and `Commit` are here because a provider serialises them; the
+  `BlobStore` port is here because `MediaAdapter` names it.
+- `norte-harness/` — one reference agent loop over those contracts: the `Harness`
+  walks a session forward a turn at a time, with the tool loop, approvals and
+  the session store. It is deliberately *a* harness and not *the* harness; a
+  host that wants a different turn policy depends on `norte-core` alone.
 - `norte-http/` — shared HTTP transport, `VendorProfile`, auth schemes and
   `HttpMedia`.
 - `norte-openai/`, `norte-anthropic/`, `norte-gemini/` — the wire
@@ -27,8 +32,9 @@ workflow for contributing.
 - `norte-testing/` — the scripted model, fixture replayer, request probe
   and conformance suites.
 - `norte-macros/` — the procedural macros used across the workspace.
-- `examples/cookbook/` — small, self-contained recipes: one file per topic, each
-  wiring its own engine, nothing shared between them on purpose.
+- `examples/cookbook/` — small, self-contained recipes, nothing shared between
+  them on purpose. The crate root holds the ones that use `norte-core` alone;
+  `harness/` and `media/` hold the ones that need those crates.
 - `benchmarks/` — measurements against a real model, one folder per benchmark,
   each with its own README and a `results/` folder the run writes into.
 - `guide/` — the multi-page user guide, written in Markdown and built with

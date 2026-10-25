@@ -13,7 +13,8 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use norte_core::approval::{ApprovalRecord, ApprovalStatus};
+use crate::approval::{ApprovalRecord, ApprovalStatus};
+use crate::policy::{PolicyOutcome, PolicyView, combine};
 use norte_core::domain::commit::Commit;
 use norte_core::domain::message::Message;
 use norte_core::domain::node::Node;
@@ -23,15 +24,14 @@ use norte_core::error::{Error, Result};
 use norte_core::event::EngineEvent;
 use norte_core::id::ToolName;
 use norte_core::model::PARTIAL_TOOLS_KEY;
-use norte_core::policy::{PolicyOutcome, PolicyView, combine};
 use norte_core::tool::ToolCallInfo;
 
 use super::{
-    Authorization, CallSite, Engine, PreparedCall, ToolTurn, denial_reason, execute_call,
+    Authorization, CallSite, Harness, PreparedCall, ToolTurn, denial_reason, execute_call,
     partial_results, request_messages, results_in_call_order,
 };
 
-impl Engine {
+impl Harness {
     /// Runs the calls of the head message and commits their results.
     pub(super) async fn run_tools(
         &self,
@@ -135,6 +135,7 @@ impl Engine {
     }
 
     /// Runs one call, unless a policy or an approval says otherwise.
+    #[allow(clippy::too_many_lines)] // one linear gate: policy, approval, run, record.
     async fn run_one_tool(
         &self,
         turn: &ToolTurn<'_>,
@@ -170,6 +171,10 @@ impl Engine {
             };
             self.policies.evaluate(&view)
         };
+        // `PolicyOutcome` is `#[non_exhaustive]`: the fallback below is
+        // unreachable while this build knows every variant, and stays so that a
+        // variant added later is refused rather than silently run.
+        #[allow(unreachable_patterns)]
         let arguments = match combine(&decisions) {
             PolicyOutcome::Deny { reason, .. } => {
                 results.push(ToolResultPart::error(call.call_id, reason.clone()));
@@ -229,7 +234,6 @@ impl Engine {
                 return Ok(None);
             }
         };
-
         let metadata = self.call_metadata(session, call, &tool_name, &arguments);
         let result = execute_call(
             Arc::clone(&self.tools),

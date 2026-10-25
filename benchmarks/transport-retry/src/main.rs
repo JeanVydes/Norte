@@ -9,7 +9,7 @@
 //! the host knows whether the request is idempotent and what it is willing to
 //! pay.
 //!
-//! So the benchmark wraps a real [`Engine`] in a host policy and watches three
+//! So the benchmark wraps a real [`Harness`] in a host policy and watches three
 //! things for each scenario:
 //!
 //! 1. **What was surfaced** — the kind, status, `Retry-After` and the
@@ -39,8 +39,13 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use norte_bench_support::report::{Align, Report};
 use norte_bench_support::{Mode, Run};
-use norte_core::{Capabilities, ContinuityAdapter, Error as NorteError, FinishReason, InMemoryBlobStore, InMemoryStore, Message, Model, ModelId, ModelRef, ModelRequest, ModelStream, ProviderError, ProviderErrorKind, ProviderId, SessionId, StreamEvent};
-use norte_harness::{Engine, EngineBuilder};
+use norte_core::{
+    Capabilities, ContinuityAdapter, Error as NorteError, FinishReason, Message, Model, ModelId,
+    ModelRef, ModelRequest, ModelStream, ProviderError, ProviderErrorKind, ProviderId, SessionId,
+    StreamEvent,
+};
+use norte_harness::{Harness, HarnessBuilder};
+use norte_harness::{InMemoryBlobStore, InMemoryStore};
 use norte_http::is_transient;
 use norte_testing::{OpaqueContinuity, text_capabilities};
 use serde::Serialize;
@@ -481,7 +486,7 @@ async fn one_round(scenario: &Scenario) -> Round {
 /// The host policy, exactly as a caller would write it: classify, wait as the
 /// provider asked (or back off), resume the same session, and stop at the cap.
 async fn run_with_policy(
-    engine: &Engine,
+    engine: &Harness,
     session: SessionId,
     message: Message,
     policy: &Policy,
@@ -547,8 +552,8 @@ async fn run_with_policy(
     }
 }
 
-fn engine(model: Arc<FlakyModel>) -> Engine {
-    EngineBuilder::new()
+fn engine(model: Arc<FlakyModel>) -> Harness {
+    HarnessBuilder::new()
         .store(Arc::new(InMemoryStore::new()))
         .blobs(Arc::new(InMemoryBlobStore::new()))
         .model(model as Arc<dyn Model>)

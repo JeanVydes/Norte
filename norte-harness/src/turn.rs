@@ -21,9 +21,11 @@ use norte_core::id::{NodeId, SessionId};
 use norte_core::interceptor::{Interception, InterceptionContext};
 use norte_core::model::TurnOptions;
 
-use super::{ChannelSink, Consultation, Engine, TurnOutcome, session_turn_options, turn_metadata};
+use super::{ChannelSink, Consultation, Harness, TurnOutcome, session_turn_options, turn_metadata};
 
-impl Engine {
+impl Harness {
+    /// Walks the session forward until the turn ends.
+    #[allow(clippy::too_many_lines)] // the loop and its exit conditions read as one.
     pub(super) async fn run(
         self,
         session_id: SessionId,
@@ -323,7 +325,9 @@ impl Engine {
                 // explicit `Stop`, and name the interceptor so the client can
                 // tell where it came from.
                 other => {
-                    let reason = format!("interceptor returned a decision this harness does not understand: {other:?}");
+                    let reason = format!(
+                        "interceptor returned a decision this harness does not understand: {other:?}"
+                    );
                     self.emit(
                         sender,
                         EngineEvent::TurnStopped {

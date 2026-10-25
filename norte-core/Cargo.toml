@@ -1,6 +1,6 @@
 [package]
 name = "norte-core"
-description = "Durable sessions, history reconstruction and a provider-agnostic streaming engine for AI agents"
+description = "Durable sessions, history reconstruction, the domain model and every contract an agent harness is built on"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

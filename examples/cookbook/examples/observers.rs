@@ -14,11 +14,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use norte_core::{
-    Capabilities, EngineBuilder, EngineEvent, InMemoryBlobStore, InMemoryStore, Message, Modality,
-    ModelId, ModelRef, Observer, ProviderId, StreamDelta, StreamTransform, StreamingGranularity,
-    WireFamily,
-};
+use norte_core::{Capabilities, EngineEvent, InMemoryBlobStore, InMemoryStore, Message, Modality, ModelId, ModelRef, Observer, ProviderId, StreamDelta, StreamTransform, StreamingGranularity, WireFamily};
+use norte_harness::{EngineBuilder};
 use norte_http::{AuthScheme, VendorProfile};
 use norte_openai::{OpenAiChat, WIRE_CHAT};
 

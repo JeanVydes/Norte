@@ -13,20 +13,20 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::domain::continuity::{ContinuityToken, ReplayDecision};
-use crate::domain::media::{MediaPart, MediaSource};
-use crate::domain::message::{FinishReason, Message, MessageOrigin, MessageStatus};
-use crate::domain::part::{Part, ToolCallPart, ToolResultPart};
-use crate::domain::role::Role;
-use crate::domain::session::Session;
-use crate::error::{Error, Result};
-use crate::event::{EngineEvent, StreamDelta};
-use crate::id::{CallId, Digest, GenerationId, ModelRef, ToolName};
-use crate::layer::LayerContext;
-use crate::model::{ModelRequest, ModelStream, SESSION_EXTENSION, TurnOptions};
-use crate::policy::{PolicyOutcome, PolicyView, combine};
-use crate::preprocess::MediaPayload;
-use crate::stream::{Accumulated, StreamAccumulator, StreamEvent};
+use norte_core::domain::continuity::{ContinuityToken, ReplayDecision};
+use norte_core::domain::media::{MediaPart, MediaSource};
+use norte_core::domain::message::{FinishReason, Message, MessageOrigin, MessageStatus};
+use norte_core::domain::part::{Part, ToolCallPart, ToolResultPart};
+use norte_core::domain::role::Role;
+use norte_core::domain::session::Session;
+use norte_core::error::{Error, Result};
+use norte_core::event::{EngineEvent, StreamDelta};
+use norte_core::id::{CallId, Digest, GenerationId, ModelRef, ToolName};
+use norte_core::layer::LayerContext;
+use norte_core::model::{ModelRequest, ModelStream, SESSION_EXTENSION, TurnOptions};
+use norte_core::policy::{PolicyOutcome, PolicyView, combine};
+use norte_core::preprocess::MediaPayload;
+use norte_core::stream::{Accumulated, StreamAccumulator, StreamEvent};
 
 use super::{
     CallSite, ChannelSink, Digesting, Engine, PreparedCall, Reconstructed, cache_boundaries,
@@ -163,14 +163,16 @@ impl Engine {
             MessageStatus::Complete
         };
         Ok(
-            Message::new(Role::Assistant, parts).with_origin(MessageOrigin {
-                model,
-                generation: GenerationId::new(),
-                finish_reason,
-                usage: accumulated.usage,
-                status,
-                request_digest: Some(request_digest),
-            }),
+            Message::new(Role::Assistant, parts).with_origin(
+                MessageOrigin::new(
+                    model,
+                    GenerationId::new(),
+                    finish_reason,
+                    accumulated.usage,
+                    status,
+                )
+                .with_digest(request_digest)
+            )
         )
     }
 
@@ -325,6 +327,9 @@ impl Engine {
             PolicyOutcome::Deny { .. }
             | PolicyOutcome::RateLimit { .. }
             | PolicyOutcome::RequireApproval { .. } => return None,
+            // `#[non_exhaustive]`: an outcome this build cannot read is not an
+            // approval, so the speculative run does not happen.
+            _ => return None,
         };
         let metadata = self.call_metadata(session, call, &tool_name, &arguments);
         Some(tokio::spawn(execute_call(
@@ -384,6 +389,10 @@ impl Engine {
             ReplayDecision::Drop => Ok(part.without_continuity()),
             ReplayDecision::Downgrade(replacement) => Ok(*replacement),
             ReplayDecision::Block(reason) => Err(Error::ContinuityBlocked(reason)),
+            // `#[non_exhaustive]`: a decision this build does not know is one
+            // whose continuity promises it cannot keep, so the token is dropped
+            // rather than sent.
+            _ => Ok(part.without_continuity()),
         }
     }
 

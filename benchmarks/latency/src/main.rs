@@ -28,10 +28,8 @@ use std::time::{Duration, Instant};
 use futures_util::StreamExt as _;
 use norte_bench_support::report::{Align, Report};
 use norte_bench_support::{Mode, Run, captured as new_capture};
-use norte_core::{
-    Capabilities, Engine, EngineBuilder, EngineEvent, InMemoryBlobStore, InMemoryStore, Message,
-    Modality, Role, StreamDelta, StreamingGranularity, Usage,
-};
+use norte_core::{Capabilities, EngineEvent, InMemoryBlobStore, InMemoryStore, Message, Modality, Role, StreamDelta, StreamingGranularity, Usage};
+use norte_harness::{Engine, EngineBuilder};
 use serde::Serialize;
 
 const DEFAULT_PROMPT: &str = "Write a four-line haiku about latency.";

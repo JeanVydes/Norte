@@ -21,11 +21,8 @@ use std::error::Error;
 use std::sync::Arc;
 use std::time::Duration;
 
-use norte_core::{
-    Capabilities, Engine, EngineBuilder, Error as NorteError, InMemoryBlobStore, InMemoryStore,
-    Message, Modality, ModelId, ModelRef, ProviderError, ProviderErrorKind, ProviderId, SessionId,
-    StreamingGranularity, ToolRegistry, TurnOutcome, WireFamily,
-};
+use norte_core::{Capabilities, Error as NorteError, InMemoryBlobStore, InMemoryStore, Message, Modality, ModelId, ModelRef, ProviderError, ProviderErrorKind, ProviderId, SessionId, StreamingGranularity, ToolRegistry, WireFamily};
+use norte_harness::{Engine, EngineBuilder, TurnOutcome};
 use norte_http::{AuthScheme, VendorProfile, is_transient};
 use norte_openai::{OpenAiChat, WIRE_CHAT};
 

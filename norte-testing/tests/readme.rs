@@ -3,10 +3,8 @@
 
 use std::sync::Arc;
 
-use norte_core::{
-    Capabilities, Engine, EngineBuilder, InMemoryBlobStore, InMemoryStore, Message, Modality,
-    ToolRegistry,
-};
+use norte_core::{Capabilities, InMemoryBlobStore, InMemoryStore, Message, Modality, ToolRegistry};
+use norte_harness::{Engine, EngineBuilder};
 use norte_openai::presets::openai;
 
 fn readme_engine() -> Result<Engine, Box<dyn std::error::Error>> {

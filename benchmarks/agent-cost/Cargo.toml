@@ -9,6 +9,7 @@ description = "What a coding agent costs on a real project, measured in the prov
 
 [dependencies]
 norte-core = { workspace = true }
+norte-harness = { workspace = true }
 norte-bench-support = { workspace = true }
 norte-tools = { workspace = true }
 chrono = { workspace = true }

@@ -17,6 +17,7 @@ members = [
     "norte-facade-smoke",
     "norte-macros",
     "norte-core",
+    "norte-harness",
     "norte-http",
     "norte-anthropic",
     "norte-openai",
@@ -39,6 +40,7 @@ authors = ["Jean Vides <j@vyde.dev>"]
 [workspace.dependencies]
 norte-macros = { path = "norte-macros", version = "0.0.2" }
 norte-core = { path = "norte-core", version = "0.0.2" }
+norte-harness = { path = "norte-harness", version = "0.0.2" }
 norte-http = { path = "norte-http", version = "0.0.2" }
 norte-anthropic = { path = "norte-anthropic", version = "0.0.2" }
 norte-openai = { path = "norte-openai", version = "0.0.2" }

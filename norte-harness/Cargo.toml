@@ -1,0 +1,27 @@
+[package]
+name = "norte-harness"
+description = "One reference agent loop over Norte's contracts: turns, the tool loop, approvals and streaming"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "../README.md"
+keywords = ["llm", "ai-agents", "harness", "tool-calling", "streaming"]
+categories = ["asynchronous", "concurrency"]
+
+[dependencies]
+norte-core = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+serde_json = { workspace = true }
+futures-core = { workspace = true }
+futures-util = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

@@ -7,12 +7,8 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use norte_core::{
-    Capabilities, Continuation, Decision, Engine, EngineBuilder, FnExecutor, InMemoryBlobStore,
-    InMemoryStore, Layer, LayerContext, Message, Modality, ModelId, ModelRef, ModelRequest,
-    ModelStream, Policy, PolicySet, PolicyView, ProviderId, Result, ToolOutput, ToolRegistry,
-    WireFamily,
-};
+use norte_core::{Capabilities, Continuation, Decision, FnExecutor, InMemoryBlobStore, InMemoryStore, Layer, LayerContext, Message, Modality, ModelId, ModelRef, ModelRequest, ModelStream, Policy, PolicySet, PolicyView, ProviderId, Result, ToolOutput, ToolRegistry, WireFamily};
+use norte_harness::{Engine, EngineBuilder};
 use norte_http::{AuthScheme, VendorProfile};
 use norte_openai::{OpenAiChat, WIRE_CHAT, presets::openai};
 use schemars::JsonSchema;

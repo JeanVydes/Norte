@@ -8,6 +8,7 @@ publish = false
 description = "A package that depends on `norte` alone, attribute macro included."
 
 [dependencies]
+norte-harness = { workspace = true }
 # The one dependency under test. No `norte-core`, no provider crate, no helper.
 norte = { path = "../norte", features = ["tools"] }
 async-trait = { workspace = true }

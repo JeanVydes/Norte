@@ -13,18 +13,18 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::approval::{ApprovalRecord, ApprovalStatus};
-use crate::domain::commit::Commit;
-use crate::domain::message::Message;
-use crate::domain::node::Node;
-use crate::domain::part::{ToolCallPart, ToolResultPart};
-use crate::domain::session::{Phase, Session};
-use crate::error::{Error, Result};
-use crate::event::EngineEvent;
-use crate::id::ToolName;
-use crate::model::PARTIAL_TOOLS_KEY;
-use crate::policy::{PolicyOutcome, PolicyView, combine};
-use crate::tool::ToolCallInfo;
+use norte_core::approval::{ApprovalRecord, ApprovalStatus};
+use norte_core::domain::commit::Commit;
+use norte_core::domain::message::Message;
+use norte_core::domain::node::Node;
+use norte_core::domain::part::{ToolCallPart, ToolResultPart};
+use norte_core::domain::session::{Phase, Session};
+use norte_core::error::{Error, Result};
+use norte_core::event::EngineEvent;
+use norte_core::id::ToolName;
+use norte_core::model::PARTIAL_TOOLS_KEY;
+use norte_core::policy::{PolicyOutcome, PolicyView, combine};
+use norte_core::tool::ToolCallInfo;
 
 use super::{
     Authorization, CallSite, Engine, PreparedCall, ToolTurn, denial_reason, execute_call,
@@ -215,6 +215,19 @@ impl Engine {
                 }
             }
             PolicyOutcome::Allow => call.arguments.clone(),
+            // `PolicyOutcome` is `#[non_exhaustive]`: a variant added to the
+            // core after this build cannot be honoured here, and running the
+            // call anyway would silently ignore a policy the host configured.
+            // Refusing is the only reading that cannot be wrong.
+            other => {
+                results.push(ToolResultPart::error(
+                    call.call_id,
+                    format!("policy outcome this harness does not understand: {other:?}"),
+                ));
+                self.finish_call(session, sender, call, &tool_name, true, 0)
+                    .await;
+                return Ok(None);
+            }
         };
 
         let metadata = self.call_metadata(session, call, &tool_name, &arguments);

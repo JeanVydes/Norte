@@ -207,6 +207,39 @@ pub struct MessageOrigin {
     pub request_digest: Option<Digest>,
 }
 
+impl MessageOrigin {
+    /// The provenance of a message the given model produced, with no request
+    /// digest recorded.
+    ///
+    /// The type is `#[non_exhaustive]`, so this is how a harness outside the
+    /// core builds one: fields may be added later without breaking a caller
+    /// that spells out only what it knows.
+    #[must_use]
+    pub fn new(
+        model: ModelRef,
+        generation: GenerationId,
+        finish_reason: FinishReason,
+        usage: Usage,
+        status: MessageStatus,
+    ) -> Self {
+        Self {
+            model,
+            generation,
+            finish_reason,
+            usage,
+            status,
+            request_digest: None,
+        }
+    }
+
+    /// The same origin with the digest of the request that produced it.
+    #[must_use]
+    pub fn with_digest(mut self, request_digest: Digest) -> Self {
+        self.request_digest = Some(request_digest);
+        self
+    }
+}
+
 /// One turn of a conversation: a semantic role, an ordered list of parts and,
 /// for assistant messages, the model-side origin.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

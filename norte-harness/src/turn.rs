@@ -9,17 +9,17 @@
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::domain::commit::Commit;
-use crate::domain::message::Message;
-use crate::domain::node::Node;
-use crate::domain::part::ToolResultPart;
-use crate::domain::role::Role;
-use crate::domain::session::{Phase, Session};
-use crate::error::{Error, Result};
-use crate::event::EngineEvent;
-use crate::id::{NodeId, SessionId};
-use crate::interceptor::{Interception, InterceptionContext};
-use crate::model::TurnOptions;
+use norte_core::domain::commit::Commit;
+use norte_core::domain::message::Message;
+use norte_core::domain::node::Node;
+use norte_core::domain::part::ToolResultPart;
+use norte_core::domain::role::Role;
+use norte_core::domain::session::{Phase, Session};
+use norte_core::error::{Error, Result};
+use norte_core::event::EngineEvent;
+use norte_core::id::{NodeId, SessionId};
+use norte_core::interceptor::{Interception, InterceptionContext};
+use norte_core::model::TurnOptions;
 
 use super::{ChannelSink, Consultation, Engine, TurnOutcome, session_turn_options, turn_metadata};
 
@@ -136,6 +136,16 @@ impl Engine {
                             message: last,
                         });
                     }
+                }
+                // `Phase` is `#[non_exhaustive]`. A phase this build does not
+                // know is one whose work it cannot do, so the loop stops here
+                // rather than guessing what to run next.
+                other => {
+                    tracing::warn!(?other, "unknown session phase; ending the turn");
+                    return Ok(TurnOutcome {
+                        session,
+                        message: last,
+                    });
                 }
             }
         }
@@ -292,9 +302,28 @@ impl Engine {
             match interceptor.intercept(&context).await? {
                 Interception::Continue => {}
                 Interception::Inject(added) => messages.extend(added),
+                // `Interception` is `#[non_exhaustive]`: a decision this build
+                // does not know is not a licence to run the turn as if the host
+                // had said nothing, so it stops like an explicit `Stop`.
                 Interception::Stop { reason } => {
                     // The host ended the turn on purpose; say so, so the client
                     // does not read it as a failure.
+                    self.emit(
+                        sender,
+                        EngineEvent::TurnStopped {
+                            session: session.id,
+                            interceptor: interceptor.name().to_owned(),
+                            reason: reason.clone(),
+                        },
+                    )
+                    .await;
+                    stop = Some(reason);
+                }
+                // A decision added to the core after this build: stop, like an
+                // explicit `Stop`, and name the interceptor so the client can
+                // tell where it came from.
+                other => {
+                    let reason = format!("interceptor returned a decision this harness does not understand: {other:?}");
                     self.emit(
                         sender,
                         EngineEvent::TurnStopped {

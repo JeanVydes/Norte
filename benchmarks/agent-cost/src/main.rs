@@ -80,11 +80,8 @@ use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
 use norte_bench_support::report::{Align, Report};
 use norte_bench_support::{Mode, RecordingOpenAi, Route, Run, captured as new_capture};
-use norte_core::{
-    CallId, Capabilities, Decision, Engine, EngineBuilder, EngineConfig, EngineEvent,
-    InMemoryBlobStore, InMemoryStore, Message, Modality, Part, Policy, PolicySet, PolicyView,
-    SessionId, StreamDelta, StreamingGranularity, ToolKind, ToolRegistry, Usage,
-};
+use norte_core::{CallId, Capabilities, Decision, EngineEvent, InMemoryBlobStore, InMemoryStore, Message, Modality, Part, Policy, PolicySet, PolicyView, SessionId, StreamDelta, StreamingGranularity, ToolKind, ToolRegistry, Usage};
+use norte_harness::{Engine, EngineBuilder, EngineConfig};
 use norte_tools::{CommandTool, EditTool, ReadTool, WriteTool};
 use serde_json::{Value, json};
 

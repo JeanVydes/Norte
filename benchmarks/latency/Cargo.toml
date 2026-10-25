@@ -9,6 +9,7 @@ description = "Time to first token and turn time, streaming against finish(), ov
 
 [dependencies]
 norte-core = { workspace = true }
+norte-harness = { workspace = true }
 norte-bench-support = { workspace = true }
 futures-util = { workspace = true }
 serde = { workspace = true }

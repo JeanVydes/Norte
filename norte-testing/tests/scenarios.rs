@@ -6,11 +6,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use norte_core::{
-    CallId, Commit, EngineBuilder, EngineConfig, EngineEvent, Error, FinishReason, FnExecutor,
-    Message, MessageStatus, Node, Phase, Result, Role, SessionId, Store, StreamEvent, ToolContext,
-    ToolRegistry,
-};
+use norte_core::{CallId, Commit, EngineEvent, Error, FinishReason, FnExecutor, Message, MessageStatus, Node, Phase, Result, Role, SessionId, Store, StreamEvent, ToolContext, ToolRegistry};
+use norte_harness::{EngineBuilder, EngineConfig};
 use norte_testing::{InMemoryBlobStore, InMemoryStore, ScriptedModel, model};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

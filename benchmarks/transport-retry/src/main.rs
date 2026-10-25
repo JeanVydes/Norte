@@ -39,11 +39,8 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use norte_bench_support::report::{Align, Report};
 use norte_bench_support::{Mode, Run};
-use norte_core::{
-    Capabilities, ContinuityAdapter, Engine, EngineBuilder, Error as NorteError, FinishReason,
-    InMemoryBlobStore, InMemoryStore, Message, Model, ModelId, ModelRef, ModelRequest, ModelStream,
-    ProviderError, ProviderErrorKind, ProviderId, SessionId, StreamEvent,
-};
+use norte_core::{Capabilities, ContinuityAdapter, Error as NorteError, FinishReason, InMemoryBlobStore, InMemoryStore, Message, Model, ModelId, ModelRef, ModelRequest, ModelStream, ProviderError, ProviderErrorKind, ProviderId, SessionId, StreamEvent};
+use norte_harness::{Engine, EngineBuilder};
 use norte_http::is_transient;
 use norte_testing::{OpaqueContinuity, text_capabilities};
 use serde::Serialize;

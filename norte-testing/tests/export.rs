@@ -7,12 +7,8 @@
 
 use std::sync::Arc;
 
-use norte_core::{
-    CallId, ContinuityScope, ContinuityToken, Conversation, Engine, EngineBuilder, Error,
-    FnExecutor, GrantScope, Message, Model, ModelRef, ModelRequest, Part, Phase, PolicySet,
-    ReasoningPart, ReasoningVisibility, Result, Role, TextPart, ToolApprovalPolicy, ToolCallPart,
-    ToolName, ToolRegistry, ToolResultPart, WireFamily,
-};
+use norte_core::{CallId, ContinuityScope, ContinuityToken, Conversation, Error, FnExecutor, GrantScope, Message, Model, ModelRef, ModelRequest, Part, Phase, PolicySet, ReasoningPart, ReasoningVisibility, Result, Role, TextPart, ToolApprovalPolicy, ToolCallPart, ToolName, ToolRegistry, ToolResultPart, WireFamily};
+use norte_harness::{Engine, EngineBuilder};
 use norte_openai::OpenAiChat;
 use norte_testing::{
     InMemoryBlobStore, InMemoryStore, ProbeModel, ScriptedModel, StrictContinuity, model,

@@ -2,15 +2,15 @@
 //! history the host already holds, and moving it in and out of a portable
 //! envelope.
 
-use crate::domain::commit::Commit;
-use crate::domain::conversation::{CONVERSATION_SCHEMA_VERSION, Conversation};
-use crate::domain::message::Message;
-use crate::domain::node::Node;
-use crate::domain::session::{Phase, Session};
-use crate::error::{Error, Result};
-use crate::event::EngineEvent;
-use crate::id::SessionId;
-use crate::model::TURN_OPTIONS_KEY;
+use norte_core::domain::commit::Commit;
+use norte_core::domain::conversation::{CONVERSATION_SCHEMA_VERSION, Conversation};
+use norte_core::domain::message::Message;
+use norte_core::domain::node::Node;
+use norte_core::domain::session::{Phase, Session};
+use norte_core::error::{Error, Result};
+use norte_core::event::EngineEvent;
+use norte_core::id::SessionId;
+use norte_core::model::TURN_OPTIONS_KEY;
 
 use super::Engine;
 

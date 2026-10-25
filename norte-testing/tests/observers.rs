@@ -3,10 +3,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use norte_core::{
-    Engine, EngineBuilder, EngineEvent, InMemoryBlobStore, InMemoryStore, Message, StreamDelta,
-    StreamTransform, ToolRegistry,
-};
+use norte_core::{EngineEvent, InMemoryBlobStore, InMemoryStore, Message, StreamDelta, StreamTransform, ToolRegistry};
+use norte_harness::{Engine, EngineBuilder};
 use norte_testing::{RecordingObserver, ScriptedModel, model};
 
 /// Upper-cases text deltas, the canonical "annotate for the UI" transform.

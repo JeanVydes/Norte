@@ -9,6 +9,7 @@ description = "429/5xx/timeout under a host retry policy: what the library surfa
 
 [dependencies]
 norte-core = { workspace = true }
+norte-harness = { workspace = true }
 norte-http = { workspace = true }
 norte-testing = { workspace = true }
 norte-bench-support = { workspace = true }

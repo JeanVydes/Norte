@@ -26,6 +26,7 @@ norte-gemini = { workspace = true, optional = true }
 norte-tools = { workspace = true, optional = true }
 norte-media = { workspace = true, optional = true }
 norte-mcp = { workspace = true, optional = true }
+norte-harness = { workspace = true, optional = true }
 norte-testing = { workspace = true, optional = true }
 
 [features]
@@ -40,9 +41,10 @@ google = ["gemini"]
 tools = ["dep:norte-tools"]
 media = ["dep:norte-media"]
 mcp = ["dep:norte-mcp"]
+harness = ["dep:norte-harness"]
 # Test helpers are opt-in: they are not part of what an application ships.
 testing = ["dep:norte-testing"]
-full = ["openai", "anthropic", "gemini", "tools", "media", "mcp"]
+full = ["openai", "anthropic", "gemini", "tools", "media", "mcp", "harness"]
 
 [dev-dependencies]
 async-trait = { workspace = true }

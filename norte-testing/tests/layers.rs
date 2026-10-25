@@ -2,10 +2,8 @@
 
 use std::sync::{Arc, Mutex, PoisonError};
 
-use norte_core::{
-    Continuation, Digest, EngineBuilder, EngineEvent, InMemoryBlobStore, InMemoryStore, Layer,
-    LayerContext, Message, ModelRequest, ModelStream, Observer, Result,
-};
+use norte_core::{Continuation, Digest, EngineEvent, InMemoryBlobStore, InMemoryStore, Layer, LayerContext, Message, ModelRequest, ModelStream, Observer, Result};
+use norte_harness::{EngineBuilder};
 use norte_testing::{ScriptedModel, model};
 
 /// A layer that changes the request before it reaches the model.

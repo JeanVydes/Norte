@@ -9,6 +9,7 @@ description = "A long session kept whole against the same session with its histo
 
 [dependencies]
 norte-core = { workspace = true }
+norte-harness = { workspace = true }
 norte-bench-support = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

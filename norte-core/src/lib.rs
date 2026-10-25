@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-#![doc = "`Norte` core: domain model, engine, streaming pipeline, capabilities and contracts."]
+#![doc = "`Norte` core: the domain model, the streaming pipeline, capabilities and every contract."]
 
 extern crate self as norte_core;
 
@@ -11,8 +11,6 @@ pub mod capability;
 pub mod codec;
 /// The value types a conversation is made of.
 pub mod domain;
-/// The engine: the state machine that turns a session into requests.
-pub mod engine;
 /// The error type and its variants.
 pub mod error;
 /// Events the engine emits while a turn runs.
@@ -69,9 +67,6 @@ pub use domain::part::{
 };
 pub use domain::role::Role;
 pub use domain::session::{Phase, Session};
-pub use engine::{
-    Engine, EngineBuilder, EngineConfig, EngineStream, TurnBuilder, TurnOutcome, usage_of,
-};
 pub use error::{Error, ProviderError, ProviderErrorKind, Result};
 pub use event::{EngineEvent, EventSink, StreamDelta};
 pub use id::{

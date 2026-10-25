@@ -35,11 +35,8 @@ use std::sync::Arc;
 
 use base64::Engine as _;
 use chrono::DateTime;
-use norte_core::{
-    BlobStore, Capabilities, EngineBuilder, InMemoryBlobStore, InMemoryStore, MediaAdapter,
-    MediaKind, MediaPart, MediaSource, Message, MimeType, Modality, Part, ProviderFileRef,
-    ProviderFiles, StreamingGranularity, ToolRegistry, TurnOptions,
-};
+use norte_core::{BlobStore, Capabilities, InMemoryBlobStore, InMemoryStore, MediaAdapter, MediaKind, MediaPart, MediaSource, Message, MimeType, Modality, Part, ProviderFileRef, ProviderFiles, StreamingGranularity, ToolRegistry, TurnOptions};
+use norte_harness::{EngineBuilder};
 use norte_http::{HttpClient, HttpMedia};
 use norte_openai::presets::openai;
 use norte_openai::{OpenAiFiles, presets::openai_profile};

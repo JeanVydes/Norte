@@ -5,13 +5,8 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use norte_core::{
-    BlobId, BlobStore, CallId, Capabilities, EngineBuilder, EngineConfig, FinishReason, FnExecutor,
-    InMemoryBlobStore, InMemoryStore, MediaAdapter, MediaKind, MediaMetadata, MediaPart,
-    MediaPayload, MediaPreprocessor, MediaSource, Message, MimeType, Modality, Part,
-    ProviderFileRef, ProviderFiles, ProviderId, Result, Role, StreamEvent, StreamingGranularity,
-    ToolKind, ToolOutput, ToolRegistry,
-};
+use norte_core::{BlobId, BlobStore, CallId, Capabilities, FinishReason, FnExecutor, InMemoryBlobStore, InMemoryStore, MediaAdapter, MediaKind, MediaMetadata, MediaPart, MediaPayload, MediaPreprocessor, MediaSource, Message, MimeType, Modality, Part, ProviderFileRef, ProviderFiles, ProviderId, Result, Role, StreamEvent, StreamingGranularity, ToolKind, ToolOutput, ToolRegistry};
+use norte_harness::{EngineBuilder, EngineConfig};
 use norte_http::{HttpClient, HttpMedia};
 use norte_testing::{ScriptedModel, model};
 use schemars::JsonSchema;

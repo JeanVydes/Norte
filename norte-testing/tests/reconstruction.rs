@@ -8,9 +8,8 @@
 
 use std::sync::Arc;
 
-use norte_core::{
-    CacheClass, Commit, Engine, EngineBuilder, Message, ModelRequest, Node, Phase, Store,
-};
+use norte_core::{CacheClass, Commit, Message, ModelRequest, Node, Phase, Store};
+use norte_harness::{Engine, EngineBuilder};
 use norte_testing::{InMemoryBlobStore, InMemoryStore, ScriptedModel, model};
 
 fn engine(scripted: Arc<ScriptedModel>, store: Arc<InMemoryStore>) -> Engine {

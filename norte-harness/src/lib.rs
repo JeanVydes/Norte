@@ -1,3 +1,34 @@
+#![forbid(unsafe_code)]
+#![doc = "One reference agent harness over Norte's contracts: turns, the tool loop, approvals and streaming.
+
+Norte's contracts live in [`norte_core`]: the [`Model`](norte_core::Model) port, the
+[`Store`](norte_core::Store), the [`ToolRegistry`](norte_core::ToolRegistry), the
+policies, the layers and the observers. This crate is one way to drive them:
+[`Engine`] walks a session forward one turn at a time.
+
+It is deliberately *a* harness and not *the* harness. Nothing in the core refers
+to it, nothing forces a host to use it, and a host that wants a different turn
+policy — a different loop, its own scheduling, a graph instead of a session —
+depends on `norte-core` alone and writes it. What the core owns is the contracts
+and the durable state; what this crate owns is one order of operations over them.
+
+```
+use norte_core::{InMemoryBlobStore, InMemoryStore, Message};
+use norte_harness::EngineBuilder;
+# fn model() -> std::sync::Arc<dyn norte_core::Model> { todo!() }
+let engine = EngineBuilder::new()
+    .store(std::sync::Arc::new(InMemoryStore::default()))
+    .blobs(std::sync::Arc::new(InMemoryBlobStore::default()))
+    .model(model())
+    .build()
+    .expect(\"a harness\");
+```
+
+[`Model`]: norte_core::Model
+[`Store`]: norte_core::Store
+[`ToolRegistry`]: norte_core::ToolRegistry
+"]
+
 mod approvals;
 mod request;
 mod session;
@@ -16,30 +47,30 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::approval::{ApprovalRecord, AuditAction};
-use crate::capability::{Capabilities, ReasoningRequest};
-use crate::domain::commit::Commit;
-use crate::domain::message::{Message, Usage};
-use crate::domain::part::{Part, ToolCallPart, ToolResultPart};
-use crate::domain::role::Role;
-use crate::domain::session::Session;
-use crate::error::{Error, Result};
-use crate::event::{EngineEvent, EventSink, StreamDelta};
-use crate::id::{Digest, SessionId, ToolName};
-use crate::interceptor::{InterceptorSet, TurnInterceptor};
-use crate::layer::{Continuation, LayerContext, LayerStack};
-use crate::media_adapter::MediaAdapter;
-use crate::model::{
+use norte_core::approval::{ApprovalRecord, AuditAction};
+use norte_core::capability::{Capabilities, ReasoningRequest};
+use norte_core::domain::commit::Commit;
+use norte_core::domain::message::{Message, Usage};
+use norte_core::domain::part::{Part, ToolCallPart, ToolResultPart};
+use norte_core::domain::role::Role;
+use norte_core::domain::session::Session;
+use norte_core::error::{Error, Result};
+use norte_core::event::{EngineEvent, EventSink, StreamDelta};
+use norte_core::id::{Digest, SessionId, ToolName};
+use norte_core::interceptor::{InterceptorSet, TurnInterceptor};
+use norte_core::layer::{Continuation, LayerContext, LayerStack};
+use norte_core::media_adapter::MediaAdapter;
+use norte_core::model::{
     GenerationParams, Model, ModelRequest, ModelStream, PARTIAL_TOOLS_KEY, StreamLimits,
     TURN_OPTIONS_KEY, TurnOptions,
 };
-use crate::observer::{Observer, ObserverSet, StreamTransform};
-use crate::policy::PolicySet;
-use crate::preprocess::MediaPreprocessor;
-use crate::store::{BlobStore, Store};
-use crate::stream::StreamEvent;
-use crate::tool::registry::ToolRegistry;
-use crate::tool::{ToolCallInfo, ToolContext, ToolMetadataProvider, ToolOutput, ToolSpec};
+use norte_core::observer::{Observer, ObserverSet, StreamTransform};
+use norte_core::policy::PolicySet;
+use norte_core::preprocess::MediaPreprocessor;
+use norte_core::store::{BlobStore, Store};
+use norte_core::stream::StreamEvent;
+use norte_core::tool::registry::ToolRegistry;
+use norte_core::tool::{ToolCallInfo, ToolContext, ToolMetadataProvider, ToolOutput, ToolSpec};
 
 /// The turn-level policy that is not a layer: what a turn inherits and the
 /// bounds the engine enforces.
@@ -906,7 +937,7 @@ impl<'a> TurnBuilder<'a> {
     /// Requests token-level log probabilities for this turn: `top` runner-up
     /// tokens per position, or `0` for the chosen token's probability alone.
     /// The model must declare
-    /// [`Feature::Logprobs`](crate::Feature::Logprobs); the engine rejects the
+    /// [`Feature::Logprobs`](norte_core::Feature::Logprobs); the engine rejects the
     /// turn before the request otherwise (FR-LP-1).
     #[must_use]
     pub fn logprobs(mut self, top: u8) -> Self {
@@ -955,7 +986,7 @@ impl EngineBuilder {
 
     /// Sets the session store: sessions, nodes, messages and approval records.
     ///
-    /// Required. [`InMemoryStore`](crate::InMemoryStore) is the reference
+    /// Required. [`InMemoryStore`](norte_core::InMemoryStore) is the reference
     /// implementation; a host whose sessions outlive the process implements
     /// [`Store`] over its own database.
     #[must_use]
@@ -967,7 +998,7 @@ impl EngineBuilder {
     /// Sets the blob store that holds media bytes and large tool output by
     /// content hash.
     ///
-    /// Required. [`InMemoryBlobStore`](crate::InMemoryBlobStore) is the
+    /// Required. [`InMemoryBlobStore`](norte_core::InMemoryBlobStore) is the
     /// reference implementation; the bytes live where the host puts them.
     #[must_use]
     pub fn blobs(mut self, blobs: Arc<dyn BlobStore>) -> Self {
@@ -1028,7 +1059,7 @@ impl EngineBuilder {
     ///
     /// Empty by default. A slow observer never stalls a turn: the set buffers
     /// events and drops what does not fit, and
-    /// [`ObserverSet::dropped`](crate::ObserverSet::dropped) counts the drops.
+    /// [`ObserverSet::dropped`](norte_core::ObserverSet::dropped) counts the drops.
     #[must_use]
     pub fn observers(mut self, observers: Vec<Arc<dyn Observer>>) -> Self {
         self.observers = observers;
@@ -1093,7 +1124,7 @@ impl EngineBuilder {
     /// Everything optional is folded in here: the registry, the policy set and
     /// the layer stack are shared behind an `Arc`, and the observers and
     /// transforms become one [`ObserverSet`] bounded by
-    /// [`EngineConfig::limits`](crate::EngineConfig::limits).
+    /// [`EngineConfig::limits`](EngineConfig::limits).
     ///
     /// # Errors
     ///
@@ -1138,3 +1169,5 @@ pub fn usage_of(message: &Message) -> Usage {
         .map(|origin| origin.usage.clone())
         .unwrap_or_default()
 }
+
+pub use norte_core::memory::{InMemoryBlobStore, InMemoryStore};

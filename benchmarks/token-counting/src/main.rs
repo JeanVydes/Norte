@@ -31,10 +31,8 @@ use std::sync::Arc;
 
 use norte_bench_support::report::{Align, Report};
 use norte_bench_support::{Mode, Run, captured as new_capture};
-use norte_core::{
-    Capabilities, EngineBuilder, InMemoryBlobStore, InMemoryStore, Message, Modality, Role,
-    StreamingGranularity,
-};
+use norte_core::{Capabilities, InMemoryBlobStore, InMemoryStore, Message, Modality, Role, StreamingGranularity};
+use norte_harness::{EngineBuilder};
 use serde::Serialize;
 
 const USAGE: &str = "\

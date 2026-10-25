@@ -10,11 +10,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use norte_anthropic::{AnthropicContinuity, WIRE_MESSAGES};
-use norte_core::{
-    ContinuityAdapter, ContinuityFragment, ContinuityScope, ContinuitySemantics, ContinuityToken,
-    Conversation, Decision, Digest, Engine, EngineBuilder, Message, Model, ModelRef, ModelRequest,
-    PolicyDecision, PolicyOutcome, Store, WireFamily, combine,
-};
+use norte_core::{ContinuityAdapter, ContinuityFragment, ContinuityScope, ContinuitySemantics, ContinuityToken, Conversation, Decision, Digest, Message, Model, ModelRef, ModelRequest, PolicyDecision, PolicyOutcome, Store, WireFamily, combine};
+use norte_harness::{Engine, EngineBuilder};
 use norte_gemini::{GeminiContinuity, WIRE_GENERATE};
 use norte_openai::{OpenAiContinuity, WIRE_RESPONSES};
 use norte_testing::{InMemoryBlobStore, InMemoryStore, ScriptedModel, model, model_conformance};

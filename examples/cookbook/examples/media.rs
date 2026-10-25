@@ -50,13 +50,8 @@ use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 
 use base64::Engine as _;
-use norte_core::{
-    BlobId, BlobStore, CallId, Capabilities, ContinuityAdapter, Engine, EngineBuilder,
-    EngineConfig, InMemoryBlobStore, InMemoryStore, MediaAdapter, MediaKind, MediaPart,
-    MediaSource, Message, MimeType, Modality, Model, ModelId, ModelRef, ModelRequest, ModelStream,
-    Part, ProviderId, Role, SessionId, StreamingGranularity, ToolCallPart, ToolKind, ToolRegistry,
-    ToolResultPart, TurnOptions, WireFamily,
-};
+use norte_core::{BlobId, BlobStore, CallId, Capabilities, ContinuityAdapter, InMemoryBlobStore, InMemoryStore, MediaAdapter, MediaKind, MediaPart, MediaSource, Message, MimeType, Modality, Model, ModelId, ModelRef, ModelRequest, ModelStream, Part, ProviderId, Role, SessionId, StreamingGranularity, ToolCallPart, ToolKind, ToolRegistry, ToolResultPart, TurnOptions, WireFamily};
+use norte_harness::{Engine, EngineBuilder, EngineConfig};
 use norte_http::{AuthScheme, HttpClient, HttpMedia, VendorProfile};
 use norte_openai::{OpenAiChat, WIRE_CHAT};
 use serde_json::Value;

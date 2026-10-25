@@ -4,9 +4,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use norte_core::{
-    Commit, Engine, EngineBuilder, EngineEvent, Error, Message, Observer, Phase, SessionId, Store,
-};
+use norte_core::{Commit, EngineEvent, Error, Message, Observer, Phase, SessionId, Store};
+use norte_harness::{Engine, EngineBuilder};
 use norte_testing::{InMemoryBlobStore, InMemoryStore, RecordingObserver, ScriptedModel, model};
 
 fn build(

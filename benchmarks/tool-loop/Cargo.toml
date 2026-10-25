@@ -9,6 +9,7 @@ description = "What a tool loop costs: requests, schema bytes, tokens and money 
 
 [dependencies]
 norte-core = { workspace = true }
+norte-harness = { workspace = true }
 norte-bench-support = { workspace = true }
 async-trait = { workspace = true }
 schemars = { workspace = true }

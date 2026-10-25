@@ -9,11 +9,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use norte_core::{
-    Conversation, Digest, Engine, EngineBuilder, EngineConfig, EngineEvent, Error, Feature,
-    FnExecutor, GenerationParams, Message, Model, ModelRequest, Observer, ReasoningEffort,
-    ReasoningRequest, Result, ToolName, ToolRegistry, TurnOptions,
-};
+use norte_core::{Conversation, Digest, EngineEvent, Error, Feature, FnExecutor, GenerationParams, Message, Model, ModelRequest, Observer, ReasoningEffort, ReasoningRequest, Result, ToolName, ToolRegistry, TurnOptions};
+use norte_harness::{Engine, EngineBuilder, EngineConfig};
 use norte_testing::{
     InMemoryBlobStore, InMemoryStore, ProbeModel, RecordingObserver, ScriptedModel, model,
     text_capabilities,

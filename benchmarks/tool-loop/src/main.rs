@@ -27,10 +27,8 @@ use std::time::Instant;
 
 use norte_bench_support::report::{Align, Report};
 use norte_bench_support::{Mode, Run, captured as new_capture};
-use norte_core::{
-    Capabilities, EngineBuilder, FnExecutor, InMemoryBlobStore, InMemoryStore, Message, Modality,
-    Part, Role, StreamingGranularity, TextPart, ToolKind, ToolRegistry, Usage,
-};
+use norte_core::{Capabilities, FnExecutor, InMemoryBlobStore, InMemoryStore, Message, Modality, Part, Role, StreamingGranularity, TextPart, ToolKind, ToolRegistry, Usage};
+use norte_harness::{EngineBuilder};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 

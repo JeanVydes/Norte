@@ -9,6 +9,7 @@ description = "How many requests it takes the model to make a schema-valid tool 
 
 [dependencies]
 norte-core = { workspace = true }
+norte-harness = { workspace = true }
 norte-bench-support = { workspace = true }
 async-trait = { workspace = true }
 schemars = { workspace = true }

@@ -24,11 +24,8 @@ use std::error::Error;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
-use norte_core::{
-    Capabilities, Decision, Engine, EngineBuilder, InMemoryBlobStore, InMemoryStore, Message,
-    Modality, ModelId, ModelRef, Policy, PolicySet, PolicyView, ProviderId, StreamingGranularity,
-    ToolKind, ToolRegistry, ToolResultPart, WireFamily,
-};
+use norte_core::{Capabilities, Decision, InMemoryBlobStore, InMemoryStore, Message, Modality, ModelId, ModelRef, Policy, PolicySet, PolicyView, ProviderId, StreamingGranularity, ToolKind, ToolRegistry, ToolResultPart, WireFamily};
+use norte_harness::{Engine, EngineBuilder};
 use norte_http::{AuthScheme, VendorProfile};
 use norte_openai::{OpenAiChat, WIRE_CHAT};
 use norte_tools::{EditTool, ReadTool, WriteTool};

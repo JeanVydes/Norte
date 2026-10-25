@@ -69,11 +69,8 @@ use norte_bench_support::{
     Captured, Mode, RecordingOpenAi, RequestRecord, Route, Run, captured as new_capture, duration,
     money_opt, tokens,
 };
-use norte_core::{
-    Capabilities, Digest, Engine, EngineBuilder, FnExecutor, GrantScope, InMemoryBlobStore,
-    InMemoryStore, Message, Modality, PolicySet, Role, SessionId, StreamingGranularity,
-    ToolApprovalPolicy, ToolKind, ToolName, ToolRegistry, TurnOptions, Usage,
-};
+use norte_core::{Capabilities, Digest, FnExecutor, GrantScope, InMemoryBlobStore, InMemoryStore, Message, Modality, PolicySet, Role, SessionId, StreamingGranularity, ToolApprovalPolicy, ToolKind, ToolName, ToolRegistry, TurnOptions, Usage};
+use norte_harness::{Engine, EngineBuilder};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

@@ -3,12 +3,12 @@
 
 use chrono::Utc;
 
-use crate::approval::{ApprovalRecord, ApprovalStatus, GrantScope};
-use crate::domain::commit::Commit;
-use crate::domain::session::Phase;
-use crate::error::{Error, Result};
-use crate::event::EngineEvent;
-use crate::id::{ApprovalId, GrantId, SessionId};
+use norte_core::approval::{ApprovalRecord, ApprovalStatus, GrantScope};
+use norte_core::domain::commit::Commit;
+use norte_core::domain::session::Phase;
+use norte_core::error::{Error, Result};
+use norte_core::event::EngineEvent;
+use norte_core::id::{ApprovalId, GrantId, SessionId};
 
 use super::Engine;
 

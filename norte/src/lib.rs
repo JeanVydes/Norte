@@ -3,7 +3,7 @@
 //! The Norte stack behind one dependency. The crate root is `norte-core`, and
 //! every other crate is a module named after it: `norte::openai`,
 //! `norte::anthropic`, `norte::gemini`, `norte::http`, `norte::tools`,
-//! `norte::media` and `norte::mcp`.
+//! `norte::media`, `norte::mcp` and `norte::harness`.
 //!
 //! ```
 //! # use norte::{Capabilities, Modality};
@@ -25,8 +25,9 @@
 //! | `tools` | `norte::tools` |
 //! | `media` | `norte::media` |
 //! | `mcp` | `norte::mcp` |
+//! | `harness` | `norte::harness`, the reference agent loop |
 //! | `testing` | `norte::testing`, for a test target |
-//! | `full` | every provider, `tools`, `media` and `mcp` |
+//! | `full` | every provider, `tools`, `media`, `mcp` and `harness` |
 
 #![forbid(unsafe_code)]
 
@@ -42,6 +43,8 @@ pub use norte_http as http;
 pub use norte_anthropic as anthropic;
 #[cfg(feature = "gemini")]
 pub use norte_gemini as gemini;
+#[cfg(feature = "harness")]
+pub use norte_harness as harness;
 #[cfg(feature = "mcp")]
 pub use norte_mcp as mcp;
 #[cfg(feature = "media")]
@@ -84,13 +87,18 @@ pub mod presets {
 /// shadow the standard `Result` of `fn main() -> Result<(), Box<dyn Error>>`.
 /// Import `norte::Result` where that alias is what you want, as a tool
 /// implementation does.
+///
+/// The harness is not in the root re-export: an application that wants it names
+/// `norte::harness`, and one that writes its own loop never has to see it.
 pub mod prelude {
     pub use norte_core::{
-        Capabilities, Decision, Engine, EngineBuilder, EngineEvent, Error, FnExecutor,
-        InMemoryBlobStore, InMemoryStore, Layer, Message, Modality, Model, ModelRef, Observer,
-        Part, Policy, PolicySet, PolicyView, Role, StreamDelta, ToolOutput, ToolRegistry,
-        TurnOptions, Usage,
+        Capabilities, Decision, EngineEvent, Error, FnExecutor, InMemoryBlobStore, InMemoryStore,
+        Layer, Message, Modality, Model, ModelRef, Observer, Part, Policy, PolicySet, PolicyView,
+        Role, StreamDelta, ToolOutput, ToolRegistry, TurnOptions, Usage,
     };
+
+    #[cfg(feature = "harness")]
+    pub use norte_harness::{Engine, EngineBuilder};
 
     #[cfg(feature = "tools")]
     pub use norte_tools::{CommandTool, EditTool, ReadTool, WriteTool};
@@ -102,9 +110,11 @@ mod tests {
 
     use super::*;
 
-    #[cfg(feature = "openai")]
+    #[cfg(all(feature = "openai", feature = "harness"))]
     #[test]
     fn a_turn_can_be_wired_through_the_facade_alone() {
+        use harness::EngineBuilder;
+
         let capabilities = Capabilities::builder()
             .input(Modality::Text)
             .output(Modality::Text)

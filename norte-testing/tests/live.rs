@@ -7,7 +7,8 @@
 
 use std::sync::Arc;
 
-use norte_core::{EngineBuilder, Message, Model};
+use norte_core::{Message, Model};
+use norte_harness::{EngineBuilder};
 use norte_testing::{InMemoryBlobStore, InMemoryStore, text_capabilities};
 
 fn live_key(variable: &str) -> Option<String> {

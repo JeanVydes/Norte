@@ -6,9 +6,10 @@
 use std::sync::Arc;
 
 use norte::{
-    Capabilities, EngineBuilder, FnExecutor, InMemoryBlobStore, InMemoryStore, Modality, Result,
-    ToolOutput, ToolRegistry,
+    Capabilities, FnExecutor, InMemoryBlobStore, InMemoryStore, Modality, Result, ToolOutput,
+    ToolRegistry,
 };
+use norte::harness::EngineBuilder;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 

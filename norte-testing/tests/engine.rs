@@ -6,13 +6,8 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use norte_core::{
-    CallId, ContinuityFragment, ContinuityScope, ContinuitySemantics, Decision, Engine,
-    EngineBuilder, EngineConfig, EngineEvent, Error, Feature, FinishReason, FnExecutor,
-    LogprobValue, Message, MessageStatus, Part, Phase, Policy, PolicySet, PolicyView, Result, Role,
-    Store, StreamEvent, TokenLogprob, ToolApprovalPolicy, ToolContext, ToolName, ToolRegistry,
-    ToolResultPart, WireFamily,
-};
+use norte_core::{CallId, ContinuityFragment, ContinuityScope, ContinuitySemantics, Decision, EngineEvent, Error, Feature, FinishReason, FnExecutor, LogprobValue, Message, MessageStatus, Part, Phase, Policy, PolicySet, PolicyView, Result, Role, Store, StreamEvent, TokenLogprob, ToolApprovalPolicy, ToolContext, ToolName, ToolRegistry, ToolResultPart, WireFamily};
+use norte_harness::{Engine, EngineBuilder, EngineConfig};
 use norte_testing::{
     InMemoryBlobStore, InMemoryStore, ScriptedModel, StrictContinuity, model, text_capabilities,
 };

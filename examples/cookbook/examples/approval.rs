@@ -18,11 +18,8 @@
 use std::error::Error;
 use std::sync::Arc;
 
-use norte_core::{
-    Capabilities, Engine, EngineBuilder, FnExecutor, GrantScope, InMemoryBlobStore, InMemoryStore,
-    Message, Modality, ModelId, ModelRef, PolicySet, ProviderId, Role, SessionId,
-    StreamingGranularity, ToolApprovalPolicy, ToolKind, ToolName, ToolRegistry, WireFamily,
-};
+use norte_core::{Capabilities, FnExecutor, GrantScope, InMemoryBlobStore, InMemoryStore, Message, Modality, ModelId, ModelRef, PolicySet, ProviderId, Role, SessionId, StreamingGranularity, ToolApprovalPolicy, ToolKind, ToolName, ToolRegistry, WireFamily};
+use norte_harness::{Engine, EngineBuilder};
 use norte_http::{AuthScheme, VendorProfile};
 use norte_openai::{OpenAiChat, WIRE_CHAT};
 use schemars::JsonSchema;

@@ -33,12 +33,8 @@
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 
-use norte_core::{
-    Capabilities, Commit, ContinuityAdapter, Digest, Engine, EngineBuilder, InMemoryBlobStore,
-    InMemoryStore, Message, Modality, Model, ModelId, ModelRef, ModelRequest, ModelStream, Node,
-    NodeId, Phase, ProviderId, Session, Store, StreamingGranularity, ToolKind, ToolRegistry,
-    TurnOptions, WireFamily,
-};
+use norte_core::{Capabilities, Commit, ContinuityAdapter, Digest, InMemoryBlobStore, InMemoryStore, Message, Modality, Model, ModelId, ModelRef, ModelRequest, ModelStream, Node, NodeId, Phase, ProviderId, Session, Store, StreamingGranularity, ToolKind, ToolRegistry, TurnOptions, WireFamily};
+use norte_harness::{Engine, EngineBuilder};
 use norte_http::{AuthScheme, VendorProfile};
 use norte_openai::{OpenAiChat, WIRE_CHAT};
 use serde_json::{Value, json};

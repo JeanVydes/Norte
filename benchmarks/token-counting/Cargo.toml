@@ -9,6 +9,7 @@ description = "The provider's counters against the engine's accounting: one usag
 
 [dependencies]
 norte-core = { workspace = true }
+norte-harness = { workspace = true }
 norte-bench-support = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

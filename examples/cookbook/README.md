@@ -7,7 +7,7 @@ The layout says which layer a recipe needs:
 
 - **The crate root** holds the recipes that use `norte-core` alone — the `direct_*`
   ones speak to the `Model` port or the turn loop without an engine, and `tools`,
-  `executors` and `idempotent_tool` never call a model at all.
+  `tools` never calls a model at all.
 - **`harness/`** holds the recipes that drive `norte-harness`, whose `Engine` walks
   a session forward a turn at a time. They are the ones that look like an agent:
   a turn, a tool call, an approval, a policy.
@@ -27,25 +27,27 @@ cargo run -p norte-cookbook --example approval
 ```
 
 The key comes from the environment; a local `.env` works with
-`set -a; . ./.env; set +a`. `tools`, `executors` and `idempotent_tool` need no
-key and no model: the first declares tools and prints the schema that would go
-to the provider, the second calls the shipped executors directly, and the third
-is the host-side idempotency pattern for a tool with an external effect.
+`set -a; . ./.env; set +a`. `tools` needs no key and calls no model: it
+declares tools and prints the schema that would go to the provider.
 
 ## Recipes
 
 ### `norte-core` alone
 
+The recipes in the crate root drive the ports directly. No harness, no session,
+no store.
+
 | Example | Topic |
 | --- | --- |
-| `direct_model` | The `Model` port without an engine: one request, every event |
-| `direct_turn` | The turn loop without an engine: accumulate the stream, keep the history |
-| `direct_tools` | Running the model's tool calls without an engine: registry, results, loop |
-| `tools` | Declaring tools: macro, explicit, and rich `ToolOutput` |
-| `executors` | Calling `read`, `write`, `edit` and `command` directly |
-| `idempotent_tool` | Making a tool's external effect happen once across a resume |
+| `model` | The `Model` port: one request, every event, nothing committed |
+| `turn` | The turn loop by hand: fold the stream, keep the history |
+| `tools` | Declaring tools: the macro, the explicit form, and rich `ToolOutput` |
+| `layer` | A layer around one call: cache it, rewrite it, or never reach the model |
+| `image_in` | A picture in: bytes as a `Part::Media`, and the modality that allows it |
+| `image_out` | A picture out: media chunks folded into a part, and where the bytes go |
 
-These need no model and no key, except for `direct_*`, which call one.
+`model`, `turn`, `layer`, `image_in` and `image_out` call a real model when run;
+`tools` needs no key, because it only prints what would go on the wire.
 
 ### `norte-harness`
 
@@ -53,14 +55,15 @@ These need no model and no key, except for `direct_*`, which call one.
 | --- | --- |
 | `events` | Reading a turn's event stream |
 | `streaming` | Streaming live vs collecting with `finish()` |
+| `observer` | Observers and transforms: the side channel that cannot stall a turn |
 | `approval` | Human approval: park the turn, decide, resume |
 | `policy` | Denying and rewriting tool calls before they run |
 | `policy_context` | A policy that decides on what the request already did |
 | `agent` | An agent turn: the model edits a file through the host tools |
-| `observers` | Observers and stream transforms |
 | `export_import` | A byte-identical restore: the same request before and after a round trip |
 | `branching` | Rewind to an ancestor and branch: the shared prefix stays cached |
 | `rate_limit` | A tool call the provider refuses, and what the loop does with it |
+| `observers` | Observers and stream transforms, on a live turn |
 
 ### `media`
 
@@ -78,7 +81,7 @@ also a measurement: [`benchmarks/cache-hit`](../../benchmarks/cache-hit).
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `OPENROUTER_API_KEY` | *required* | The key every recipe that calls a model uses (`tools`, `executors` and `idempotent_tool` need none). |
+| `OPENROUTER_API_KEY` | *required* | The key every recipe that calls a model uses (`tools`, `layer` and `image_*` excepted as noted above). |
 | `COOKBOOK_MODEL` | *required* | The model the recipes call. |
 | `COOKBOOK_ENDPOINT` | *required* | The `OpenAI`-compatible base `URL` the recipes call. |
 | `COOKBOOK_PROVIDER` | OpenRouter decides | Pins the upstream provider for `branching`, so two runs of the same recipe stay comparable. |

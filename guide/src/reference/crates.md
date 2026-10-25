@@ -6,8 +6,8 @@ outside the published set — an examples crate, benchmarks and a facade check.
 | Crate | Depends on | What it owns |
 | --- | --- | --- |
 | `norte` | every crate below | The entrypoint. Re-exports `norte-core` at the root (`norte::Harness` lives in `norte::harness`) and every other crate as a module of its own name, each behind a feature, plus the merged `presets` and a `prelude`. It adds no behaviour of its own. |
-| `norte-core` | nothing internal | The neutral domain model, the streaming pipeline, layers, capabilities, and every contract a provider or adapter implements. No vendor name, no model table, no external persistence, and **no runtime**: the contracts are what an agent is built *on*, not one way of building it. |
-| `norte-harness` | core | One reference harness over those contracts: `Harness` walks a session forward a turn at a time, with the tool loop, approvals and halt-on-cancel. **The runtime lives here, not in the core** — the session store, its in-memory implementation, and the tool-call policy are all things that exist because there is a loop. Deliberately *a* harness, not *the* harness: a host with a different turn policy depends on `norte-core` alone and writes its own. |
+| `norte-core` | nothing internal | What a provider sees: `Message`, `Part`, `Role`, `Usage`, the `ModelRequest` and its `StreamEvent`s, and the contracts an adapter implements (`Model`, `BlobStore`, `MediaAdapter`, `Layer`, `Observer`, `ContinuityAdapter`). **It knows a list of messages; it does not know a graph.** |
+| `norte-harness` | core | The runtime: `Harness` walks a session forward a turn at a time — the tool loop, approvals, policies, the store it commits through, and the branch graph (`Session`, `Commit`, `Node`, `Conversation`) that only exists because something walks it. |
 | `norte-http` | core | Shared HTTP transport, `VendorProfile`, auth schemes, secrets, quirks, SSE decoding, `HttpMedia`. |
 | `norte-openai` | core, http | The `Responses` and `Chat Completions` wires, `OpenAiMedia`, presets. |
 | `norte-anthropic` | core, http | The `Messages` wire, media, presets. |
@@ -24,9 +24,10 @@ Dependencies point at core, and never sideways:
 
 - `norte-core` pulls in no HTTP, database, vendor or concrete-tool code.
 - No adapter depends on another adapter.
-- No crate depends on `norte-harness` except `norte`, which exposes it. The
-  harness is a consumer of the core like any other; nothing in the core knows it
-  exists, and a host is free to never use it.
+- No crate depends on `norte-harness` except `norte`, which exposes it, and
+  `norte-testing`, whose library ships the conformance suite for the port the
+  harness owns. The harness is a consumer of the core like any other; nothing in
+  the core knows it exists, and a host is free to never use it.
 
 `norte` is the exception: it is a facade, it holds no logic, and it points at
 everything with every edge optional but the core's.

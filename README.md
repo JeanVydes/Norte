@@ -23,14 +23,24 @@ policy you write, every turn in a history you can audit.
 
 Norte is split so that the agent part is *optional*, not assumed.
 
-- **`norte-core`** owns what a conversation *is*: `Message`, `Part`, `Session`,
-  `Commit`, and the ports a provider or a store implements — `Model`,
-  `BlobStore`, `ToolRegistry`, `Layer`, `Observer`, `Capability`. Nothing in it
-  knows there is a turn loop, and it does not commit to one.
-- **`norte-harness`** owns one way of driving that: `Harness` walks a session
-  forward a turn at a time, with the tool loop, approvals, policies and the
-  session store. It is the loop most applications want, and it is *a* harness
-  rather than *the* harness.
+- **`norte-core`** owns what a provider sees. The port is one method:
+
+  ```rust
+  async fn stream(&self, request: ModelRequest) -> Result<ModelStream>;
+  ```
+
+  and a `ModelRequest` carries `messages: Vec<Message>` — the conversation
+  already flattened to a list. Beside it: `Part`, `Role`, `Usage`,
+  `StreamEvent`, the `Model`/`BlobStore`/`MediaAdapter` ports, `Layer` and
+  `Observer`.
+- **`norte-harness`** owns everything that exists because something *walks* that
+  list forward: the branch graph (`Session`, `Commit`, `Node`, `Conversation`),
+  the store it commits through, the tool loop, policies, approvals, and the
+  `EngineEvent`s it reports. `Harness` is one way to drive the port, and *a*
+  harness rather than *the* harness.
+
+  The rule in one line: **the core knows a list of messages; the harness knows a
+  graph.**
 
 A host that wants a different turn policy — its own scheduling, a graph instead
 of a session, a batch job with no loop at all — depends on `norte-core` alone

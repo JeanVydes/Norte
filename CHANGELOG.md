@@ -122,6 +122,18 @@ Draft. Not published.
 
 ### Changed
 
+- **The cookbook is organised by what a recipe needs, not by a prefix.** The
+  crate root holds the ones that use `norte-core` alone, and each one is named
+  for its subject: `model`, `turn`, `tools`, `layer`, `image_in`, `image_out`.
+  The former `direct_*` names are gone — a recipe that drives the port directly
+  is the default way to do it, so saying `direct` said nothing.
+- Two recipes were removed rather than renamed. `executors` did not demonstrate
+  anything a library offers — it called the shipped executors by hand — and
+  `idempotent_tool` was a host-side pattern with no Norte API in it. Neither
+  belonged in a cookbook of the library's surface.
+- Three recipes were added for things the crate could do and no example showed:
+  `layer` (a cache that never reaches the model), `image_in` and `image_out`
+  (media in both directions), and `observer` under `harness/`.
 - **The agent runtime is now its own crate.** `norte-core` no longer commits to
   a turn loop: the engine — and with it the session store, its in-memory
   implementation, the tool-call policy and the approval record — moved to the

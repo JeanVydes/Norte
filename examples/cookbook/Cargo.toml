@@ -13,6 +13,8 @@ norte-harness = { workspace = true }
 norte-http = { workspace = true }
 norte-openai = { workspace = true }
 norte-tools = { workspace = true }
+# The recipes drive the ports directly, so a scripted model is the honest stand-in.
+norte-testing = { workspace = true }
 async-trait = { workspace = true }
 base64 = { workspace = true }
 chrono = { workspace = true }
@@ -45,6 +47,10 @@ path = "examples/harness/events/main.rs"
 [[example]]
 name = "export_import"
 path = "examples/harness/export_import/main.rs"
+
+[[example]]
+name = "observer"
+path = "examples/harness/observer/main.rs"
 
 [[example]]
 name = "observers"

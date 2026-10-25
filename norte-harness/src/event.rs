@@ -8,6 +8,7 @@ use norte_core::domain::moderation::SafetyRating;
 use norte_core::domain::part::Part;
 use norte_core::id::{ApprovalId, CallId, Digest, GrantId, SessionId, ToolName};
 use norte_core::model::GenerationParams;
+use norte_core::tool::ToolStream;
 
 /// A streamed delta as observers see it. Continuity material is reduced to its
 /// length: token payloads never enter the event channel.
@@ -125,6 +126,27 @@ pub enum EngineEvent {
         call_id: CallId,
         /// The tool that is running.
         tool: ToolName,
+    },
+    /// A chunk of a running tool's output, as it arrives.
+    ///
+    /// A tool that streams — the shell executor does — reports what it reads
+    /// while it reads it, so a host can show the output live instead of waiting
+    /// for the call to finish. The chunks are not the result: the result is the
+    /// `ToolCallFinished` that follows, and a host that ignores these loses
+    /// nothing but the live view.
+    ToolOutput {
+        /// The session.
+        session: SessionId,
+        /// The turn that is running.
+        turn: u64,
+        /// The call the output belongs to.
+        call_id: CallId,
+        /// The stream the bytes came from.
+        stream: ToolStream,
+        /// The bytes themselves, already redacted by the tool.
+        bytes: Vec<u8>,
+        /// Whether this chunk ends that stream.
+        last: bool,
     },
     /// A tool call finished.
     ToolCallFinished {
@@ -271,6 +293,7 @@ impl EngineEvent {
             | EngineEvent::StreamDelta { session, .. }
             | EngineEvent::PartCompleted { session, .. }
             | EngineEvent::ToolCallStarted { session, .. }
+            | EngineEvent::ToolOutput { session, .. }
             | EngineEvent::ToolCallFinished { session, .. }
             | EngineEvent::ApprovalRequested { session, .. }
             | EngineEvent::ApprovalGranted { session, .. }

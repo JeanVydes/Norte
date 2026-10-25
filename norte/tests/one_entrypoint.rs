@@ -1,7 +1,7 @@
 //! The facade as an application uses it: every path, and the attribute macro,
 //! starts at `norte::`.
 
-#![cfg(feature = "openai")]
+#![cfg(all(feature = "openai", feature = "harness"))]
 
 use std::sync::Arc;
 

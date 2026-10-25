@@ -13,6 +13,7 @@ keywords = ["mcp", "llm", "ai-agents", "tools", "resources"]
 categories = ["api-bindings", "asynchronous"]
 
 [dependencies]
+reqwest = { workspace = true }
 norte-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

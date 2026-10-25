@@ -26,6 +26,7 @@ host-supplied data and wire mapping."]
 pub mod client;
 pub mod convert;
 pub mod error;
+pub mod http;
 pub mod jsonrpc;
 pub mod protocol;
 pub mod server;
@@ -34,6 +35,7 @@ pub mod transport;
 
 pub use client::{ClientOptions, McpClient};
 pub use error::{McpError, McpResult};
+pub use http::HttpTransport;
 pub use jsonrpc::{Message, Notification, Request, RequestId, Response, RpcError};
 pub use protocol::{
     CallToolParams, CallToolResult, ClientCapabilities, ContentBlock, GetPromptResult,

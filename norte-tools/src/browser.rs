@@ -1238,6 +1238,78 @@ mod tests {
         assert_eq!(hidden, 7, "the seven left out are counted");
     }
 
+    /// The bound, against a browser that is actually running.
+    ///
+    /// `#[ignore]`d because it needs a live CDP endpoint with a page full of
+    /// controls, which is not something a unit test can arrange. It is the only
+    /// test that proves the fields reach the executor over the real path: the
+    /// others pin the schema and the parse, and this one pins the answer.
+    ///
+    /// ```text
+    /// vivaldi --remote-debugging-port=9222 --user-data-dir=/tmp/vivaldi-debug \
+    ///         <file:///tmp/vivaldi-debug/page.html>
+    /// cargo test -p norte-tools -- --ignored the_bound_reaches_a_live_browser
+    /// ```
+    #[tokio::test]
+    #[ignore = "needs a browser with --remote-debugging-port=9222"]
+    async fn the_bound_reaches_a_live_browser() {
+        let tool = BrowserTool::new();
+        let ask = |value: serde_json::Value| async {
+            let request: BrowserRequest = serde_json::from_value(value).expect("parses");
+            let out = tool
+                .call_with_context(&ToolContext::new(), request)
+                .await
+                .expect("the call runs");
+            let structured = out.structured.expect("structured output");
+            let returned = structured["elements"].as_array().map_or(0, Vec::len);
+            let matched = structured["elements_matched"].as_u64().unwrap_or(0);
+            (returned, matched)
+        };
+
+        // The page the controls are on, put there by the test itself so it does
+        // not depend on what the browser happened to have open. It is a local
+        // file: the point is the bound, not the network.
+        let page = "/tmp/vivaldi-debug/page.html";
+        if !std::path::Path::new(page).exists() {
+            eprintln!("skipping: {page} is not there");
+            return;
+        }
+        let _ = tool
+            .call_with_context(
+                &ToolContext::new(),
+                serde_json::from_value(json!({
+                    "action": {"type": "navigate", "url": format!("file://{page}")}
+                }))
+                .expect("navigate"),
+            )
+            .await;
+
+        let (all, _matched) = ask(json!({"action": {"type": "extract_dom"}})).await;
+        assert!(all > 4, "the page has controls to bound: {all}");
+
+        let (kept, _) = ask(json!({"action": {"type": "extract_dom", "max_elements": 3}})).await;
+        assert_eq!(kept, 3, "the bound arrived: {kept} of {all}");
+
+        // `elements_matched` counts what the cap left OUT, not what came back —
+        // it is present only when something was hidden, so a whole list carries
+        // no count at all.
+        let (filtered, hidden) =
+            ask(json!({"action": {"type": "extract_dom", "filter": "sign"}})).await;
+        assert!(filtered < all, "the filter arrived: {filtered} of {all}");
+        assert_eq!(hidden, 0, "nothing was hidden by a filter alone");
+
+        let (one, hidden) = ask(json!({
+            "action": {"type": "extract_dom", "filter": "sign", "max_elements": 1}
+        }))
+        .await;
+        assert_eq!(one, 1, "the two compose");
+        assert_eq!(
+            hidden,
+            u64::try_from(filtered - 1).expect("fits"),
+            "and the count says how many the cap hid"
+        );
+    }
+
     #[test]
     fn the_schema_declares_the_bound_where_a_model_reads_it() {
         // The bug this pins: `max_elements` and `filter` were siblings of

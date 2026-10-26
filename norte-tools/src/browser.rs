@@ -174,6 +174,19 @@ fn default_true() -> bool {
     true
 }
 
+/// Whether a flag is false, for a field that is left out when it is.
+///
+/// The reference is what `skip_serializing_if` hands a predicate, so the shape
+/// is serde's and not this function's choice.
+///
+/// Left out unless true: the common case is a control that works, and a
+/// `"disabled": false` on every row of a two-hundred-row list is the cost this
+/// whole list is bounded to avoid.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// Whether a count is zero, for a field that is left out when it is.
 ///
 /// The reference is what `skip_serializing_if` hands a predicate, so the shape
@@ -197,6 +210,11 @@ pub struct BrowserTab {
 }
 
 /// Representation of an interactive element on the page.
+///
+/// Every field past `tag` and `text` is optional and left out when it is absent
+/// or false, so a plain button costs what it always did: a page with two hundred
+/// controls is the case this list exists for, and a field that is usually absent
+/// is a field that is usually paid for.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InteractiveElement {
     /// Assigned integer ID for easy targeting by the LLM.
@@ -211,6 +229,24 @@ pub struct InteractiveElement {
     /// Placeholder attribute if present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placeholder: Option<String>,
+    /// Where an anchor goes, as the page wrote it — absolute or relative.
+    ///
+    /// Only for `A`. The text of a link says what it offers and not where it
+    /// leads, so without this a model either guesses or clicks to find out, and
+    /// a click that was a question navigates away from the page it was asking
+    /// about.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub href: Option<String>,
+    /// Whether the control cannot be used.
+    ///
+    /// A disabled button looks like any other and does nothing, which is the
+    /// failure a model cannot see: it calls `click`, the page does not change,
+    /// and the reason is a field it was never shown.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub disabled: bool,
+    /// Whether a checkbox or radio is on.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub checked: bool,
 }
 
 /// Comprehensive feedback returned to the model after every browser action.
@@ -337,7 +373,7 @@ impl Default for BrowserTool {
 
 impl ToolMetadata for BrowserTool {
     const NAME: &'static str = "browser_use";
-    const DESCRIPTION: &'static str = "Controls a live browser via CDP (Chrome/Vivaldi/Brave/Edge). Actions: navigate (load a URL in the current tab), click (by CSS selector or agent_id from ExtractDom), type (text input; set clear=true to replace the field, false to append), scroll, wait, extract_dom (map interactive elements with agent_ids; it takes max_elements to bound the list, 0 for none, and filter to keep only elements whose label contains a text — both fields inside the action), screenshot (base64 PNG), list_tabs (the tabs already open, with the one being driven marked), switch_tab (drive a tab that is already open, by id or by a URL/title substring — prefer this to opening another), open_tab (open a new tab on purpose), close_tab. The tool drives one tab at a time and brings it to the front, so the person and the model look at the same page. Use ExtractDom first to get agent_ids for clicking/typing, and ListTabs before opening a tab: the page is often already open.";
+    const DESCRIPTION: &'static str = "Controls a live browser via CDP (Chrome/Vivaldi/Brave/Edge). Actions: navigate (load a URL in the current tab), click (by CSS selector or agent_id from ExtractDom), type (text input; set clear=true to replace the field, false to append), scroll, wait, extract_dom (map interactive elements with agent_ids; each carries its tag, text and — when it has them — where a link goes, whether it is disabled, and whether a checkbox is checked; it takes max_elements to bound the list, 0 for none, and filter to keep only the elements whose label, placeholder or link destination contains a text — both fields inside the action), screenshot (base64 PNG), list_tabs (the tabs already open, with the one being driven marked), switch_tab (drive a tab that is already open, by id or by a URL/title substring — prefer this to opening another), open_tab (open a new tab on purpose), close_tab. The tool drives one tab at a time and brings it to the front, so the person and the model look at the same page. Use ExtractDom first to get agent_ids for clicking/typing, and ListTabs before opening a tab: the page is often already open.";
 }
 
 #[async_trait::async_trait]
@@ -512,6 +548,16 @@ impl PersistentCdp {
                     }
                     el.setAttribute('data-agent-id', i.toString());
                     let text = el.innerText || el.value || el.placeholder || el.getAttribute('aria-label') || el.title || '';
+                    // An anchor's destination, and only an anchor's: `href` on
+                    // anything else is not what the model would mean by it. The
+                    // page's own spelling is kept — relative stays relative — so
+                    // what is reported is what the page says, not a guess at the
+                    // absolute URL it resolves to.
+                    let href = el.tagName === 'A' ? el.getAttribute('href') : null;
+                    // What is checked is the property, not the attribute: the
+                    // attribute is the page's first render and the property is
+                    // what the control is now, after a click or a script.
+                    let checked = ('checked' in el) ? el.checked : null;
                     mapped.push({
                         id: i,
                         tag: el.tagName,
@@ -519,7 +565,10 @@ impl PersistentCdp {
                         // the newline buys nothing the model can use.
                         text: text.trim().replace(/\s+/g, ' ').slice(0, 80),
                         input_type: el.getAttribute('type'),
-                        placeholder: el.getAttribute('placeholder')
+                        placeholder: el.getAttribute('placeholder'),
+                        href: href,
+                        disabled: el.disabled === true,
+                        checked: checked === true
                     });
                 });
                 return JSON.stringify(mapped);
@@ -565,12 +614,16 @@ fn bound_elements(
                 .into_iter()
                 .filter(|element| {
                     // The page's `value` is already folded into `text` by the
-                    // extractor, so the label and the placeholder are the whole
-                    // of what there is to match on.
+                    // extractor, so the label, the placeholder and the link's
+                    // destination are the whole of what there is to match on. The
+                    // href is here because finding a link by where it goes —
+                    // "pricing" as a URL when the text says "See plans" — is the
+                    // search a model actually has.
                     let haystack = format!(
-                        "{} {}",
+                        "{} {} {}",
                         element.text,
-                        element.placeholder.as_deref().unwrap_or_default()
+                        element.placeholder.as_deref().unwrap_or_default(),
+                        element.href.as_deref().unwrap_or_default()
                     )
                     .to_lowercase();
                     haystack.contains(&needle)
@@ -1218,6 +1271,9 @@ mod tests {
             text: text.to_owned(),
             input_type: None,
             placeholder: None,
+            href: None,
+            disabled: false,
+            checked: false,
         }
     }
 
@@ -1253,6 +1309,21 @@ mod tests {
     #[tokio::test]
     #[ignore = "needs a browser with --remote-debugging-port=9222"]
     async fn the_bound_reaches_a_live_browser() {
+        // The whole page, capped only by the host's limit, which is high enough
+        // for a test page. Read as `InteractiveElement`s rather than as JSON so
+        // the assertions below are about the fields, not about a map.
+        async fn full_elements() -> Vec<InteractiveElement> {
+            let tool = BrowserTool::new();
+            let request: BrowserRequest =
+                serde_json::from_value(json!({"action": {"type": "extract_dom"}})).expect("parses");
+            let out = tool
+                .call_with_context(&ToolContext::new(), request)
+                .await
+                .expect("runs");
+            let structured = out.structured.expect("structured");
+            serde_json::from_value(structured["elements"].clone()).expect("the elements parse")
+        }
+
         let tool = BrowserTool::new();
         let ask = |value: serde_json::Value| async {
             let request: BrowserRequest = serde_json::from_value(value).expect("parses");
@@ -1286,6 +1357,39 @@ mod tests {
 
         let (all, _matched) = ask(json!({"action": {"type": "extract_dom"}})).await;
         assert!(all > 4, "the page has controls to bound: {all}");
+
+        // The page the test navigates to has the three things a control can
+        // carry besides its label: a link's destination, a disabled button and a
+        // checked box. This is the only place they are read from a real DOM.
+        let elements = full_elements().await;
+        let link = elements
+            .iter()
+            .find(|element| element.tag == "A" && element.text == "See plans")
+            .expect("the pricing link");
+        assert_eq!(
+            link.href.as_deref(),
+            Some("/pricing"),
+            "the link says where"
+        );
+        assert!(
+            elements
+                .iter()
+                .any(|element| element.tag == "BUTTON" && element.disabled),
+            "the disabled button is marked: {elements:?}"
+        );
+        assert!(
+            elements
+                .iter()
+                .any(|element| element.tag == "INPUT" && element.checked),
+            "the checked box is marked"
+        );
+        // And a plain button carries none of it, which is what keeps a long list
+        // from paying for fields that are usually absent.
+        let plain = elements
+            .iter()
+            .find(|element| element.tag == "BUTTON" && element.text == "Sign in")
+            .expect("the plain button");
+        assert!(plain.href.is_none() && !plain.disabled && !plain.checked);
 
         let (kept, _) = ask(json!({"action": {"type": "extract_dom", "max_elements": 3}})).await;
         assert_eq!(kept, 3, "the bound arrived: {kept} of {all}");
@@ -1394,6 +1498,53 @@ mod tests {
         assert_eq!(kept[0].text, "Sign in");
         assert_eq!(kept[1].text, "Sign out");
         assert_eq!(hidden, 0, "the filter matched fewer than the cap");
+    }
+
+    #[test]
+    fn a_link_reports_where_it_goes() {
+        // The text of a link says what it offers, not where it leads. Without
+        // the href a model either guesses or clicks to find out, and a click
+        // that was a question navigates away from the page it was asking about.
+        let mut link = element(0, "A", "See plans");
+        link.href = Some("/pricing".to_owned());
+        let page = vec![link, element(1, "BUTTON", "Sign in")];
+
+        let (kept, _) = bound_elements(page.clone(), None, Some("pricing"), &limits());
+        assert_eq!(kept.len(), 1, "the link is found by where it goes");
+        assert_eq!(kept[0].id, 0);
+
+        // And only an anchor carries one: a button with an href attribute is
+        // not a thing the extractor reports.
+        let (all, _) = bound_elements(page, None, None, &limits());
+        assert_eq!(all[0].href.as_deref(), Some("/pricing"));
+        assert!(all[1].href.is_none(), "a button has nowhere to go");
+    }
+
+    #[test]
+    fn a_plain_element_costs_what_it_always_did() {
+        // The list exists because a page has hundreds of controls, so a field
+        // that is usually absent must not be written on every row. `disabled:
+        // false` on two hundred elements is context spent saying nothing.
+        let plain = serde_json::to_value(element(0, "BUTTON", "Sign in")).expect("json");
+        let object = plain.as_object().expect("object");
+        assert!(!object.contains_key("href"), "{plain}");
+        assert!(!object.contains_key("disabled"), "{plain}");
+        assert!(!object.contains_key("checked"), "{plain}");
+
+        // And each appears when it is the thing a model needs to know.
+        let mut off = element(1, "BUTTON", "Delete");
+        off.disabled = true;
+        let json = serde_json::to_value(&off).expect("json");
+        assert_eq!(json["disabled"], serde_json::json!(true), "{json}");
+
+        let mut box_ = element(2, "INPUT", "");
+        box_.checked = true;
+        let json = serde_json::to_value(&box_).expect("json");
+        assert_eq!(json["checked"], serde_json::json!(true), "{json}");
+    }
+
+    fn limits() -> BrowserLimits {
+        BrowserLimits::default()
     }
 
     #[test]

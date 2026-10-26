@@ -13,6 +13,17 @@ Draft. Not published.
 
 ### Added
 
+- The browser element list reports what a control is, not only what it says. Each
+  entry gains `href` for a link, and `disabled` and `checked` when they are
+  true — a link's text says what it offers and not where it leads, so a model
+  without the destination either guesses or clicks to find out, and a click that
+  was a question navigates away from the page it was asking about; a disabled
+  button looks like any other and does nothing, which is a failure the model
+  cannot explain from what it was shown. The three are left out when absent or
+  false: the list exists because a page has hundreds of controls, and a field
+  that is usually absent must not be written on every row. The `filter` matches
+  a link by its destination too, since finding one by where it goes is the search
+  a model actually has.
 - `ToolContext::progress()` hands back the sink the engine installed, which is
   what a host that wraps a tool call needs to keep passing progress on. The
   context already returned the cancellation and detach tokens its setters took;

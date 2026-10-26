@@ -25,6 +25,15 @@ Draft. Not published.
   is handed on either way. The flag is a field rather than a second tool because
   a request with unknown fields is rejected, so a host cannot offer it without
   the executor knowing the name.
+- The browser tool works with the tabs a browser already has, instead of a page
+  it picked for itself. `list_tabs` reports every open tab with the one being
+  driven marked, `switch_tab` moves to a tab that is already open — by id or by
+  a URL or title substring — `open_tab` opens one on purpose, and `close_tab`
+  closes one. Driving a tab brings it to the front, so the person and the model
+  look at the same page: a click the model makes is one the person can watch,
+  and what the person does next is what the model reads. The tool also remembers
+  the tab it is on, where before every reconnection drove whichever page the
+  endpoint listed first.
 - A shell call can ask for no time bound. `timeout_ms: 0` means "no bound" rather
   than zero milliseconds — a value that would kill every process before it
   started — and a host grants it only when it sets `ShellLimits::allow_indefinite`,

@@ -81,6 +81,45 @@ pub enum BrowserAction {
     ExtractDom,
     /// Take a screenshot of the visible viewport as base64 PNG.
     Screenshot,
+    /// List the tabs the browser already has open.
+    ///
+    /// What a person sees is a row of tabs, and the tool drove whichever one it
+    /// found first. Listing them is what lets a call name the one it means
+    /// instead of navigating the wrong one away.
+    ListTabs,
+    /// Move the tool to a tab the browser already has open.
+    ///
+    /// A different page is usually a tab that is already loaded, not a new one:
+    /// switching keeps the person's own session, its cookies and its scroll
+    /// position, which opening a tab does not.
+    SwitchTab {
+        /// The target id, as `ListTabs` reported it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        /// A substring of the tab's URL or title, when the id is not at hand.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+    },
+    /// Open a new tab, optionally at a URL.
+    ///
+    /// Spelled out as its own action so that opening a tab is a decision: a
+    /// navigation that silently made one left the person looking at a window
+    /// they did not ask for.
+    OpenTab {
+        /// The URL to open, or a blank tab when omitted.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+    },
+    /// Close a tab, by id or by a URL/title substring; the current one when
+    /// neither is given.
+    CloseTab {
+        /// The target id, as `ListTabs` reported it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        /// A substring of the tab's URL or title.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+    },
 }
 
 fn default_wait_seconds() -> f64 {
@@ -108,6 +147,19 @@ fn default_endpoint() -> String {
 
 fn default_true() -> bool {
     true
+}
+
+/// One tab the browser has open.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserTab {
+    /// The target id, which `SwitchTab` and `CloseTab` accept.
+    pub id: String,
+    /// The tab's title.
+    pub title: String,
+    /// The tab's URL.
+    pub url: String,
+    /// Whether this is the tab the tool is driving.
+    pub current: bool,
 }
 
 /// Representation of an interactive element on the page.
@@ -142,6 +194,10 @@ pub struct BrowserOutput {
     /// Base64-encoded PNG screenshot (if action was `Screenshot`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screenshot_base64: Option<String>,
+    /// The browser's open tabs, from `ListTabs` and the actions that change
+    /// which one is current. `current` marks the one the tool drives.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tabs: Vec<BrowserTab>,
     /// Digest of the request.
     pub request_digest: Digest,
 }
@@ -169,6 +225,10 @@ impl Default for BrowserLimits {
 pub struct BrowserTool {
     limits: BrowserLimits,
     cdp_client: Arc<Mutex<Option<PersistentCdp>>>,
+    /// The tab the tool is driving, if any. Kept beside the connection so a
+    /// `navigate` reaches the tab the previous call used instead of whichever
+    /// page the endpoint happens to list first.
+    current_tab: Arc<Mutex<Option<String>>>,
 }
 
 impl std::fmt::Debug for BrowserTool {
@@ -186,6 +246,7 @@ impl BrowserTool {
         Self {
             limits: BrowserLimits::default(),
             cdp_client: Arc::new(Mutex::new(None)),
+            current_tab: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -209,7 +270,9 @@ impl BrowserTool {
     /// Returns an error when the action fails, when the CDP connection drops,
     /// or when the page reports a failure for the requested command.
     pub async fn run(&self, request: &BrowserRequest, _ctx: &ToolContext) -> Result<ToolOutput> {
-        let outcome = execute_browser_action(request, &self.limits, &self.cdp_client).await?;
+        let outcome =
+            execute_browser_action(request, &self.limits, &self.cdp_client, &self.current_tab)
+                .await?;
         let json_val = serde_json::to_value(&outcome)?;
         Ok(ToolOutput::json(json_val))
     }
@@ -223,7 +286,7 @@ impl Default for BrowserTool {
 
 impl ToolMetadata for BrowserTool {
     const NAME: &'static str = "browser_use";
-    const DESCRIPTION: &'static str = "Controls a live browser via CDP (Chrome/Vivaldi/Brave/Edge). Actions: navigate (load a URL), click (by CSS selector or agent_id from ExtractDom), type (text input; set clear=true to replace the field, false to append), scroll, wait, extract_dom (map interactive elements with agent_ids), screenshot (base64 PNG). Use ExtractDom first to get agent_ids for clicking/typing.";
+    const DESCRIPTION: &'static str = "Controls a live browser via CDP (Chrome/Vivaldi/Brave/Edge). Actions: navigate (load a URL in the current tab), click (by CSS selector or agent_id from ExtractDom), type (text input; set clear=true to replace the field, false to append), scroll, wait, extract_dom (map interactive elements with agent_ids), screenshot (base64 PNG), list_tabs (the tabs already open, with the one being driven marked), switch_tab (drive a tab that is already open, by id or by a URL/title substring — prefer this to opening another), open_tab (open a new tab on purpose), close_tab. The tool drives one tab at a time and brings it to the front, so the person and the model look at the same page. Use ExtractDom first to get agent_ids for clicking/typing, and ListTabs before opening a tab: the page is often already open.";
 }
 
 #[async_trait::async_trait]
@@ -378,6 +441,10 @@ impl PersistentCdp {
         Err("Timed out waiting for Page.loadEventFired".into())
     }
 
+    /// The page's visible interactive elements, as the page orders them.
+    ///
+    /// Everything visible is returned — the bound and the filter are the
+    /// caller's, so one place decides what reaches the model.
     async fn extract_interactive(
         &mut self,
         timeout_dur: Duration,
@@ -412,28 +479,19 @@ impl PersistentCdp {
     }
 }
 
-async fn get_or_create_cdp<'a>(
-    endpoint: &str,
-    cdp_slot: &'a Arc<Mutex<Option<PersistentCdp>>>,
-    cmd_timeout: Duration,
-) -> Result<tokio::sync::MutexGuard<'a, Option<PersistentCdp>>> {
-    let mut guard = cdp_slot.lock().await;
+/// One tab the endpoint reports, in the order the browser lists them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Tab {
+    id: String,
+    title: String,
+    url: String,
+    ws_url: String,
+}
 
-    // Verificar si la conexión existente sigue viva
-    if let Some(client) = guard.as_mut()
-        && client.endpoint == endpoint
-        && client
-            .evaluate("1 + 1", Duration::from_millis(500))
-            .await
-            .is_ok()
-    {
-        return Ok(guard);
-    }
-
-    // Si no existe o se desconectó, reconectar
-    let client_http = reqwest::Client::new();
+/// The tabs the endpoint has, with the extension pages and non-page targets out.
+async fn list_targets(client: &reqwest::Client, endpoint: &str) -> Result<Vec<Tab>> {
     let tabs_url = format!("{}/json/list", endpoint.trim_end_matches('/'));
-    let tabs: Vec<Value> = client_http
+    let targets: Vec<Value> = client
         .get(&tabs_url)
         .send()
         .await
@@ -445,63 +503,179 @@ async fn get_or_create_cdp<'a>(
         .json()
         .await
         .map_err(|e| tool_fail(format!("Invalid tabs list JSON from browser: {e}")))?;
-
-    let target_tab = tabs.iter().find(|t| {
-        t["type"] == "page"
-            && !t["url"]
+    Ok(targets
+        .iter()
+        .filter(|tab| {
+            tab["type"] == "page"
+                && !tab["url"]
+                    .as_str()
+                    .unwrap_or("")
+                    .starts_with("chrome-extension://")
+                && tab["webSocketDebuggerUrl"].as_str().is_some()
+        })
+        .map(|tab| Tab {
+            id: tab["id"].as_str().unwrap_or_default().to_owned(),
+            title: tab["title"].as_str().unwrap_or_default().to_owned(),
+            url: tab["url"].as_str().unwrap_or_default().to_owned(),
+            ws_url: tab["webSocketDebuggerUrl"]
                 .as_str()
-                .unwrap_or("")
-                .starts_with("chrome-extension://")
-            && t["webSocketDebuggerUrl"].as_str().is_some()
-    });
+                .unwrap_or_default()
+                .to_owned(),
+        })
+        .collect())
+}
 
-    let (tab_id, ws_url) = if let Some(tab) = target_tab {
-        (
-            tab["id"].as_str().unwrap_or("").to_string(),
-            tab["webSocketDebuggerUrl"].as_str().unwrap().to_string(),
-        )
-    } else {
-        let new_url = format!("{}/json/new", endpoint.trim_end_matches('/'));
-        let new_tab: Value = client_http
-            .put(&new_url)
-            .send()
-            .await
-            .map_err(|e| tool_fail(format!("Failed to open new tab: {e}")))?
-            .json()
-            .await
-            .map_err(|e| tool_fail(format!("Invalid new tab response: {e}")))?;
-        (
-            new_tab["id"].as_str().unwrap_or("").to_string(),
-            new_tab["webSocketDebuggerUrl"]
-                .as_str()
-                .ok_or_else(|| tool_fail("No webSocketDebuggerUrl in new tab".to_owned()))?
-                .to_string(),
-        )
-    };
-
-    if !tab_id.is_empty() {
-        let act_url = format!(
-            "{}/json/activate/{}",
-            endpoint.trim_end_matches('/'),
-            tab_id
-        );
-        let _ = client_http.put(&act_url).send().await;
+/// The tab a name refers to: by id, else by a URL or title substring.
+///
+/// The id is exact and comes from [`list_targets`], so it is tried first. A
+/// substring is what a person or a model has when they only saw the page: it
+/// is matched against the URL and the title, and more than one is an error,
+/// because driving the wrong tab is silent.
+fn pick_tab<'a>(tabs: &'a [Tab], id: Option<&str>, url: Option<&str>) -> Result<&'a Tab> {
+    if let Some(id) = id {
+        return tabs
+            .iter()
+            .find(|tab| tab.id == id)
+            .ok_or_else(|| tool_fail(format!("no tab with id `{id}`; call list_tabs")));
     }
+    let Some(needle) = url else {
+        return Err(Error::InvalidInput(
+            "this action needs an id, a url substring, or nothing for the current tab".to_owned(),
+        ));
+    };
+    let matches: Vec<&Tab> = tabs
+        .iter()
+        .filter(|tab| tab.url.contains(needle) || tab.title.contains(needle))
+        .collect();
+    match matches.as_slice() {
+        [only] => Ok(only),
+        [] => Err(tool_fail(format!(
+            "no open tab matches `{needle}`; call list_tabs to see them"
+        ))),
+        many => Err(tool_fail(format!(
+            "`{needle}` matches {} tabs ({}); pass the id instead",
+            many.len(),
+            many.iter()
+                .map(|tab| tab.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
+    }
+}
 
-    let mut persistent = PersistentCdp::connect(endpoint, &tab_id, &ws_url)
-        .await
-        .map_err(|e| tool_fail(format!("CDP connection failed: {e}")))?;
+/// The tabs as a client reads them, with the driven one marked.
+fn tab_report(tabs: &[Tab], current: Option<&str>) -> Vec<BrowserTab> {
+    tabs.iter()
+        .map(|tab| BrowserTab {
+            id: tab.id.clone(),
+            title: tab.title.clone(),
+            url: tab.url.clone(),
+            current: current == Some(tab.id.as_str()),
+        })
+        .collect()
+}
 
-    let _ = persistent.send("Page.enable", json!({}), cmd_timeout).await;
-    let _ = persistent
-        .send("Runtime.enable", json!({}), cmd_timeout)
-        .await;
-    let _ = persistent
-        .send("Page.bringToFront", json!({}), cmd_timeout)
-        .await;
-
-    *guard = Some(persistent);
+/// Points the connection at `tab`, connecting if it is not already there.
+///
+/// The connection is to one tab, so a call that means a different one has to
+/// reconnect: the alternative — one connection to the browser's tab target —
+/// would need `Target.attachToTarget` sessions and a different command shape for
+/// every call, which this tool does not carry.
+async fn connect_to<'a>(
+    endpoint: &str,
+    tab: &Tab,
+    cdp_slot: &'a Arc<Mutex<Option<PersistentCdp>>>,
+    cmd_timeout: Duration,
+) -> Result<tokio::sync::MutexGuard<'a, Option<PersistentCdp>>> {
+    let mut guard = cdp_slot.lock().await;
+    let already = guard
+        .as_mut()
+        .is_some_and(|client| client.endpoint == endpoint && client.target_id == tab.id);
+    if !already {
+        let mut persistent = PersistentCdp::connect(endpoint, &tab.id, &tab.ws_url)
+            .await
+            .map_err(|e| tool_fail(format!("CDP connection failed: {e}")))?;
+        let _ = persistent.send("Page.enable", json!({}), cmd_timeout).await;
+        let _ = persistent
+            .send("Runtime.enable", json!({}), cmd_timeout)
+            .await;
+        *guard = Some(persistent);
+    }
+    // The person and the model look at the same page: the tab the tool drives is
+    // brought to the front of the window, so a click the model makes is a click
+    // the person can watch, and what the person does next is what the model
+    // reads. Without this the tool drove a tab in the background.
+    if let Some(client) = guard.as_mut() {
+        let _ = client
+            .send("Page.bringToFront", json!({}), cmd_timeout)
+            .await;
+    }
     Ok(guard)
+}
+
+/// The tab the tool is driving, remembering the one the last call left.
+///
+/// The first call of a process picks the first page the endpoint lists — the
+/// frontmost tab of the window it opened with — and every call after it keeps
+/// that tab, so a `navigate` does not jump to whichever page sorts first.
+async fn current_tab(
+    client: &reqwest::Client,
+    endpoint: &str,
+    cdp_slot: &Arc<Mutex<Option<PersistentCdp>>>,
+    current_tab: &Arc<Mutex<Option<String>>>,
+) -> Result<Tab> {
+    let tabs = list_targets(client, endpoint).await?;
+    // The connection knows the tab it is on even if nothing wrote it down.
+    let remembered = current_tab.lock().await.clone().or_else(|| {
+        cdp_slot
+            .try_lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().map(|client| client.target_id.clone()))
+    });
+    if let Some(id) = remembered
+        && let Some(tab) = tabs.iter().find(|tab| tab.id == id)
+    {
+        return Ok(tab.clone());
+    }
+    tabs.into_iter()
+        .next()
+        .ok_or_else(|| tool_fail("the browser has no page tab open".to_owned()))
+}
+
+/// Opens a tab through the endpoint's own new-tab route.
+async fn open_tab(client: &reqwest::Client, endpoint: &str, url: Option<&str>) -> Result<Tab> {
+    let mut query = String::new();
+    if let Some(url) = url {
+        // The route takes the URL as its query string, so the caller's URL is
+        // sent as one: encoding it keeps a `&` in the URL from being read as
+        // another parameter.
+        query = format!("?{url}");
+    }
+    let new_url = format!("{}/json/new{query}", endpoint.trim_end_matches('/'));
+    let value: Value = client
+        .put(&new_url)
+        .send()
+        .await
+        .map_err(|e| tool_fail(format!("Failed to open a tab: {e}")))?
+        .json()
+        .await
+        .map_err(|e| tool_fail(format!("Invalid new tab response: {e}")))?;
+    Ok(Tab {
+        id: value["id"].as_str().unwrap_or_default().to_owned(),
+        title: value["title"].as_str().unwrap_or_default().to_owned(),
+        url: value["url"].as_str().unwrap_or_default().to_owned(),
+        ws_url: value["webSocketDebuggerUrl"]
+            .as_str()
+            .ok_or_else(|| tool_fail("No webSocketDebuggerUrl in the new tab".to_owned()))?
+            .to_owned(),
+    })
+}
+
+/// Closes a tab through the endpoint's own route.
+async fn close_tab(client: &reqwest::Client, endpoint: &str, id: &str) -> Result<()> {
+    let url = format!("{}/json/close/{id}", endpoint.trim_end_matches('/'));
+    let _ = client.get(&url).send().await;
+    Ok(())
 }
 
 // One arm per browser action, each with its own script and readback; the length
@@ -511,12 +685,106 @@ async fn execute_browser_action(
     request: &BrowserRequest,
     limits: &BrowserLimits,
     cdp_slot: &Arc<Mutex<Option<PersistentCdp>>>,
+    current_slot: &Arc<Mutex<Option<String>>>,
 ) -> Result<BrowserOutput> {
     let req_bytes = serde_json::to_vec(request)?;
     let request_digest = Digest::of(&req_bytes);
     let cmd_timeout = Duration::from_secs(limits.cdp_timeout_seconds);
+    let endpoint = request.endpoint.trim_end_matches('/').to_owned();
+    let client = reqwest::Client::new();
 
-    let mut guard = get_or_create_cdp(&request.endpoint, cdp_slot, cmd_timeout).await?;
+    // The tab actions are about the set of tabs, not about a page, so they are
+    // served from the endpoint's own routes and never open a connection. Each
+    // returns the browser's tabs so a model that just switched knows what it is
+    // looking at and what else is there.
+    match &request.action {
+        BrowserAction::ListTabs => {
+            let tabs = list_targets(&client, &endpoint).await?;
+            let current = current_tab(&client, &endpoint, cdp_slot, current_slot)
+                .await
+                .ok()
+                .map(|tab| tab.id);
+            let reported = tab_report(&tabs, current.as_deref());
+            let page = current
+                .as_deref()
+                .and_then(|id| tabs.iter().find(|tab| tab.id == id))
+                .map(|tab| (tab.url.as_str(), tab.title.as_str()));
+            return Ok(tab_output(
+                request_digest,
+                page,
+                format!("{} tab(s) open", tabs.len()),
+                reported,
+            ));
+        }
+        BrowserAction::OpenTab { url } => {
+            let tab = open_tab(&client, &endpoint, url.as_deref()).await?;
+            *current_slot.lock().await = Some(tab.id.clone());
+            let tabs = list_targets(&client, &endpoint).await?;
+            return Ok(tab_output(
+                request_digest,
+                Some((tab.url.as_str(), tab.title.as_str())),
+                match url {
+                    Some(url) => format!("Opened a tab at {url}"),
+                    None => "Opened a tab".to_owned(),
+                },
+                tab_report(&tabs, Some(&tab.id)),
+            ));
+        }
+        BrowserAction::SwitchTab { id, url } => {
+            let tabs = list_targets(&client, &endpoint).await?;
+            let tab = pick_tab(&tabs, id.as_deref(), url.as_deref())?.clone();
+            *current_slot.lock().await = Some(tab.id.clone());
+            // Connecting is what brings it to the front, so a switch is visible
+            // to the person at the same moment the model starts driving it.
+            let _ = connect_to(&endpoint, &tab, cdp_slot, cmd_timeout).await;
+            return Ok(tab_output(
+                request_digest,
+                Some((tab.url.as_str(), tab.title.as_str())),
+                format!("Switched to {} ({})", tab.title, tab.url),
+                tab_report(&tabs, Some(&tab.id)),
+            ));
+        }
+        BrowserAction::CloseTab { id, url } => {
+            let tabs = list_targets(&client, &endpoint).await?;
+            let target = match pick_tab(&tabs, id.as_deref(), url.as_deref()) {
+                Ok(tab) => tab.clone(),
+                // With neither an id nor a substring the current tab is meant,
+                // which is the one thing `pick_tab` cannot resolve on its own.
+                Err(_) if id.is_none() && url.is_none() => {
+                    current_tab(&client, &endpoint, cdp_slot, current_slot).await?
+                }
+                Err(error) => return Err(error),
+            };
+            close_tab(&client, &endpoint, &target.id).await?;
+            let remaining = list_targets(&client, &endpoint).await?;
+            // The closed tab cannot be driven again; move to whatever is left.
+            let next = remaining.first().map(|tab| tab.id.clone());
+            *current_slot.lock().await = next.clone();
+            if let Some(next) = &next
+                && let Some(tab) = remaining.iter().find(|tab| tab.id == *next)
+            {
+                let _ = connect_to(&endpoint, tab, cdp_slot, cmd_timeout).await;
+            }
+            let page = remaining
+                .iter()
+                .find(|tab| next.as_deref() == Some(tab.id.as_str()))
+                .map(|tab| (tab.url.as_str(), tab.title.as_str()));
+            return Ok(tab_output(
+                request_digest,
+                page,
+                format!("Closed the tab at {}", target.url),
+                tab_report(&remaining, next.as_deref()),
+            ));
+        }
+        _ => {}
+    }
+
+    // Every other action runs against one tab: the one this call names if it
+    // named one, else the one the last call left, else the first the browser
+    // has. The tab is brought to the front, so the person watches the same page.
+    let target = current_tab(&client, &endpoint, cdp_slot, current_slot).await?;
+    *current_slot.lock().await = Some(target.id.clone());
+    let mut guard = connect_to(&endpoint, &target, cdp_slot, cmd_timeout).await?;
     let cdp = guard
         .as_mut()
         .ok_or_else(|| tool_fail("Failed to obtain persistent CDP client"))?;
@@ -687,6 +955,14 @@ async fn execute_browser_action(
                 return Err(tool_fail("Failed to extract screenshot payload".to_owned()));
             }
         }
+        // The tab actions returned before this match; the arm keeps the match
+        // exhaustive without running a page command for one of them.
+        BrowserAction::ListTabs
+        | BrowserAction::OpenTab { .. }
+        | BrowserAction::SwitchTab { .. }
+        | BrowserAction::CloseTab { .. } => {
+            return Err(tool_fail("the tab actions do not reach a page".to_owned()));
+        }
     };
 
     let url_val = cdp
@@ -704,6 +980,114 @@ async fn execute_browser_action(
         message,
         elements,
         screenshot_base64,
+        // The tab list belongs to the actions that change it. A page action
+        // does not, and sending it every time is a round trip and a screenful
+        // of JSON the model already has.
+        tabs: Vec::new(),
         request_digest,
     })
+}
+
+/// The output of a tab action.
+///
+/// A pure tab action may end on a tab with no connection, so the page it
+/// reports comes from what the endpoint listed and not from an evaluate that
+/// would have to connect first. `page` is the tab the tool is on now, or `None`
+/// when the action closed the last one.
+fn tab_output(
+    request_digest: Digest,
+    page: Option<(&str, &str)>,
+    message: String,
+    tabs: Vec<BrowserTab>,
+) -> BrowserOutput {
+    let (url, title) = page.unwrap_or(("", ""));
+    BrowserOutput {
+        url: url.to_owned(),
+        title: title.to_owned(),
+        message,
+        elements: Vec::new(),
+        screenshot_base64: None,
+        tabs,
+        request_digest,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tab(id: &str, title: &str, url: &str) -> Tab {
+        Tab {
+            id: id.to_owned(),
+            title: title.to_owned(),
+            url: url.to_owned(),
+            ws_url: format!("ws://127.0.0.1:9222/devtools/page/{id}"),
+        }
+    }
+
+    /// Three tabs, the way a real window looks: an issue, a doc, a blank one.
+    fn open_tabs() -> Vec<Tab> {
+        vec![
+            tab(
+                "AAA",
+                "Fix the flaky test",
+                "https://github.com/o/r/issues/7",
+            ),
+            tab("BBB", "The Guide", "https://docs.example.com/guide"),
+            tab("CCC", "New Tab", "about:blank"),
+        ]
+    }
+
+    #[test]
+    fn a_tab_is_picked_by_its_id_before_anything_else() {
+        let tabs = open_tabs();
+        let picked = pick_tab(&tabs, Some("BBB"), Some("github")).expect("the id wins");
+        assert_eq!(picked.title, "The Guide");
+    }
+
+    #[test]
+    fn a_tab_is_picked_by_a_url_or_title_substring() {
+        let tabs = open_tabs();
+        let by_url = pick_tab(&tabs, None, Some("docs.example")).expect("by url");
+        assert_eq!(by_url.id, "BBB");
+        // The title is searched too, so a model that saw the tab and not its
+        // address can still name it.
+        let by_title = pick_tab(&tabs, None, Some("flaky")).expect("by title");
+        assert_eq!(by_title.id, "AAA");
+    }
+
+    #[test]
+    fn a_substring_that_matches_two_tabs_is_refused_rather_than_guessed() {
+        // Driving the wrong tab is silent, so two matches is an error naming
+        // the ids: the caller can ask for the one it meant.
+        let tabs = vec![
+            tab("AAA", "One", "https://example.com/one"),
+            tab("BBB", "Two", "https://example.com/two"),
+        ];
+        let error = pick_tab(&tabs, None, Some("example.com")).expect_err("ambiguous");
+        let message = error.to_string();
+        assert!(message.contains("AAA"), "{message}");
+        assert!(message.contains("BBB"), "{message}");
+    }
+
+    #[test]
+    fn a_name_that_matches_nothing_says_so_and_points_at_list_tabs() {
+        let tabs = open_tabs();
+        let error = pick_tab(&tabs, None, Some("nowhere")).expect_err("no match");
+        assert!(error.to_string().contains("list_tabs"), "{error}");
+    }
+
+    #[test]
+    fn the_report_marks_the_tab_the_tool_drives() {
+        let tabs = open_tabs();
+        let report = tab_report(&tabs, Some("BBB"));
+        assert_eq!(report.len(), 3);
+        assert!(!report[0].current);
+        assert!(report[1].current, "the driven tab is the one marked");
+        assert!(!report[2].current);
+        // With no current tab — one was just closed, or none is open — every
+        // entry is unmarked rather than the first one claiming to be it.
+        let none = tab_report(&tabs, None);
+        assert!(none.iter().all(|tab| !tab.current));
+    }
 }

@@ -121,8 +121,16 @@ impl ProviderFileRef {
 }
 
 /// Where a media part's bytes live.
+///
+/// Adjacently tagged and not internally: an internally tagged enum cannot hold a
+/// variant whose payload is not a map, and three of the four are a string or the
+/// bytes themselves, so `tag = "source"` alone made every one of them
+/// unserializable — a session holding an image failed at the commit with
+/// "cannot serialize tagged newtype variant". `content = "value"` puts the
+/// payload under its own key, which is the shape serde writes and reads for a
+/// newtype variant.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "source")]
+#[serde(rename_all = "snake_case", tag = "source", content = "value")]
 #[non_exhaustive]
 pub enum MediaSource {
     /// Bytes held in the blob store.
@@ -198,6 +206,10 @@ impl MediaPart {
 mod tests {
     use super::*;
 
+    use crate::domain::message::Message;
+    use crate::domain::part::Part;
+    use crate::domain::role::Role;
+
     #[test]
     fn mime_types_are_validated() {
         assert!(MimeType::new("image/png").is_ok());
@@ -206,5 +218,61 @@ mod tests {
         assert!(MimeType::new("image/").is_err());
         assert!(MimeType::new("/png").is_err());
         assert!(MimeType::new("image/png; charset=utf-8").is_err());
+    }
+
+    /// Every source survives the JSON round-trip a store puts a node through.
+    ///
+    /// A session's media parts are written to a JSON column and read back, so a
+    /// source that cannot be serialized is a session that cannot be saved: an
+    /// image pasted into a prompt fails at the commit, not at the provider. The
+    /// error names the variant — "cannot serialize tagged newtype variant" —
+    /// because an internally tagged enum cannot hold a value that is not a map,
+    /// and every one of these four is a string or the bytes themselves.
+    #[test]
+    fn every_media_source_survives_a_json_round_trip() {
+        let mime = MimeType::new("image/png").expect("mime");
+        let sources = [
+            MediaSource::Inline(b"\x89PNG\r\n\x1a\n".to_vec()),
+            MediaSource::Blob(BlobId::of(b"bytes")),
+            MediaSource::Url("https://example.test/a.png".to_owned()),
+            MediaSource::ProviderFile(ProviderFileRef {
+                provider: ProviderId::new("openai").expect("provider"),
+                file_id: "file-1".to_owned(),
+                expires_at: None,
+                blob: Some(BlobId::of(b"bytes")),
+            }),
+        ];
+        for source in sources {
+            let part = MediaPart::new(MediaKind::Image, source.clone(), mime.clone());
+            let json = serde_json::to_string(&part)
+                .unwrap_or_else(|error| panic!("{source:?} did not serialize: {error}"));
+            let back: MediaPart = serde_json::from_str(&json)
+                .unwrap_or_else(|error| panic!("{source:?} did not read back: {error}"));
+            assert_eq!(back, part, "{source:?} changed across the round trip");
+        }
+    }
+
+    /// The same, through the `Message` the store actually writes.
+    ///
+    /// A media part never travels alone: it is one `Part` of an assistant or
+    /// user message, and the message is what the JSON column holds. This is the
+    /// shape that failed, so it is the one worth pinning.
+    #[test]
+    fn a_message_with_media_survives_a_json_round_trip() {
+        let mime = MimeType::new("image/png").expect("mime");
+        let message = Message::new(
+            Role::User,
+            vec![
+                Part::text("what is in this picture?"),
+                Part::Media(MediaPart::new(
+                    MediaKind::Image,
+                    MediaSource::Blob(BlobId::of(b"a png")),
+                    mime,
+                )),
+            ],
+        );
+        let json = serde_json::to_string(&message).expect("a message with media serializes");
+        let back: Message = serde_json::from_str(&json).expect("and reads back");
+        assert_eq!(back, message);
     }
 }

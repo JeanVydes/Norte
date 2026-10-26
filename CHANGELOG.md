@@ -55,6 +55,15 @@ Draft. Not published.
 
 ### Fixed
 
+- A media part survives being stored. `MediaSource` was internally tagged —
+  `#[serde(tag = "source")]` — which serde supports only for variants whose
+  payload is a map, and three of the four are a string or the bytes themselves.
+  Serializing any of them failed with "cannot serialize tagged newtype variant
+  MediaSource::Blob containing a string", so a session holding an image could not
+  be committed at all: the image failed at the store, before the provider was
+  ever asked. The enum is adjacently tagged (`content = "value"`) now, which is
+  the shape serde writes and reads for a newtype variant, and a round-trip test
+  covers all four sources and a `Message` carrying one.
 - An `edit` that would change nothing is a failure, not a success. `search` and
   `replace` being the same text used to be accepted — reported as "applied,
   nothing changed", which reads as done — so a model that heard it never

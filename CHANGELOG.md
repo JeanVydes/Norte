@@ -13,6 +13,12 @@ Draft. Not published.
 
 ### Added
 
+- `ToolContext::progress()` hands back the sink the engine installed, which is
+  what a host that wraps a tool call needs to keep passing progress on. The
+  context already returned the cancellation and detach tokens its setters took;
+  this is the same thing for the sink. A wrapper that replaces the sink to file
+  output elsewhere can forward to the engine's while the call is still its to
+  report.
 - A shell request can ask to be detached before it starts. `detach: true` makes
   the call answer as soon as the process starts and leave it running, which is
   the same path a host takes when it detaches a call from outside — the process

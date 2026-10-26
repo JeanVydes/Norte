@@ -188,6 +188,16 @@ impl ToolContext {
         self.detach.is_cancelled()
     }
 
+    /// The sink progress goes to, so a wrapper can pass it on.
+    ///
+    /// A host that wraps a call to watch it substitutes a sink of its own; this
+    /// is what lets that sink keep delivering to the engine's while it decides
+    /// not to, and stop when the call is no longer the engine's to report.
+    #[must_use]
+    pub fn progress(&self) -> Option<Arc<dyn ProgressSink>> {
+        self.progress.clone()
+    }
+
     /// Best-effort progress. It is not a durability event: if the consumer is
     /// slow or gone, the update is dropped.
     pub fn emit(&self, progress: ToolProgress) {
@@ -1027,6 +1037,38 @@ mod tests {
         let sent = sink.0.lock().expect("lock");
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0].stream, ToolStream::Stderr);
+    }
+
+    #[test]
+    fn a_wrapper_can_read_the_sink_and_pass_progress_on() {
+        // What a host wrapper needs: the engine's sink, and an `emit` that still
+        // reaches it. Without the getter the wrapper could only replace the sink,
+        // so the live view would end at the wrapper's door.
+        #[derive(Default)]
+        struct Sink(Mutex<Vec<ToolProgress>>);
+
+        impl ProgressSink for Sink {
+            fn send(&self, progress: ToolProgress) {
+                self.0.lock().expect("lock").push(progress);
+            }
+        }
+
+        let engine = Arc::new(Sink::default());
+        let context = ToolContext::new().with_progress(engine.clone());
+        let passed_on = context.progress().expect("the sink the engine installed");
+        passed_on.send(ToolProgress {
+            stream: ToolStream::Stdout,
+            bytes: b"forwarded".to_vec(),
+            last: false,
+        });
+
+        let sent = engine.0.lock().expect("lock");
+        assert_eq!(
+            sent.len(),
+            1,
+            "the engine's sink received what was passed on"
+        );
+        assert_eq!(sent[0].bytes, b"forwarded");
     }
 
     #[tokio::test]

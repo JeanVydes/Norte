@@ -13,7 +13,9 @@
 //!   and from the audit record whether the request likes it or not.
 //! * **The process group does not outlive the call.** On timeout, on
 //!   cancellation, when a pipe will not close and when the future is dropped,
-//!   the whole group is killed.
+//!   the whole group is killed. A call a host allowed to run unbounded is the
+//!   one exception, and it is not really one: nothing bounds *it*, but the same
+//!   guard, the same cancellation token and the same drop still kill its group.
 //! * **Authorization is not the executor's business.** A request can name any
 //!   program, so deciding which commands may run belongs to the host's approval
 //!   ledger and policies (FR-APPR-1, FR-POL-1). A sandbox is a lower-level
@@ -85,7 +87,14 @@ pub struct ShellRequest {
     pub env: BTreeMap<String, String>,
     /// How long the process may run, in milliseconds. A value above the host's
     /// ceiling is clamped to it.
+    ///
+    /// Zero asks for no bound at all, which only a host that set
+    /// [`ShellLimits::allow_indefinite`] grants; anywhere else it is the host's
+    /// default, because an unclamped zero would be a request to run forever.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(
+        description = "How long the process may run, in milliseconds. Above the host's ceiling it is clamped to it. Zero asks for no bound, which the host grants only where it allows it, for a call that starts something long-lived; a foreground call that asks for zero is given the host's default instead."
+    )]
     pub timeout_ms: Option<u64>,
     /// How many bytes of each stream the executor keeps. A value above the
     /// host's ceiling is clamped to it; the model sees at most
@@ -395,6 +404,15 @@ pub struct ShellLimits {
     pub default_timeout: Duration,
     /// Ceiling for a request's `timeout_ms`.
     pub max_timeout: Duration,
+    /// Whether a request of `0` is granted, meaning no bound at all.
+    ///
+    /// Off by default, because a call with no bound cannot be told from a hung
+    /// one by whoever is waiting for it. A host turns it on for the calls it
+    /// runs in the background, where nothing waits: a server started for the rest
+    /// of the session is the case it exists for. The process is still the host's
+    /// to kill — the group guard, the cancellation token and the detach token all
+    /// reach it exactly as they do a bounded call.
+    pub allow_indefinite: bool,
     /// How long a signalled process group has to leave before it is killed.
     pub grace: Duration,
     /// How long to wait for the output pipes once the process has been reaped.
@@ -416,6 +434,7 @@ impl Default for ShellLimits {
         Self {
             default_timeout: Duration::from_secs(120),
             max_timeout: Duration::from_secs(600),
+            allow_indefinite: false,
             grace: Duration::from_secs(2),
             drain: Duration::from_secs(2),
             max_output_bytes: 1024 * 1024,
@@ -508,13 +527,35 @@ impl ShellTool {
         ToolDeclaration::new(Self::NAME, Self::DESCRIPTION, Arc::new(self))
     }
 
-    /// The time bound for this request: what it asked for, clamped to the
-    /// host's ceiling, or the host's default.
-    fn timeout(&self, request: &ShellRequest) -> Duration {
-        request
-            .timeout_ms
-            .map_or(self.limits.default_timeout, Duration::from_millis)
-            .min(self.limits.max_timeout)
+    /// The time bound for this request, or `None` when it asked for none and the
+    /// host allows that.
+    ///
+    /// Three cases, in order: no bound requested and allowed; a bound asked for,
+    /// clamped to the host's ceiling; and everything else, which gets the host's
+    /// default. A request of `0` asks for no bound — a zero-millisecond run would
+    /// kill every process before it started, so the number would be useless as
+    /// anything but a sentinel — and it is granted only where
+    /// [`ShellLimits::allow_indefinite`] says so.
+    ///
+    /// `None` is not "no limit by accident": a call with no bound runs until it
+    /// ends, is cancelled, or is detached, and the caller has no way to make the
+    /// difference between it and a hung one. That is why the host decides.
+    fn timeout(&self, request: &ShellRequest) -> Option<Duration> {
+        let Some(millis) = request.timeout_ms else {
+            return Some(self.limits.default_timeout);
+        };
+        // Zero is the sentinel, and it is granted only where the host said so.
+        // Everywhere else it falls through to the default beside it, because a
+        // request that asked for no bound and was refused still has to be given
+        // one.
+        if millis == 0 {
+            return if self.limits.allow_indefinite {
+                None
+            } else {
+                Some(self.limits.default_timeout)
+            };
+        }
+        Some(Duration::from_millis(millis).min(self.limits.max_timeout))
     }
 
     /// The capture cap for this request, clamped to the host's ceiling.
@@ -693,33 +734,11 @@ impl ShellTool {
         // arrived without waiting for the readers to finish.
         let snapshot = (Arc::clone(&streams.stdout), Arc::clone(&streams.stderr));
 
-        let mut timed_out = false;
-        let mut cancelled = false;
-        let mut detached = false;
-        // The three ways out are not the same. Cancelling and timing out kill
-        // the group; detaching does not — it stops waiting and leaves the
-        // process running, so whoever detached it reads the rest later.
-        let status = tokio::select! {
-            status = child.wait() => status,
-            () = tokio::time::sleep(self.timeout(request)) => {
-                timed_out = true;
-                self.terminate(&mut child, &mut guard).await
-            }
-            () = context.cancelled() => {
-                cancelled = true;
-                self.terminate(&mut child, &mut guard).await
-            }
-            () = context.detached() => {
-                detached = true;
-                // Disarming the guard is what lets the process outlive this
-                // call: the guard kills its group on drop.
-                guard.disarm();
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::Interrupted,
-                    "detached",
-                ))
-            }
-        };
+        let wait = self
+            .wait_for_exit(context, request, &mut child, &mut guard)
+            .await;
+        let (status, timed_out, cancelled, detached) =
+            (wait.status, wait.timed_out, wait.cancelled, wait.detached);
 
         // A detached call reports what has arrived so far and returns without
         // draining: the readers belong to a process that is still running, and
@@ -855,6 +874,56 @@ impl ShellTool {
         (streams, cap)
     }
 
+    /// Waits for the process to end, or for one of the three things that can end
+    /// the wait for it.
+    ///
+    /// The three are not the same. Cancelling and timing out kill the group;
+    /// detaching does not — it stops waiting and leaves the process running, so
+    /// whoever detached it reads the rest later.
+    ///
+    /// A call the host allowed no bound has no deadline to reach: the timeout
+    /// branch never completes, and the call ends the way every other one can —
+    /// the process exits, the caller cancels, or the caller detaches.
+    async fn wait_for_exit(
+        &self,
+        context: &ToolContext,
+        request: &ShellRequest,
+        child: &mut tokio::process::Child,
+        guard: &mut GroupGuard,
+    ) -> Wait {
+        let deadline = self.timeout(request);
+        let bounded = async move {
+            match deadline {
+                Some(bound) => tokio::time::sleep(bound).await,
+                None => std::future::pending::<()>().await,
+            }
+        };
+
+        let mut wait = Wait::default();
+        wait.status = tokio::select! {
+            status = child.wait() => status,
+            () = bounded => {
+                wait.timed_out = true;
+                self.terminate(child, guard).await
+            }
+            () = context.cancelled() => {
+                wait.cancelled = true;
+                self.terminate(child, guard).await
+            }
+            () = context.detached() => {
+                wait.detached = true;
+                // Disarming the guard is what lets the process outlive this
+                // call: the guard kills its group on drop.
+                guard.disarm();
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    "detached",
+                ))
+            }
+        };
+        wait
+    }
+
     async fn terminate(
         &self,
         child: &mut tokio::process::Child,
@@ -875,6 +944,31 @@ impl ShellTool {
                     "the process did not die after SIGKILL",
                 ))
             })
+    }
+}
+
+/// How a call stopped waiting, and what the process did.
+///
+/// The three flags are separate because they are not the same answer: the first
+/// two killed the group and the third handed it on. `status` is the process's
+/// own when it ended of its own accord, and the error from a kill otherwise.
+struct Wait {
+    status: std::io::Result<ExitStatus>,
+    timed_out: bool,
+    cancelled: bool,
+    detached: bool,
+}
+
+impl Default for Wait {
+    fn default() -> Self {
+        Self {
+            // The process would have to answer for itself before this is read;
+            // one that never started is handled before the wait.
+            status: Err(std::io::Error::other("the process was not waited for")),
+            timed_out: false,
+            cancelled: false,
+            detached: false,
+        }
     }
 }
 
@@ -1914,6 +2008,102 @@ mod tests {
         let structured = structured(&output);
         assert_eq!(structured["code"], "timeout");
         assert_eq!(structured["timed_out"], true);
+    }
+
+    #[tokio::test]
+    async fn zero_asks_for_no_bound_and_gets_the_host_default_by_default() {
+        // `0` is a sentinel, not a duration: a zero-millisecond bound would kill
+        // every process before it started. A host that has not opted in reads it
+        // as "no opinion" and applies its default, which is what keeps the
+        // number from being a hole a model can disappear into.
+        let limits = ShellLimits {
+            default_timeout: Duration::from_millis(120),
+            grace: Duration::from_millis(50),
+            ..ShellLimits::default()
+        };
+        let tool = ShellTool::new().with_limits(limits);
+        let request = request("sleep 30").with_timeout(Duration::ZERO);
+        let output = tool.call(request).await.expect("execute");
+        assert_eq!(
+            structured(&output)["code"],
+            "timeout",
+            "an opt-out host applied its default of 120 ms"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_host_that_allows_it_lets_zero_run_to_the_end() {
+        // The case this exists for: something that starts a long-lived server and
+        // answers. It has to outlive the default by a wide margin, or the test
+        // would pass on a build that ignored the flag.
+        let limits = ShellLimits {
+            default_timeout: Duration::from_millis(80),
+            grace: Duration::from_millis(50),
+            allow_indefinite: true,
+            ..ShellLimits::default()
+        };
+        let tool = ShellTool::new().with_limits(limits);
+        let request = request("sleep 0.4; echo done").with_timeout(Duration::ZERO);
+        let output = tool.call(request).await.expect("execute");
+        let structured = structured(&output);
+        assert_eq!(
+            structured["code"], "success",
+            "it outlived the 80 ms default: {structured:?}"
+        );
+        assert_eq!(
+            structured["stdout"], "done\n",
+            "its output arrived at the end of the run"
+        );
+        assert!(
+            structured["duration_ms"].as_u64().unwrap_or(0) >= 400,
+            "it really ran past the default: {structured:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unbounded_call_is_still_cancelled_and_its_group_killed() {
+        // "No bound" means no bound, not no control: whoever allowed it can still
+        // cancel, and the group guard still runs. This is the property the module
+        // promises, and the flag must not be a way around it.
+        let dir = temp_dir("unbounded-cancel");
+        let pid_file = dir.join("pid");
+        let limits = ShellLimits {
+            allow_indefinite: true,
+            ..ShellLimits::default()
+        };
+        let tool = ShellTool::new().with_limits(limits);
+        let script = format!("echo $$ > {}; sleep 30", pid_file.display());
+        let request = request(&script).with_timeout(Duration::ZERO);
+
+        let context = ToolContext::new();
+        let cancel = context.cancellation();
+        let watched = pid_file.clone();
+        tokio::spawn(async move {
+            // Cancel only once the process has written its pid, so the assertion
+            // below is not a race against startup.
+            wait_for(&watched).await;
+            cancel.cancel();
+        });
+
+        let output = tool
+            .call_with_context(&context, request)
+            .await
+            .expect("execute");
+        assert_eq!(
+            structured(&output)["code"],
+            "cancelled",
+            "the caller ended it, not a deadline"
+        );
+
+        // The group is gone: killed on the way out, unbounded or not.
+        let pid = read_pid(&pid_file);
+        #[cfg(unix)]
+        assert_eq!(
+            nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None),
+            Err(nix::errno::Errno::ESRCH),
+            "the group of an unbounded call is killed like any other"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

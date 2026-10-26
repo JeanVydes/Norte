@@ -11,6 +11,17 @@ entry describes the whole set.
 
 Draft. Not published.
 
+### Added
+
+- A shell call can ask for no time bound. `timeout_ms: 0` means "no bound" rather
+  than zero milliseconds — a value that would kill every process before it
+  started — and a host grants it only when it sets `ShellLimits::allow_indefinite`,
+  which is off by default. The case it exists for is a background call that starts
+  something long-lived, such as a browser with a debug port open for the rest of
+  the session. The process is still the host's to kill: the group guard, the
+  cancellation token and the detach token all reach an unbounded call exactly as
+  they reach a bounded one, so `Ctrl-C` and a dropped future end it as before.
+
 ### Fixed
 
 - OpenAI Responses now honors the host's `no_prompt_cache_key` quirk. It sent

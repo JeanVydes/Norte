@@ -77,8 +77,33 @@ pub enum BrowserAction {
         #[serde(default = "default_wait_seconds")]
         seconds: f64,
     },
-    /// Map and extract visible interactive elements (`a`, `button`, `input`, `textarea`, etc.) with assigned `agent_id`s.
-    ExtractDom,
+    /// Map and extract visible interactive elements (`a`, `button`, `input`,
+    /// `textarea`, etc.) with assigned `agent_id`s.
+    ///
+    /// The bound and the filter live here, not beside `action`: only this action
+    /// returns elements, and a field declared outside it is invisible in this
+    /// variant's own schema — a model reading the `extract_dom` branch sees
+    /// `{type}` and nothing else. They were once siblings of `action`, which had
+    /// the second half of the problem too: a model that put them inside the
+    /// action, where they belong, had them dropped without an error, because
+    /// `deny_unknown_fields` does not apply to an internally tagged enum.
+    ExtractDom {
+        /// The most elements to return (defaults to the host's limit; `0`
+        /// returns none, for a call that only needs the page). The answer
+        /// reports how many matched.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(
+            description = "The most elements to return (defaults to the host's limit; 0 returns none, for a call that only needs the page). The answer reports how many matched."
+        )]
+        max_elements: Option<usize>,
+        /// Keeps only the elements whose text, value or placeholder contains
+        /// this, case-insensitively.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(
+            description = "Keep only elements whose label contains this text (case-insensitive). Use it to pick a control out of a busy page instead of returning the whole list."
+        )]
+        filter: Option<String>,
+    },
     /// Take a screenshot of the visible viewport as base64 PNG.
     Screenshot,
     /// List the tabs the browser already has open.
@@ -139,26 +164,6 @@ pub struct BrowserRequest {
     /// Highlight the target element visually before interacting (default true).
     #[serde(default = "default_true")]
     pub highlight: bool,
-    /// The most interactive elements to return, when the action returns any.
-    ///
-    /// The page decides how many there are and a real page has hundreds, so the
-    /// answer is bounded and says when it was cut. Omitted, the host's limit
-    /// applies; `0` asks for none, which is how a model that only wants the
-    /// page's URL and title avoids paying for the whole DOM.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(
-        description = "The most elements to return (defaults to the host's limit; 0 returns none, for a call that only needs the page). The answer reports how many matched."
-    )]
-    pub max_elements: Option<usize>,
-    /// Keeps only the elements whose text, value or placeholder contains this.
-    ///
-    /// Case-insensitive. It is the cheap way to find a control on a busy page:
-    /// the whole list never has to come back to pick one out of it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(
-        description = "Keep only elements whose label contains this text (case-insensitive). Use it to pick a control out of a busy page instead of returning the whole list."
-    )]
-    pub filter: Option<String>,
 }
 
 fn default_endpoint() -> String {
@@ -332,7 +337,7 @@ impl Default for BrowserTool {
 
 impl ToolMetadata for BrowserTool {
     const NAME: &'static str = "browser_use";
-    const DESCRIPTION: &'static str = "Controls a live browser via CDP (Chrome/Vivaldi/Brave/Edge). Actions: navigate (load a URL in the current tab), click (by CSS selector or agent_id from ExtractDom), type (text input; set clear=true to replace the field, false to append), scroll, wait, extract_dom (map interactive elements with agent_ids; set max_elements to bound the list, 0 for none, and filter to keep only elements whose label contains a text), screenshot (base64 PNG), list_tabs (the tabs already open, with the one being driven marked), switch_tab (drive a tab that is already open, by id or by a URL/title substring — prefer this to opening another), open_tab (open a new tab on purpose), close_tab. The tool drives one tab at a time and brings it to the front, so the person and the model look at the same page. Use ExtractDom first to get agent_ids for clicking/typing, and ListTabs before opening a tab: the page is often already open.";
+    const DESCRIPTION: &'static str = "Controls a live browser via CDP (Chrome/Vivaldi/Brave/Edge). Actions: navigate (load a URL in the current tab), click (by CSS selector or agent_id from ExtractDom), type (text input; set clear=true to replace the field, false to append), scroll, wait, extract_dom (map interactive elements with agent_ids; it takes max_elements to bound the list, 0 for none, and filter to keep only elements whose label contains a text — both fields inside the action), screenshot (base64 PNG), list_tabs (the tabs already open, with the one being driven marked), switch_tab (drive a tab that is already open, by id or by a URL/title substring — prefer this to opening another), open_tab (open a new tab on purpose), close_tab. The tool drives one tab at a time and brings it to the front, so the person and the model look at the same page. Use ExtractDom first to get agent_ids for clicking/typing, and ListTabs before opening a tab: the page is often already open.";
 }
 
 #[async_trait::async_trait]
@@ -527,6 +532,18 @@ impl PersistentCdp {
     }
 }
 
+/// What an action asked of its own element list.
+///
+/// Empty for every action but `extract_dom`, which is the only one that returns
+/// elements. The two live in that variant's own schema so a model reading the
+/// `extract_dom` branch sees them; as siblings of `action` they were invisible
+/// there, and putting them inside the action had serde drop them silently.
+#[derive(Default)]
+struct Bound {
+    max_elements: Option<usize>,
+    filter: Option<String>,
+}
+
 /// The elements an answer carries: filtered, capped, and honest about the cap.
 ///
 /// `elements` is what the page holds; `request` and `limits` decide what the
@@ -537,10 +554,11 @@ impl PersistentCdp {
 /// as the whole page.
 fn bound_elements(
     elements: Vec<InteractiveElement>,
-    request: &BrowserRequest,
+    max_elements: Option<usize>,
+    filter: Option<&str>,
     limits: &BrowserLimits,
 ) -> (Vec<InteractiveElement>, usize) {
-    let filtered: Vec<InteractiveElement> = match request.filter.as_deref() {
+    let filtered: Vec<InteractiveElement> = match filter {
         Some(needle) if !needle.is_empty() => {
             let needle = needle.to_lowercase();
             elements
@@ -562,7 +580,7 @@ fn bound_elements(
         _ => elements,
     };
     let matched = filtered.len();
-    let cap = request.max_elements.unwrap_or(limits.max_elements);
+    let cap = max_elements.unwrap_or(limits.max_elements);
     let mut kept = filtered;
     kept.truncate(cap);
     let hidden = matched.saturating_sub(kept.len());
@@ -879,6 +897,11 @@ async fn execute_browser_action(
         .as_mut()
         .ok_or_else(|| tool_fail("Failed to obtain persistent CDP client"))?;
 
+    // What `extract_dom` asked for, and nothing for the actions that return no
+    // elements. It is not a field on the request because only one variant has
+    // it: the schema a model reads is the schema the variant declares, and a
+    // field declared outside it is invisible in that variant's branch.
+    let mut bound = Bound::default();
     let (message, elements, screenshot_base64) = match &request.action {
         BrowserAction::Navigate { url } => {
             let _ = cdp
@@ -1015,7 +1038,14 @@ async fn execute_browser_action(
                 .unwrap_or_default();
             (format!("Waited for {wait_secs}s"), els, None)
         }
-        BrowserAction::ExtractDom => {
+        BrowserAction::ExtractDom {
+            max_elements,
+            filter,
+        } => {
+            bound = Bound {
+                max_elements: *max_elements,
+                filter: filter.clone(),
+            };
             let els = cdp
                 .extract_interactive(cmd_timeout)
                 .await
@@ -1058,8 +1088,14 @@ async fn execute_browser_action(
     // One place bounds the list, whatever action produced it: the filter first
     // — a page's controls are more than a model asked for, and naming one is
     // cheaper than receiving them all — and the cap second, with the count left
-    // in the output so a cut list says it was cut.
-    let (elements, elements_matched) = bound_elements(elements, request, limits);
+    // in the output so a cut list says it was cut. Only `extract_dom` sets the
+    // two, so an action that produces no elements passes `None` for both.
+    let (elements, elements_matched) = bound_elements(
+        elements,
+        bound.max_elements,
+        bound.filter.as_deref(),
+        limits,
+    );
 
     let url_val = cdp
         .evaluate("window.location.href", cmd_timeout)
@@ -1185,16 +1221,6 @@ mod tests {
         }
     }
 
-    fn request(max_elements: Option<usize>, filter: Option<&str>) -> BrowserRequest {
-        BrowserRequest {
-            action: BrowserAction::ExtractDom,
-            endpoint: "http://127.0.0.1:9222".to_owned(),
-            highlight: false,
-            max_elements,
-            filter: filter.map(str::to_owned),
-        }
-    }
-
     #[test]
     fn the_element_list_is_capped_at_the_host_limit_by_default() {
         // A page has hundreds of controls and every one is context. The default
@@ -1207,9 +1233,61 @@ mod tests {
         let page: Vec<_> = (0..10)
             .map(|index| element(index, "A", &format!("link {index}")))
             .collect();
-        let (kept, hidden) = bound_elements(page, &request(None, None), &limits);
+        let (kept, hidden) = bound_elements(page, None, None, &limits);
         assert_eq!(kept.len(), 3);
         assert_eq!(hidden, 7, "the seven left out are counted");
+    }
+
+    #[test]
+    fn the_schema_declares_the_bound_where_a_model_reads_it() {
+        // The bug this pins: `max_elements` and `filter` were siblings of
+        // `action`, so the `extract_dom` branch of the schema declared `{type}`
+        // and nothing else — a model reading that branch had no way to know the
+        // fields existed. Moving them into `action` instead was worse: serde
+        // drops an unknown field of an internally tagged enum without an error,
+        // so the call looked accepted and the bound was silently the host's.
+        let declaration = BrowserTool::new().into_declaration();
+        let schema = serde_json::to_value(&declaration.parameters).expect("schema");
+
+        // Not at the top level: that is where they were invisible.
+        let top = schema["properties"].as_object().expect("properties");
+        assert!(
+            !top.contains_key("max_elements"),
+            "the bound is not a sibling of `action`: {schema}"
+        );
+
+        let variants = schema["$defs"]["BrowserAction"]["oneOf"]
+            .as_array()
+            .expect("variants");
+        let extract = variants
+            .iter()
+            .find(|variant| variant["properties"]["type"]["const"].as_str() == Some("extract_dom"))
+            .expect("the extract_dom branch");
+        let props = extract["properties"].as_object().expect("its properties");
+        assert!(
+            props.contains_key("max_elements"),
+            "the branch a model reads declares the bound: {extract}"
+        );
+        assert!(props.contains_key("filter"), "and the filter: {extract}");
+    }
+
+    #[test]
+    fn a_bound_inside_the_action_reaches_the_tool() {
+        // The shape a model writes, and the one that used to be dropped in
+        // silence: the fields inside the action, not beside it.
+        let request: BrowserRequest = serde_json::from_value(serde_json::json!({
+            "action": {"type": "extract_dom", "max_elements": 3, "filter": "sign"}
+        }))
+        .expect("a call with the bound inside the action parses");
+        let BrowserAction::ExtractDom {
+            max_elements,
+            filter,
+        } = request.action
+        else {
+            panic!("it is an extract_dom");
+        };
+        assert_eq!(max_elements, Some(3), "the bound arrived");
+        assert_eq!(filter.as_deref(), Some("sign"), "and the filter");
     }
 
     #[test]
@@ -1218,13 +1296,13 @@ mod tests {
         let page: Vec<_> = (0..10)
             .map(|index| element(index, "A", &format!("link {index}")))
             .collect();
-        let (kept, hidden) = bound_elements(page.clone(), &request(Some(2), None), &limits);
+        let (kept, hidden) = bound_elements(page.clone(), Some(2), None, &limits);
         assert_eq!(kept.len(), 2);
         assert_eq!(hidden, 8);
 
         // Zero is how a call that only wants the page's URL and title avoids
         // paying for the DOM at all. It is not "no limit": that is the default.
-        let (none, hidden) = bound_elements(page, &request(Some(0), None), &limits);
+        let (none, hidden) = bound_elements(page, Some(0), None, &limits);
         assert!(none.is_empty());
         assert_eq!(hidden, 10);
     }
@@ -1239,7 +1317,7 @@ mod tests {
             element(1, "A", "Documentation"),
             element(2, "BUTTON", "Sign out"),
         ];
-        let (kept, hidden) = bound_elements(page, &request(None, Some("sign")), &limits);
+        let (kept, hidden) = bound_elements(page, None, Some("sign"), &limits);
         assert_eq!(kept.len(), 2, "case does not matter: {kept:?}");
         assert_eq!(kept[0].text, "Sign in");
         assert_eq!(kept[1].text, "Sign out");
@@ -1254,7 +1332,7 @@ mod tests {
         let mut box_ = element(0, "INPUT", "");
         box_.placeholder = Some("Search the docs".to_owned());
         let page = vec![box_, element(1, "A", "Home")];
-        let (kept, _) = bound_elements(page, &request(None, Some("docs")), &limits);
+        let (kept, _) = bound_elements(page, None, Some("docs"), &limits);
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].id, 0);
     }
@@ -1266,7 +1344,7 @@ mod tests {
         // output the model reads on every action.
         let limits = BrowserLimits::default();
         let page = vec![element(0, "A", "Home")];
-        let (kept, hidden) = bound_elements(page, &request(None, None), &limits);
+        let (kept, hidden) = bound_elements(page, None, None, &limits);
         assert_eq!(kept.len(), 1);
         assert_eq!(hidden, 0);
     }

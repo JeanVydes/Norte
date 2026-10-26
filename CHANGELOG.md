@@ -55,6 +55,15 @@ Draft. Not published.
 
 ### Fixed
 
+- The browser tool's `max_elements` and `filter` reach it. They were siblings of
+  `action`, so the `extract_dom` branch of the schema declared `{type}` and
+  nothing else: a model reading the branch it was about to call had no way to
+  know either field existed, and the answer came back whole while the call
+  looked like it had asked for a bound. Moving them into `action` was the other
+  half of the trap — `deny_unknown_fields` does not apply to an internally
+  tagged enum, so serde dropped them without an error and the bound was silently
+  the host's. They live in the variant that uses them now, which is both where
+  the schema shows them and where a model writes them.
 - A media part survives being stored. `MediaSource` was internally tagged —
   `#[serde(tag = "source")]` — which serde supports only for variants whose
   payload is a map, and three of the four are a string or the bytes themselves.

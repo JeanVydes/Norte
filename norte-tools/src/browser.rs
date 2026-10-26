@@ -88,12 +88,13 @@ pub enum BrowserAction {
     /// action, where they belong, had them dropped without an error, because
     /// `deny_unknown_fields` does not apply to an internally tagged enum.
     ExtractDom {
-        /// The most elements to return (defaults to the host's limit; `0`
-        /// returns none, for a call that only needs the page). The answer
-        /// reports how many matched.
+        /// The most elements to return. `0` returns none, for a call that only
+        /// needs the page; omitting it uses the host's ceiling. A larger number
+        /// is clamped to that ceiling, and the answer reports what the cap left
+        /// out.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[schemars(
-            description = "The most elements to return (defaults to the host's limit; 0 returns none, for a call that only needs the page). The answer reports how many matched."
+            description = "The most elements to return. 0 returns none, for a call that only needs the page; omitting it uses the host's ceiling, and asking for more than that is clamped to it. The answer reports how many the cap left out."
         )]
         max_elements: Option<usize>,
         /// Keeps only the elements whose text, value or placeholder contains
@@ -286,14 +287,19 @@ pub struct BrowserLimits {
     pub max_wait_seconds: u64,
     /// Timeout in seconds for individual CDP commands.
     pub cdp_timeout_seconds: u64,
-    /// The most interactive elements one answer carries, when the request does
-    /// not name its own.
+    /// The most interactive elements one answer carries.
     ///
     /// A page's controls are what a model needs to act, but a page has hundreds
     /// of them and every one is a line of JSON in the context: past a screenful
     /// the list stops being read and starts being a bill. The answer says how
     /// many it left out, so a model that needs more can filter instead of
     /// guessing that it saw everything.
+    ///
+    /// A request may ask for fewer, and for none. It may not ask for more: this
+    /// is a ceiling and not a default, because a bound the caller can raise is
+    /// not a bound. A model that asked for `max_elements: 5000` on a page of
+    /// 1200 links was handed 107 KB — a third of a context window — and the
+    /// number it typed was not a decision anybody had made about that page.
     pub max_elements: usize,
 }
 
@@ -373,7 +379,7 @@ impl Default for BrowserTool {
 
 impl ToolMetadata for BrowserTool {
     const NAME: &'static str = "browser_use";
-    const DESCRIPTION: &'static str = "Controls a live browser via CDP (Chrome/Vivaldi/Brave/Edge). Actions: navigate (load a URL in the current tab), click (by CSS selector or agent_id from ExtractDom), type (text input; set clear=true to replace the field, false to append), scroll, wait, extract_dom (map interactive elements with agent_ids; each carries its tag, text and — when it has them — where a link goes, whether it is disabled, and whether a checkbox is checked; it takes max_elements to bound the list, 0 for none, and filter to keep only the elements whose label, placeholder or link destination contains a text — both fields inside the action), screenshot (base64 PNG), list_tabs (the tabs already open, with the one being driven marked), switch_tab (drive a tab that is already open, by id or by a URL/title substring — prefer this to opening another), open_tab (open a new tab on purpose), close_tab. The tool drives one tab at a time and brings it to the front, so the person and the model look at the same page. Use ExtractDom first to get agent_ids for clicking/typing, and ListTabs before opening a tab: the page is often already open.";
+    const DESCRIPTION: &'static str = "Controls a live browser via CDP (Chrome/Vivaldi/Brave/Edge). Actions: navigate (load a URL in the current tab), click (by CSS selector or agent_id from ExtractDom), type (text input; set clear=true to replace the field, false to append), scroll, wait, extract_dom (map interactive elements with agent_ids; each carries its tag, text and — when it has them — where a link goes, whether it is disabled, and whether a checkbox is checked; it takes max_elements to bound the list (0 for none; the host's ceiling applies whatever is asked), and filter to keep only the elements whose label, placeholder or link destination contains a text — both fields inside the action), screenshot (base64 PNG), list_tabs (the tabs already open, with the one being driven marked), switch_tab (drive a tab that is already open, by id or by a URL/title substring — prefer this to opening another), open_tab (open a new tab on purpose), close_tab. The tool drives one tab at a time and brings it to the front, so the person and the model look at the same page. Use ExtractDom first to get agent_ids for clicking/typing, and ListTabs before opening a tab: the page is often already open.";
 }
 
 #[async_trait::async_trait]
@@ -633,7 +639,12 @@ fn bound_elements(
         _ => elements,
     };
     let matched = filtered.len();
-    let cap = max_elements.unwrap_or(limits.max_elements);
+    // `min`, not the request's value: the host's number is a ceiling and the
+    // request can only ask for less. `None` is the host's own, which is what a
+    // call that says nothing gets.
+    let cap = max_elements
+        .unwrap_or(limits.max_elements)
+        .min(limits.max_elements);
     let mut kept = filtered;
     kept.truncate(cap);
     let hidden = matched.saturating_sub(kept.len());
@@ -1498,6 +1509,40 @@ mod tests {
         assert_eq!(kept[0].text, "Sign in");
         assert_eq!(kept[1].text, "Sign out");
         assert_eq!(hidden, 0, "the filter matched fewer than the cap");
+    }
+
+    #[test]
+    fn the_host_limit_is_a_ceiling_a_request_cannot_raise() {
+        // A bound the caller can raise is not a bound. A model that asked for
+        // `max_elements: 5000` on a page of 1200 links was handed 107 KB — a
+        // third of a context window — for a number it typed without knowing how
+        // big the page was.
+        let limits = BrowserLimits {
+            max_elements: 80,
+            ..BrowserLimits::default()
+        };
+        let page: Vec<_> = (0..1200)
+            .map(|index| element(index, "A", &format!("Article {index}")))
+            .collect();
+
+        // Asking for more gets the ceiling, and the count says so.
+        let (kept, hidden) = bound_elements(page.clone(), Some(5000), None, &limits);
+        assert_eq!(kept.len(), 80, "the ceiling holds");
+        assert_eq!(hidden, 1120, "and the answer admits what it left out");
+
+        // Asking for nothing gets the ceiling, which is the host's default.
+        let (kept, _) = bound_elements(page.clone(), None, None, &limits);
+        assert_eq!(kept.len(), 80);
+
+        // Asking for less gets less: the request decides downward.
+        let (kept, hidden) = bound_elements(page.clone(), Some(3), None, &limits);
+        assert_eq!(kept.len(), 3);
+        assert_eq!(hidden, 1197);
+
+        // And for none gets none, which is the one thing it may do below the cap.
+        let (kept, hidden) = bound_elements(page, Some(0), None, &limits);
+        assert!(kept.is_empty());
+        assert_eq!(hidden, 1200);
     }
 
     #[test]

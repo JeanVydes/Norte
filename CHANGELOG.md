@@ -66,6 +66,14 @@ Draft. Not published.
 
 ### Fixed
 
+- The host's element cap is a ceiling, not a default. A request could ask for
+  more and get it: `max_elements: 5000` on a page of twelve hundred links
+  returned all twelve hundred — 107 KB, about thirty thousand tokens, a third of
+  a context window — for a number typed without knowing how big the page was. A
+  bound the caller can raise is not a bound, and this one is the tool's only
+  defence against a page whose controls are unbounded. A request may ask for
+  fewer, and for none; asking for more is clamped, and the answer keeps saying
+  what the cap left out.
 - The browser tool's `max_elements` and `filter` reach it. They were siblings of
   `action`, so the `extract_dom` branch of the schema declared `{type}` and
   nothing else: a model reading the branch it was about to call had no way to

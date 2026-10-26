@@ -34,6 +34,16 @@ Draft. Not published.
   and what the person does next is what the model reads. The tool also remembers
   the tab it is on, where before every reconnection drove whichever page the
   endpoint listed first.
+- What the browser tool sends back is bounded, and says when it was cut. A page
+  has hundreds of interactive elements and each one is a line of JSON in the
+  context on every navigation; `extract_dom` and `navigate` returned all of them,
+  at up to a hundred characters each, so a busy page cost thousands of tokens a
+  call. The list is now capped (`BrowserLimits::max_elements`, eighty by default,
+  overridable per request with `max_elements`, where `0` returns none) and
+  filterable by a case-insensitive substring of an element's label or
+  placeholder (`filter`), and the answer carries `elements_matched` when the cap
+  hid any. A bounded list that does not say it is bounded reads as the whole
+  page, which is worse than a shorter one that admits it.
 - A shell call can ask for no time bound. `timeout_ms: 0` means "no bound" rather
   than zero milliseconds — a value that would kill every process before it
   started — and a host grants it only when it sets `ShellLimits::allow_indefinite`,

@@ -139,6 +139,26 @@ pub struct BrowserRequest {
     /// Highlight the target element visually before interacting (default true).
     #[serde(default = "default_true")]
     pub highlight: bool,
+    /// The most interactive elements to return, when the action returns any.
+    ///
+    /// The page decides how many there are and a real page has hundreds, so the
+    /// answer is bounded and says when it was cut. Omitted, the host's limit
+    /// applies; `0` asks for none, which is how a model that only wants the
+    /// page's URL and title avoids paying for the whole DOM.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(
+        description = "The most elements to return (defaults to the host's limit; 0 returns none, for a call that only needs the page). The answer reports how many matched."
+    )]
+    pub max_elements: Option<usize>,
+    /// Keeps only the elements whose text, value or placeholder contains this.
+    ///
+    /// Case-insensitive. It is the cheap way to find a control on a busy page:
+    /// the whole list never has to come back to pick one out of it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(
+        description = "Keep only elements whose label contains this text (case-insensitive). Use it to pick a control out of a busy page instead of returning the whole list."
+    )]
+    pub filter: Option<String>,
 }
 
 fn default_endpoint() -> String {
@@ -147,6 +167,15 @@ fn default_endpoint() -> String {
 
 fn default_true() -> bool {
     true
+}
+
+/// Whether a count is zero, for a field that is left out when it is.
+///
+/// The reference is what `skip_serializing_if` hands a predicate, so the shape
+/// is serde's and not this function's choice.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_zero(value: &usize) -> bool {
+    *value == 0
 }
 
 /// One tab the browser has open.
@@ -191,6 +220,13 @@ pub struct BrowserOutput {
     /// Interactive DOM elements discovered on the page (populated on navigation or `ExtractDom`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub elements: Vec<InteractiveElement>,
+    /// How many elements matched before the limit cut the list.
+    ///
+    /// Present only when more matched than came back: a bounded list that does
+    /// not admit it is bounded reads as the whole page, and a model that
+    /// believes it has seen every control stops looking for the one it needs.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub elements_matched: usize,
     /// Base64-encoded PNG screenshot (if action was `Screenshot`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screenshot_base64: Option<String>,
@@ -209,6 +245,15 @@ pub struct BrowserLimits {
     pub max_wait_seconds: u64,
     /// Timeout in seconds for individual CDP commands.
     pub cdp_timeout_seconds: u64,
+    /// The most interactive elements one answer carries, when the request does
+    /// not name its own.
+    ///
+    /// A page's controls are what a model needs to act, but a page has hundreds
+    /// of them and every one is a line of JSON in the context: past a screenful
+    /// the list stops being read and starts being a bill. The answer says how
+    /// many it left out, so a model that needs more can filter instead of
+    /// guessing that it saw everything.
+    pub max_elements: usize,
 }
 
 impl Default for BrowserLimits {
@@ -216,6 +261,7 @@ impl Default for BrowserLimits {
         Self {
             max_wait_seconds: 30,
             cdp_timeout_seconds: 15,
+            max_elements: 80,
         }
     }
 }
@@ -286,7 +332,7 @@ impl Default for BrowserTool {
 
 impl ToolMetadata for BrowserTool {
     const NAME: &'static str = "browser_use";
-    const DESCRIPTION: &'static str = "Controls a live browser via CDP (Chrome/Vivaldi/Brave/Edge). Actions: navigate (load a URL in the current tab), click (by CSS selector or agent_id from ExtractDom), type (text input; set clear=true to replace the field, false to append), scroll, wait, extract_dom (map interactive elements with agent_ids), screenshot (base64 PNG), list_tabs (the tabs already open, with the one being driven marked), switch_tab (drive a tab that is already open, by id or by a URL/title substring — prefer this to opening another), open_tab (open a new tab on purpose), close_tab. The tool drives one tab at a time and brings it to the front, so the person and the model look at the same page. Use ExtractDom first to get agent_ids for clicking/typing, and ListTabs before opening a tab: the page is often already open.";
+    const DESCRIPTION: &'static str = "Controls a live browser via CDP (Chrome/Vivaldi/Brave/Edge). Actions: navigate (load a URL in the current tab), click (by CSS selector or agent_id from ExtractDom), type (text input; set clear=true to replace the field, false to append), scroll, wait, extract_dom (map interactive elements with agent_ids; set max_elements to bound the list, 0 for none, and filter to keep only elements whose label contains a text), screenshot (base64 PNG), list_tabs (the tabs already open, with the one being driven marked), switch_tab (drive a tab that is already open, by id or by a URL/title substring — prefer this to opening another), open_tab (open a new tab on purpose), close_tab. The tool drives one tab at a time and brings it to the front, so the person and the model look at the same page. Use ExtractDom first to get agent_ids for clicking/typing, and ListTabs before opening a tab: the page is often already open.";
 }
 
 #[async_trait::async_trait]
@@ -460,11 +506,13 @@ impl PersistentCdp {
                         return;
                     }
                     el.setAttribute('data-agent-id', i.toString());
-                    let text = el.innerText || el.value || el.placeholder || el.getAttribute('aria-label') || '';
+                    let text = el.innerText || el.value || el.placeholder || el.getAttribute('aria-label') || el.title || '';
                     mapped.push({
                         id: i,
                         tag: el.tagName,
-                        text: text.trim().slice(0, 100),
+                        // One line: a label with a newline in it is a block, and
+                        // the newline buys nothing the model can use.
+                        text: text.trim().replace(/\s+/g, ' ').slice(0, 80),
                         input_type: el.getAttribute('type'),
                         placeholder: el.getAttribute('placeholder')
                     });
@@ -477,6 +525,48 @@ impl PersistentCdp {
         let list: Vec<InteractiveElement> = serde_json::from_str(json_str).unwrap_or_default();
         Ok(list)
     }
+}
+
+/// The elements an answer carries: filtered, capped, and honest about the cap.
+///
+/// `elements` is what the page holds; `request` and `limits` decide what the
+/// model gets. The filter is a case-insensitive substring of the label or the
+/// placeholder, so one control can be asked for by name; the cap is the
+/// request's, else the host's. Returns the kept elements and, when the cap hid
+/// any, how many matched — a bounded list that does not say it is bounded reads
+/// as the whole page.
+fn bound_elements(
+    elements: Vec<InteractiveElement>,
+    request: &BrowserRequest,
+    limits: &BrowserLimits,
+) -> (Vec<InteractiveElement>, usize) {
+    let filtered: Vec<InteractiveElement> = match request.filter.as_deref() {
+        Some(needle) if !needle.is_empty() => {
+            let needle = needle.to_lowercase();
+            elements
+                .into_iter()
+                .filter(|element| {
+                    // The page's `value` is already folded into `text` by the
+                    // extractor, so the label and the placeholder are the whole
+                    // of what there is to match on.
+                    let haystack = format!(
+                        "{} {}",
+                        element.text,
+                        element.placeholder.as_deref().unwrap_or_default()
+                    )
+                    .to_lowercase();
+                    haystack.contains(&needle)
+                })
+                .collect()
+        }
+        _ => elements,
+    };
+    let matched = filtered.len();
+    let cap = request.max_elements.unwrap_or(limits.max_elements);
+    let mut kept = filtered;
+    kept.truncate(cap);
+    let hidden = matched.saturating_sub(kept.len());
+    (kept, hidden)
 }
 
 /// One tab the endpoint reports, in the order the browser lists them.
@@ -965,6 +1055,12 @@ async fn execute_browser_action(
         }
     };
 
+    // One place bounds the list, whatever action produced it: the filter first
+    // — a page's controls are more than a model asked for, and naming one is
+    // cheaper than receiving them all — and the cap second, with the count left
+    // in the output so a cut list says it was cut.
+    let (elements, elements_matched) = bound_elements(elements, request, limits);
+
     let url_val = cdp
         .evaluate("window.location.href", cmd_timeout)
         .await
@@ -978,6 +1074,7 @@ async fn execute_browser_action(
         url: url_val.as_str().unwrap_or("").to_string(),
         title: title_val.as_str().unwrap_or("").to_string(),
         message,
+        elements_matched,
         elements,
         screenshot_base64,
         // The tab list belongs to the actions that change it. A page action
@@ -1006,6 +1103,7 @@ fn tab_output(
         title: title.to_owned(),
         message,
         elements: Vec::new(),
+        elements_matched: 0,
         screenshot_base64: None,
         tabs,
         request_digest,
@@ -1075,6 +1173,102 @@ mod tests {
         let tabs = open_tabs();
         let error = pick_tab(&tabs, None, Some("nowhere")).expect_err("no match");
         assert!(error.to_string().contains("list_tabs"), "{error}");
+    }
+
+    fn element(id: usize, tag: &str, text: &str) -> InteractiveElement {
+        InteractiveElement {
+            id,
+            tag: tag.to_owned(),
+            text: text.to_owned(),
+            input_type: None,
+            placeholder: None,
+        }
+    }
+
+    fn request(max_elements: Option<usize>, filter: Option<&str>) -> BrowserRequest {
+        BrowserRequest {
+            action: BrowserAction::ExtractDom,
+            endpoint: "http://127.0.0.1:9222".to_owned(),
+            highlight: false,
+            max_elements,
+            filter: filter.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn the_element_list_is_capped_at_the_host_limit_by_default() {
+        // A page has hundreds of controls and every one is context. The default
+        // cap is the host's, and what it hid is reported so the list does not
+        // read as the whole page.
+        let limits = BrowserLimits {
+            max_elements: 3,
+            ..BrowserLimits::default()
+        };
+        let page: Vec<_> = (0..10)
+            .map(|index| element(index, "A", &format!("link {index}")))
+            .collect();
+        let (kept, hidden) = bound_elements(page, &request(None, None), &limits);
+        assert_eq!(kept.len(), 3);
+        assert_eq!(hidden, 7, "the seven left out are counted");
+    }
+
+    #[test]
+    fn a_request_can_ask_for_fewer_or_for_none() {
+        let limits = BrowserLimits::default();
+        let page: Vec<_> = (0..10)
+            .map(|index| element(index, "A", &format!("link {index}")))
+            .collect();
+        let (kept, hidden) = bound_elements(page.clone(), &request(Some(2), None), &limits);
+        assert_eq!(kept.len(), 2);
+        assert_eq!(hidden, 8);
+
+        // Zero is how a call that only wants the page's URL and title avoids
+        // paying for the DOM at all. It is not "no limit": that is the default.
+        let (none, hidden) = bound_elements(page, &request(Some(0), None), &limits);
+        assert!(none.is_empty());
+        assert_eq!(hidden, 10);
+    }
+
+    #[test]
+    fn a_filter_keeps_only_the_named_control() {
+        // Picking one control out of a busy page is the cheap path: the list
+        // never comes back to be searched.
+        let limits = BrowserLimits::default();
+        let page = vec![
+            element(0, "A", "Sign in"),
+            element(1, "A", "Documentation"),
+            element(2, "BUTTON", "Sign out"),
+        ];
+        let (kept, hidden) = bound_elements(page, &request(None, Some("sign")), &limits);
+        assert_eq!(kept.len(), 2, "case does not matter: {kept:?}");
+        assert_eq!(kept[0].text, "Sign in");
+        assert_eq!(kept[1].text, "Sign out");
+        assert_eq!(hidden, 0, "the filter matched fewer than the cap");
+    }
+
+    #[test]
+    fn the_filter_looks_at_the_placeholder_too() {
+        // A search box's label is often only a placeholder, which is the one
+        // thing that names it.
+        let limits = BrowserLimits::default();
+        let mut box_ = element(0, "INPUT", "");
+        box_.placeholder = Some("Search the docs".to_owned());
+        let page = vec![box_, element(1, "A", "Home")];
+        let (kept, _) = bound_elements(page, &request(None, Some("docs")), &limits);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].id, 0);
+    }
+
+    #[test]
+    fn a_bounded_list_that_hid_nothing_reports_nothing() {
+        // The count is present only when it means something: a page smaller
+        // than the cap is complete, and saying "0 hidden" is noise in the
+        // output the model reads on every action.
+        let limits = BrowserLimits::default();
+        let page = vec![element(0, "A", "Home")];
+        let (kept, hidden) = bound_elements(page, &request(None, None), &limits);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(hidden, 0);
     }
 
     #[test]

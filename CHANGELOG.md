@@ -13,6 +13,12 @@ Draft. Not published.
 
 ### Added
 
+- A shell request can ask to be detached before it starts. `detach: true` makes
+  the call answer as soon as the process starts and leave it running, which is
+  the same path a host takes when it detaches a call from outside — the process
+  is handed on either way. The flag is a field rather than a second tool because
+  a request with unknown fields is rejected, so a host cannot offer it without
+  the executor knowing the name.
 - A shell call can ask for no time bound. `timeout_ms: 0` means "no bound" rather
   than zero milliseconds — a value that would kill every process before it
   started — and a host grants it only when it sets `ShellLimits::allow_indefinite`,
@@ -24,6 +30,13 @@ Draft. Not published.
 
 ### Fixed
 
+- A detached process is still the host's to end. `Detached::hold` kept the
+  process alive and nothing else, so a call that had stopped waiting also stopped
+  being bounded and stopped answering its cancellation token: the timeout it had
+  asked for no longer applied, and a host that reported the process as stopped
+  had no way to stop it. The holder now waits on the bound the request asked for
+  and on the cancellation token, and kills the group with the same grace and
+  SIGKILL a waited call gets when either fires.
 - OpenAI Responses now honors the host's `no_prompt_cache_key` quirk. It sent
   the session-derived field unconditionally, so a host could not disable it for
   a gateway that rejects unknown fields.

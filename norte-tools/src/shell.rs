@@ -16,6 +16,11 @@
 //!   the whole group is killed. A call a host allowed to run unbounded is the
 //!   one exception, and it is not really one: nothing bounds *it*, but the same
 //!   guard, the same cancellation token and the same drop still kill its group.
+//!   A detached call is the other exception, and this one is by request: the
+//!   group outlives the call because that is what detaching asks for. What it
+//!   does not escape is the host: the bound the request asked for still ends it,
+//!   and the cancellation token still kills the group, so a detach is never a
+//!   process nothing can reach.
 //! * **Authorization is not the executor's business.** A request can name any
 //!   program, so deciding which commands may run belongs to the host's approval
 //!   ledger and policies (FR-APPR-1, FR-POL-1). A sandbox is a lower-level
@@ -29,8 +34,8 @@ use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use norte_core::{
-    BlobId, BlobStore, Digest, Error, FnExecutor, Part, Result, ToolContext, ToolDeclaration,
-    ToolMetadata, ToolOutput, ToolProgress, ToolStream,
+    BlobId, BlobStore, Cancellation, Digest, Error, FnExecutor, Part, Result, ToolContext,
+    ToolDeclaration, ToolMetadata, ToolOutput, ToolProgress, ToolStream,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -96,6 +101,18 @@ pub struct ShellRequest {
         description = "How long the process may run, in milliseconds. Above the host's ceiling it is clamped to it. Zero asks for no bound, which the host grants only where it allows it, for a call that starts something long-lived; a foreground call that asks for zero is given the host's default instead."
     )]
     pub timeout_ms: Option<u64>,
+    /// Whether to answer without waiting for the process.
+    ///
+    /// A detached call returns at once with what has arrived — usually nothing —
+    /// and the process keeps running. It is the same answer a host gives when it
+    /// detaches a call from outside, so the host that reports the one can report
+    /// the other: what the process writes from here on is the host's to hand on,
+    /// and its bound and cancellation token still reach it.
+    #[serde(default)]
+    #[schemars(
+        description = "Answer as soon as the process starts, instead of waiting for it to end. The process keeps running, and the host reports what it writes afterwards. Use it to start something long-lived and carry on; for anything you need the result of before continuing, leave it out."
+    )]
+    pub detach: bool,
     /// How many bytes of each stream the executor keeps. A value above the
     /// host's ceiling is clamped to it; the model sees at most
     /// [`ShellLimits::max_model_bytes`] of it.
@@ -137,6 +154,7 @@ impl ShellRequest {
             cwd: None,
             env: BTreeMap::new(),
             timeout_ms: None,
+            detach: false,
             max_output_bytes: None,
             stdin: None,
             stdin_blob: None,
@@ -171,6 +189,13 @@ impl ShellRequest {
     #[must_use]
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout_ms = Some(u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX));
+        self
+    }
+
+    /// Asks to answer without waiting for the process.
+    #[must_use]
+    pub fn with_detach(mut self) -> Self {
+        self.detach = true;
         self
     }
 
@@ -734,9 +759,18 @@ impl ShellTool {
         // arrived without waiting for the readers to finish.
         let snapshot = (Arc::clone(&streams.stdout), Arc::clone(&streams.stderr));
 
-        let wait = self
-            .wait_for_exit(context, request, &mut child, &mut guard)
-            .await;
+        // A request may ask to be left alone before it is even waited for. It is
+        // the same path as a detach from outside — the process is handed on
+        // either way — so the only difference is that nobody had to ask twice.
+        let wait = if request.detach {
+            Wait {
+                detached: true,
+                ..Wait::default()
+            }
+        } else {
+            self.wait_for_exit(context, request, &mut child, &mut guard)
+                .await
+        };
         let (status, timed_out, cancelled, detached) =
             (wait.status, wait.timed_out, wait.cancelled, wait.detached);
 
@@ -749,10 +783,24 @@ impl ShellTool {
         // fall out of scope would kill the very process the caller just asked to
         // leave alone. A task holds them instead, and ends when the process does.
         if detached {
+            // Disarming is what lets the group outlive this call. It happens
+            // here rather than in the wait because this is where the process is
+            // handed on, and a request that detached before the wait never
+            // reached the wait at all.
+            guard.disarm();
+            // What is left of the bound, not a fresh one: the request's timeout
+            // is the whole call's, and a process that is handed on halfway
+            // through it does not get to start over.
+            let deadline = self
+                .timeout(request)
+                .map(|bound| bound.saturating_sub(clock.started.elapsed()));
             let detector = Detached {
                 child,
                 stdout_task: streams.stdout_task,
                 stderr_task: streams.stderr_task,
+                deadline,
+                cancellation: context.cancellation(),
+                grace: self.limits.grace,
             };
             tokio::spawn(detector.hold());
             return self.detached_output(request, &snapshot, cap, clock, command_line);
@@ -912,9 +960,9 @@ impl ShellTool {
             }
             () = context.detached() => {
                 wait.detached = true;
-                // Disarming the guard is what lets the process outlive this
-                // call: the guard kills its group on drop.
-                guard.disarm();
+                // The guard is disarmed by the caller, where the process is
+                // handed on: a request that asked to be detached before the wait
+                // never reaches this branch and needs the same thing done.
                 Err(std::io::Error::new(
                     std::io::ErrorKind::Interrupted,
                     "detached",
@@ -982,19 +1030,75 @@ struct Detached {
     child: tokio::process::Child,
     stdout_task: tokio::task::JoinHandle<()>,
     stderr_task: tokio::task::JoinHandle<()>,
+    /// How long the process may still run. `None` is the host's "no bound".
+    deadline: Option<Duration>,
+    /// What ends the process sooner: the host cancelling the call that owned it.
+    cancellation: Cancellation,
+    /// How long the process has to leave once it has been signalled.
+    grace: Duration,
 }
 
 impl Detached {
-    /// Waits for the process and its readers, then lets go.
+    /// Holds the process until it ends, or until the host ends it.
     ///
-    /// Nothing reports the result: the call that would have has already
-    /// answered. The task exists to keep the process alive until it ends of its
-    /// own accord, which is the whole of what detaching promised.
+    /// Nothing reports a result: the call that would have has already answered.
+    /// What this task is for is the two things the call can no longer do — keep
+    /// the process alive, and stop it. Handing a process on is not losing it:
+    /// the bound the request asked for still applies, and the cancellation token
+    /// the host holds still ends the group, which is what `manage_jobs stop`
+    /// signals. A process nothing could reach would be a job whose stop button
+    /// lied.
     async fn hold(mut self) {
-        let _ = self.child.wait().await;
+        let pid = self.child.id();
+        match hold_until(&mut self.child, self.deadline, &self.cancellation).await {
+            Hold::Exited => {}
+            Hold::Ended => end_group(pid, &mut self.child, self.grace).await,
+        }
+        // The readers end when the pipes close, which is the process going.
         let _ = self.stdout_task.await;
         let _ = self.stderr_task.await;
     }
+}
+
+/// Why a held process stopped being held.
+enum Hold {
+    /// It ended on its own.
+    Exited,
+    /// The host ended it: its bound was reached, or the call was cancelled.
+    Ended,
+}
+
+/// Waits for a process nobody is waiting for, until the host says stop.
+async fn hold_until(
+    child: &mut tokio::process::Child,
+    deadline: Option<Duration>,
+    cancellation: &Cancellation,
+) -> Hold {
+    let bounded = async move {
+        match deadline {
+            Some(bound) => tokio::time::sleep(bound).await,
+            None => std::future::pending::<()>().await,
+        }
+    };
+    tokio::select! {
+        _ = child.wait() => Hold::Exited,
+        () = bounded => Hold::Ended,
+        () = cancellation.cancelled() => Hold::Ended,
+    }
+}
+
+/// Signals the group, gives it its grace, then kills it.
+///
+/// It is [`ShellTool::terminate`] without the guard. The group it ends belongs to
+/// a call that is already over, so there is no future left to drop and nothing
+/// for a guard to protect against.
+async fn end_group(pid: Option<u32>, child: &mut tokio::process::Child, grace: Duration) {
+    kill_group(pid, Signal::Terminate, child);
+    if with_timeout(grace, child.wait()).await.is_ok() {
+        return;
+    }
+    kill_group(pid, Signal::Kill, child);
+    let _ = with_timeout(grace, child.wait()).await;
 }
 
 /// The two readers of one invocation, and where they file what they read.
@@ -2218,6 +2322,140 @@ mod tests {
         // after the call returned.
         wait_for(&later).await;
         assert!(later.exists(), "the process kept running after the detach");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_request_that_asks_to_be_left_alone_does_not_wait() {
+        // The flag is the whole of the difference between the two calls: the
+        // same executor hands the process on instead of waiting for it. Nothing
+        // is reported as output because nothing has been written yet.
+        let dir = temp_dir("detached-request");
+        let later = dir.join("later");
+        let tool = ShellTool::new();
+        let script = format!("sleep 1; touch {}", later.display());
+
+        let started = Instant::now();
+        let output = tool
+            .call(request(&script).with_detach())
+            .await
+            .expect("execute");
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "it returned without waiting for the second the script takes"
+        );
+
+        let structured = structured(&output);
+        assert_eq!(structured["code"], "detached");
+        assert_eq!(structured["detached"], true);
+        assert_eq!(
+            structured["stdout"], "",
+            "the process had not written anything when the call let go"
+        );
+        // And the process really outlives the call.
+        wait_for(&later).await;
+        assert!(later.exists(), "the process kept running after the call");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_detached_process_is_still_ended_by_cancellation() {
+        // What is handed on is not out of reach. The token the host holds still
+        // ends the group, which is what `manage_jobs stop` signals; without it a
+        // host would report a process as stopped while it kept running.
+        let dir = temp_dir("detached-cancel");
+        let pid_file = dir.join("pid");
+        let marker = dir.join("survived");
+        let tool = ShellTool::new();
+        let context = ToolContext::new();
+        let cancel = context.cancellation();
+        let script = format!(
+            "echo $$ > {}; sleep 1; touch {}",
+            pid_file.display(),
+            marker.display()
+        );
+
+        let output = tool
+            .call_with_context(&context, request(&script).with_detach())
+            .await
+            .expect("execute");
+        assert_eq!(structured(&output)["code"], "detached");
+        wait_for(&pid_file).await;
+        cancel.cancel();
+        // Longer than the script's own second: a process that ignored the
+        // cancellation would have written its marker by now.
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        assert!(
+            !marker.exists(),
+            "the cancelled process did not finish, so it was never signalled"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_detached_process_still_reaches_its_time_bound() {
+        // The bound is the request's, and it does not stop applying because the
+        // call stopped waiting: a detached process that ran forever would be the
+        // "no bound" a host has to opt into, reached by accident.
+        let dir = temp_dir("detached-deadline");
+        let marker = dir.join("survived");
+        let limits = ShellLimits {
+            default_timeout: Duration::from_millis(200),
+            grace: Duration::from_millis(100),
+            ..ShellLimits::default()
+        };
+        let tool = ShellTool::new().with_limits(limits);
+        let script = format!("sleep 1; touch {}", marker.display());
+
+        let output = tool
+            .call(request(&script).with_detach())
+            .await
+            .expect("execute");
+        assert_eq!(structured(&output)["code"], "detached");
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        assert!(
+            !marker.exists(),
+            "the 200 ms bound ended the process it was left with"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_detached_process_that_ignores_the_polite_signal_is_still_killed() {
+        // Handing a process on does not make it unkillable. The grace after the
+        // polite signal is the same one a waited call gets, and what follows it
+        // is the same SIGKILL: without it, a process that traps TERM would be
+        // one nothing the host holds can end.
+        let dir = temp_dir("detached-ignores-term");
+        let pid_file = dir.join("pid");
+        let marker = dir.join("survived");
+        let limits = ShellLimits {
+            grace: Duration::from_millis(100),
+            ..ShellLimits::default()
+        };
+        let tool = ShellTool::new().with_limits(limits);
+        let context = ToolContext::new();
+        let cancel = context.cancellation();
+        let script = format!(
+            "echo $$ > {}; trap '' TERM; sleep 1; touch {}",
+            pid_file.display(),
+            marker.display()
+        );
+
+        let output = tool
+            .call_with_context(&context, request(&script).with_detach())
+            .await
+            .expect("execute");
+        assert_eq!(structured(&output)["code"], "detached");
+        wait_for(&pid_file).await;
+        cancel.cancel();
+        // Past the script's own second plus the grace: a process that survived
+        // the SIGKILL would have written its marker by now.
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        assert!(
+            !marker.exists(),
+            "the process ignored SIGTERM and was killed anyway"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

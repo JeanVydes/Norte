@@ -117,18 +117,26 @@ of them — a test in this repository fails if one reaches the wire.
 | `write` | `path`, `content`, optional `overwrite` (default `false`) | Creates or replaces a whole file. |
 | `edit` | `path`, `edits: [{search, replace}, ..]` | Exact-match, atomic, with a failure report that says what did not match. |
 | `command` | `command: {kind: "program", program, args} or {kind: "shell", script, shell?}`, plus `cwd`, `env`, `timeout_ms`, `max_output_bytes`, `stdin`, .. | Runs a program or a shell script; `shell` defaults to `sh`. |
+| `shell` | `script`, `shell?`, plus `cwd`, `env`, `timeout_ms`, `detach`, `max_output_bytes`, `stdin`, .. | Runs a shell script, which `sh` interprets by default. With `detach: true` it answers as soon as the process starts and leaves it running. |
 
-`CommandTool` has two builder methods worth knowing:
+`ShellTool` has builder methods worth knowing:
 
 - `with_env(BTreeMap<String, String>)` — the executor clears the environment
   (`env_clear()`) and runs the child with exactly what you pass, so a process
   that needs `PATH` to find `cargo` gets it from here and nowhere else.
 - `with_secrets(impl IntoIterator<Item = impl Into<String>>)` — values redacted
   from the tool result before it is shown to the model.
+- `with_limits(ShellLimits)` — the host's bounds, including
+  `allow_indefinite`, which is what grants a `timeout_ms` of zero.
 
-A `command` request names any program. **Authorizing it is the host's job.** The
+A `shell` request runs any script. **Authorizing it is the host's job.** The
 executor will run what it is given; the policy is what decides whether `cargo`
 yes and `rm` no. See [Policies and approval](policies-and-approval.md).
+
+A detached call is reported as `ShellCode::Detached` and the process keeps
+running; the host is what holds it from then on. It is not unbounded because it
+was detached: the bound the request asked for still ends it, and the
+cancellation token still kills its group.
 
 ## Results
 

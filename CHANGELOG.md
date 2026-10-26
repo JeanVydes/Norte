@@ -36,6 +36,14 @@ Draft. Not published.
 
 ### Fixed
 
+- An `edit` that would change nothing is a failure, not a success. `search` and
+  `replace` being the same text used to be accepted — reported as "applied,
+  nothing changed", which reads as done — so a model that heard it never
+  retried, and the mistake stood. A whitespace-tolerant match was worse: it
+  could rewrite a file's indentation while reporting that nothing happened.
+  Identical text is now invalid input, an edit whose replacement is already in
+  the file fails as `unchanged`, and a batch carrying a no-op fails whole rather
+  than writing the edits before it. The tool's description says both rules.
 - A detached process is still the host's to end. `Detached::hold` kept the
   process alive and nothing else, so a call that had stopped waiting also stopped
   being bounded and stopped answering its cancellation token: the timeout it had

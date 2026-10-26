@@ -40,12 +40,30 @@ const SCORING_BUDGET: usize = 32 * 1024 * 1024;
 /// One search-and-replace pair.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(description = "One search-and-replace pair. search and replace must differ.")]
 pub struct EditSpec {
-    /// The text to find. It has to match exactly once; when nothing matches
-    /// exactly, a block that differs only in whitespace still applies.
+    /// The text to find, exactly once in the file.
+    #[schemars(
+        description = "The text to find. It has to match exactly once; keep it to the few lines that make it unique instead of copying a large block. When nothing matches exactly, a block that differs only in whitespace still applies."
+    )]
     pub search: String,
-    /// What replaces it. An empty string deletes the block.
+    /// What replaces it; it has to differ from `search`.
+    #[schemars(
+        description = "The new text that replaces search. It must differ from search: an edit that would leave the file as it is fails. An empty string deletes the block."
+    )]
     pub replace: String,
+    /// Which of several identical places to change, counting from one.
+    ///
+    /// Only needed when `search` matches more than once, which is the case the
+    /// tool otherwise refuses: two identical lines a file apart are a block that
+    /// cannot be told from its twin by any amount of surrounding context. Naming
+    /// the occurrence is what saves copying twenty lines of neighbourhood to
+    /// disambiguate something the file already numbers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(
+        description = "Which occurrence to change when search matches more than once, counting from 1 in the order they appear in the file. Leave it out when search is unique; the failure lists the occurrences when it is not."
+    )]
+    pub occurrence: Option<usize>,
 }
 
 impl EditSpec {
@@ -55,20 +73,30 @@ impl EditSpec {
         Self {
             search: search.into(),
             replace: replace.into(),
+            occurrence: None,
         }
+    }
+
+    /// The same pair, aimed at the `nth` of several identical places.
+    #[must_use]
+    pub fn nth(mut self, nth: usize) -> Self {
+        self.occurrence = Some(nth);
+        self
     }
 }
 
 /// The edits to apply to one file, in order.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(description = "The edits to apply to one file, in order.")]
 #[non_exhaustive]
 pub struct EditRequest {
     /// The file to edit.
-    #[schemars(example = &"src/main.rs")]
+    #[schemars(description = "The file to edit.", example = &"src/main.rs")]
     pub path: PathBuf,
     /// Applied in order, each one over the result of the previous.
     #[schemars(
+        description = "Applied in order, each one over the result of the previous. Nothing is written unless every edit applies and changes the file.",
         example = serde_json::json!([{"search": "let x = 1;", "replace": "let x = 2;"}])
     )]
     pub edits: Vec<EditSpec>,
@@ -94,6 +122,18 @@ impl EditRequest {
         self.edits.push(EditSpec::new(search, replace));
         self
     }
+
+    /// Adds a pair aimed at one of several identical places.
+    #[must_use]
+    pub fn with_nth_edit(
+        mut self,
+        search: impl Into<String>,
+        replace: impl Into<String>,
+        nth: usize,
+    ) -> Self {
+        self.edits.push(EditSpec::new(search, replace).nth(nth));
+        self
+    }
 }
 
 /// The outcome code of an edit request.
@@ -103,8 +143,9 @@ impl EditRequest {
 pub enum EditCode {
     /// Every edit applied and the file was written.
     Applied,
-    /// Every edit applied and the file already said exactly that, so nothing
-    /// was written.
+    /// An edit, or the request as a whole, would have left the file exactly as
+    /// it was. That is never what an edit is for, so it is a failure the model
+    /// is told about, not a success with nothing in it. Nothing was written.
     Unchanged,
     /// No block was close enough, or none matched at all. Nothing was written.
     NoMatch,
@@ -170,6 +211,12 @@ pub enum EditFailureReason {
     /// The block, or several equally close blocks, matched in more than one
     /// place.
     Ambiguous,
+    /// The block matched once, but its replacement is what the file already
+    /// has there, so the edit would change nothing.
+    Unchanged,
+    /// The request named an occurrence the file does not have: it asked for the
+    /// fourth of three.
+    NoSuchOccurrence,
 }
 
 /// Why an edit did not apply, with the evidence to retry.
@@ -185,6 +232,10 @@ pub struct EditFailure {
     /// when nothing matched, and a count past the executor's anchor cap means
     /// "that many or more".
     pub occurrences: usize,
+    /// The occurrence the request asked for, when it asked for one and the file
+    /// does not have it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asked_occurrence: Option<usize>,
     /// Similarity of the best candidate to the searched block, when one was
     /// found at all.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -203,12 +254,13 @@ pub struct EditOutcome {
     pub path: PathBuf,
     /// The edits that matched, in order. On a failure, the ones before it.
     pub matches: Vec<EditMatch>,
-    /// The evidence for a retry, on a failure.
+    /// The evidence for a retry, on a failure. Absent on an
+    /// [`EditCode::Unchanged`] whose edits each changed something but together
+    /// cancelled out, where no single edit is to blame.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure: Option<EditFailure>,
-    /// Whether the file on disk was rewritten: false on a failure, and false
-    /// when the edits left the content byte-identical, which is reported as
-    /// [`EditCode::Unchanged`] so a no-op is never told to the model as a
+    /// Whether the file on disk was rewritten: false on any failure, including
+    /// [`EditCode::Unchanged`], so a no-op is never told to the model as a
     /// change.
     pub written: bool,
     /// Lines and bytes of the file after the call, written or not.
@@ -269,7 +321,7 @@ impl Default for EditLimits {
 /// (FR-POL-1), not the executor's business.
 #[norte_core::tool(
     name = "edit",
-    description = "Change a text file with search and replace. Each edit's search block has to match exactly once; a block that differs only in indentation or whitespace still applies. Nothing is written unless every edit applies, and an edit that changes nothing is reported as unchanged without rewriting the file. A failure reports the lines around the closest region, so the next attempt can be exact."
+    description = "Change a text file with search and replace. Each edit's search has to match exactly once, and its replace has to differ from it: an edit that would leave the file as it is fails. Keep search to the few lines that make it unique rather than copying a large block. A block that differs only in indentation or whitespace still applies. Nothing is written unless every edit applies. A failure reports the lines around the closest region, so the next attempt can be exact."
 )]
 pub struct EditTool {
     limits: EditLimits,
@@ -354,6 +406,12 @@ impl EditTool {
 
     /// Applies every edit to an in-memory copy, or reports the first one that
     /// does not apply (FR-TOOL-EDIT-1).
+    ///
+    /// The rejection is returned by value because it is the answer, not an
+    /// error: a failure carries the snippets the model reads to retry. Boxing it
+    /// would put an allocation on the path of every failed edit to satisfy a
+    /// size lint, and the type is bounded — a handful of snippets and a hint.
+    #[allow(clippy::result_large_err)]
     fn apply(
         &self,
         before: &str,
@@ -450,11 +508,24 @@ fn validate(request: &EditRequest, limits: &EditLimits) -> Result<()> {
                 "edit: edit {index} has an empty search block"
             )));
         }
+        if spec.search == spec.replace {
+            return Err(Error::InvalidInput(format!(
+                "edit: edit {index} has the same text in search and replace, so it would change \
+                 nothing; put the new text in replace"
+            )));
+        }
         if spec.search.len() > limits.max_block_bytes || spec.replace.len() > limits.max_block_bytes
         {
             return Err(Error::InvalidInput(format!(
                 "edit: edit {index} has a block over the limit of {} bytes",
                 limits.max_block_bytes
+            )));
+        }
+        // Counting from one, as the file numbers them. A zero is a request that
+        // meant to say "the first" and said something else.
+        if spec.occurrence == Some(0) {
+            return Err(Error::InvalidInput(format!(
+                "edit: edit {index} asks for occurrence 0; occurrences are counted from 1"
             )));
         }
     }
@@ -511,11 +582,21 @@ fn ensure_unchanged(path: &std::path::Path, before: &Digest, max_bytes: usize) -
 fn code_of(reason: EditFailureReason) -> EditCode {
     match reason {
         EditFailureReason::NoMatch => EditCode::NoMatch,
-        EditFailureReason::Ambiguous => EditCode::Ambiguous,
+        EditFailureReason::Unchanged => EditCode::Unchanged,
+        // A number the file does not have is the ambiguous family: the block
+        // matched, and the request did not say which match it meant. Why it did
+        // not is in the reason.
+        EditFailureReason::Ambiguous | EditFailureReason::NoSuchOccurrence => EditCode::Ambiguous,
     }
 }
 
-/// Applies one edit in place: exactly one match or nothing at all.
+/// Applies one edit in place: exactly one match or nothing at all, and a match
+/// whose replacement is what the file already has there is refused, since an
+/// edit that changes nothing is a mistake the model has to hear about.
+///
+/// The rejection is returned by value because it is the answer: a failure
+/// carries the snippets the model reads to retry, and boxing it to satisfy a
+/// size lint would put an allocation on the path of every failed edit.
 fn apply_one(
     content: &mut String,
     index: usize,
@@ -525,13 +606,42 @@ fn apply_one(
 ) -> MatchResult {
     let offsets = occurrences(content, &spec.search);
     let starts = line_starts(content);
+    // A block that matches several times may name which one it means. That is
+    // the whole answer to "two identical lines and no way to tell them apart":
+    // the file numbers them, so the request can too.
+    if let Some(nth) = spec.occurrence {
+        let Some(offset) = offsets.get(nth.wrapping_sub(1)).copied() else {
+            return Err(occurrence_out_of_range(
+                content, index, spec, &offsets, &starts, limits,
+            ));
+        };
+        let end = offset + spec.search.len();
+        let first = line_of(&starts, offset);
+        let last = line_of(&starts, end - 1);
+        let replacement = normalize_newlines(&spec.replace, eol_at(content, offset));
+        if content.get(offset..end) == Some(replacement.as_str()) {
+            return Err(unchanged(content, index, spec, (first, last), None, limits));
+        }
+        content.replace_range(offset..end, &replacement);
+        return Ok(EditMatch {
+            edit: index,
+            kind: MatchKind::Exact,
+            start_line: first + 1,
+            end_line: last + 1,
+            confidence: 1.0,
+        });
+    }
     match offsets.as_slice() {
         [] => fuzzy_apply(content, index, spec, limits, budget),
         [offset] => {
+            let end = *offset + spec.search.len();
             let first = line_of(&starts, *offset);
-            let last = line_of(&starts, offset + spec.search.len() - 1);
+            let last = line_of(&starts, end - 1);
             let replacement = normalize_newlines(&spec.replace, eol_at(content, *offset));
-            content.replace_range(*offset..*offset + spec.search.len(), &replacement);
+            if content.get(*offset..end) == Some(replacement.as_str()) {
+                return Err(unchanged(content, index, spec, (first, last), None, limits));
+            }
+            content.replace_range(*offset..end, &replacement);
             Ok(EditMatch {
                 edit: index,
                 kind: MatchKind::Exact,
@@ -541,6 +651,41 @@ fn apply_one(
             })
         }
         _ => Err(ambiguous(content, &starts, index, spec, &offsets, limits)),
+    }
+}
+
+/// The failure for an `occurrence` the file does not have.
+///
+/// The count is the useful part: a request that asked for the fourth of three
+/// needs to be told there are three, and where they are.
+fn occurrence_out_of_range(
+    content: &str,
+    index: usize,
+    spec: &EditSpec,
+    offsets: &[usize],
+    starts: &[usize],
+    limits: &EditLimits,
+) -> EditFailure {
+    let lines = line_texts(content);
+    let spans: Vec<(usize, usize)> = offsets
+        .iter()
+        .map(|offset| {
+            (
+                line_of(starts, *offset),
+                line_of(starts, offset + spec.search.len() - 1),
+            )
+        })
+        .collect();
+    EditFailure {
+        edit: index,
+        reason: EditFailureReason::NoSuchOccurrence,
+        search_lines: normalized_block(&spec.search).len(),
+        occurrences: offsets.len(),
+        // What was asked for, not what there is: the message has to say both, or
+        // it cannot say why the number is wrong.
+        asked_occurrence: spec.occurrence,
+        confidence: None,
+        candidates: shown_snippets(&spans, &lines, limits.context_lines),
     }
 }
 
@@ -595,13 +740,23 @@ fn fuzzy_apply(
             reason,
             search_lines: block.len(),
             occurrences: if reached { found.max(near.len()) } else { 0 },
+            asked_occurrence: None,
             confidence: Some(best.score),
             candidates,
         });
     }
 
     let replacement = reindent(content, &source, &best, &spec.search, &spec.replace);
-    splice_lines(content, best.first, best.last, &replacement);
+    if !splice_lines(content, best.first, best.last, &replacement) {
+        return Err(unchanged(
+            content,
+            index,
+            spec,
+            (best.first, best.last),
+            Some(best.score),
+            limits,
+        ));
+    }
     Ok(EditMatch {
         edit: index,
         kind: if best.score >= 1.0 {
@@ -690,6 +845,20 @@ fn shown_snippets(spans: &[(usize, usize)], lines: &[&str], context: usize) -> V
     shown
 }
 
+/// The same, without dropping the ones that render alike.
+///
+/// Two occurrences that look identical are the case this exists for: the whole
+/// question is which of them to change, and a report that folds them into one
+/// has answered it wrong by saying there is one. Every one gets its own entry,
+/// up to the cap, because they are choices rather than evidence.
+fn every_snippet(spans: &[(usize, usize)], lines: &[&str], context: usize) -> Vec<Snippet> {
+    spans
+        .iter()
+        .take(REPORTED_SNIPPETS)
+        .map(|(first, last)| snippet(lines, *first, *last, context))
+        .collect()
+}
+
 fn ambiguous(
     content: &str,
     starts: &[usize],
@@ -708,12 +877,15 @@ fn ambiguous(
             )
         })
         .collect();
-    let candidates = shown_snippets(&spans, &lines, limits.context_lines);
+    // One entry per occurrence, and never folded together: two identical lines
+    // are two choices, and showing them as one says the opposite.
+    let candidates = every_snippet(&spans, &lines, limits.context_lines);
     EditFailure {
         edit: index,
         reason: EditFailureReason::Ambiguous,
         search_lines: normalized_block(&spec.search).len(),
         occurrences: offsets.len(),
+        asked_occurrence: None,
         confidence: None,
         candidates,
     }
@@ -730,8 +902,31 @@ fn no_match(
         reason: EditFailureReason::NoMatch,
         search_lines: normalized_block(search).len(),
         occurrences: 0,
+        asked_occurrence: None,
         confidence,
         candidates,
+    }
+}
+
+/// The failure for an edit that found its place and would leave it as it was,
+/// showing the lines it matched so the model can see what is already there.
+fn unchanged(
+    content: &str,
+    index: usize,
+    spec: &EditSpec,
+    span: (usize, usize),
+    confidence: Option<f64>,
+    limits: &EditLimits,
+) -> EditFailure {
+    let lines = line_texts(content);
+    EditFailure {
+        edit: index,
+        reason: EditFailureReason::Unchanged,
+        search_lines: normalized_block(&spec.search).len(),
+        occurrences: 1,
+        asked_occurrence: None,
+        confidence,
+        candidates: shown_snippets(&[span], &lines, limits.context_lines),
     }
 }
 
@@ -870,19 +1065,23 @@ fn join_lines(lines: &[(usize, String)]) -> String {
 
 /// Replaces lines `first..=last` with `replacement`, keeping the line
 /// terminator the removed block ended with so the following line stays whole
-/// (FR-TOOL-FILE-2).
-fn splice_lines(content: &mut String, first: usize, last: usize, replacement: &str) {
+/// (FR-TOOL-FILE-2). Answers whether the text changed: a replacement that
+/// reproduces the lines it would remove leaves `content` untouched.
+fn splice_lines(content: &mut String, first: usize, last: usize, replacement: &str) -> bool {
     let starts = line_starts(content);
     let start = starts.get(first).copied().unwrap_or(content.len());
     let end = starts.get(last + 1).copied().unwrap_or(content.len());
-    let terminated = content
-        .get(start..end)
-        .is_some_and(|removed| removed.ends_with('\n'));
+    let removed = content.get(start..end).unwrap_or_default();
+    let terminated = removed.ends_with('\n');
     let mut text = replacement.to_owned();
     if terminated && !text.is_empty() && !text.ends_with('\n') {
         text.push_str(eol_at(content, start));
     }
+    if removed == text {
+        return false;
+    }
     content.replace_range(start..end, &text);
+    true
 }
 
 /// The terminator the line that contains `offset` ends with, and the file's own
@@ -1149,42 +1348,29 @@ fn render(outcome: &EditOutcome, hint: Option<&str>) -> Result<ToolOutput> {
     Ok(ToolOutput {
         parts: vec![Part::text(describe(outcome, hint))],
         structured: Some(serde_json::to_value(outcome)?),
-        is_error: !matches!(outcome.code, EditCode::Applied | EditCode::Unchanged),
+        is_error: outcome.code != EditCode::Applied,
     })
 }
 
 fn describe(outcome: &EditOutcome, hint: Option<&str>) -> String {
     use std::fmt::Write as _;
 
-    let mut text = String::new();
-    if outcome.code == EditCode::Applied || outcome.code == EditCode::Unchanged {
-        let _ = writeln!(
-            text,
-            "edited {}: {} edit(s) applied{} ({} lines, {} bytes)",
-            outcome.path.display(),
-            outcome.matches.len(),
-            if outcome.written {
-                ""
-            } else {
-                ", nothing changed"
-            },
-            outcome.total_lines,
-            outcome.bytes
-        );
-        for entry in &outcome.matches {
-            let _ = writeln!(
-                text,
-                "  edit {}: {} at lines {}-{}",
-                entry.edit,
-                match_text(entry),
-                entry.start_line,
-                entry.end_line
-            );
-        }
-        return text;
+    if outcome.code == EditCode::Applied {
+        return applied(outcome);
     }
+    let mut text = String::new();
 
     let Some(failure) = &outcome.failure else {
+        if outcome.code == EditCode::Unchanged {
+            let _ = writeln!(
+                text,
+                "edit failed: nothing was written to {}; the {} edit(s) each matched, but \
+                 together they leave the file exactly as it was, so the change you meant is \
+                 not in any replace",
+                outcome.path.display(),
+                outcome.matches.len()
+            );
+        }
         return text;
     };
     let _ = writeln!(
@@ -1203,26 +1389,10 @@ fn describe(outcome: &EditOutcome, hint: Option<&str>) -> String {
     }
     match failure.reason {
         EditFailureReason::Ambiguous => {
-            if failure.confidence.is_none() {
-                let at_least = if failure.occurrences > MAX_OCCURRENCES {
-                    "at least "
-                } else {
-                    ""
-                };
-                let _ = writeln!(
-                    text,
-                    "edit {} matches {at_least}{} exact occurrence(s); same-line and overlapping \
-                     hits count separately, so widen the block until only one place matches",
-                    failure.edit, failure.occurrences
-                );
-            } else {
-                let _ = writeln!(
-                    text,
-                    "edit {} has {} plausible region(s) and no single one is clearly best; widen \
-                     the block until one is",
-                    failure.edit, failure.occurrences
-                );
-            }
+            let _ = writeln!(text, "{}", ambiguous_report(failure));
+        }
+        EditFailureReason::NoSuchOccurrence => {
+            let _ = writeln!(text, "{}", out_of_range(failure));
         }
         EditFailureReason::NoMatch => {
             let _ = writeln!(
@@ -1233,13 +1403,37 @@ fn describe(outcome: &EditOutcome, hint: Option<&str>) -> String {
                 closeness(failure)
             );
         }
+        EditFailureReason::Unchanged => {
+            let _ = writeln!(
+                text,
+                "edit {} matched, but its replace is exactly what the file already has there, so \
+                 it would change nothing; put the new text in replace",
+                failure.edit
+            );
+        }
     }
     if let Some(hint) = hint {
         let _ = writeln!(text, "{hint}");
     }
-    for candidate in &failure.candidates {
+    // Two candidates of an ambiguous block can render identically — two lines
+    // apart are alike in every neighbourhood a report can show — so the heading
+    // numbers them the way `occurrence` counts. Without the number the two
+    // snippets are a puzzle; with it, the answer to "which one?" is one digit.
+    let numbered = failure.reason == EditFailureReason::Ambiguous
+        && failure.confidence.is_none()
+        && failure.candidates.len() > 1;
+    for (index, candidate) in failure.candidates.iter().enumerate() {
         let last = candidate.start_line + candidate.lines.len().saturating_sub(1);
-        let _ = writeln!(text, "lines {}-{last}:", candidate.start_line);
+        if numbered {
+            let _ = writeln!(
+                text,
+                "occurrence {} at lines {}-{last}:",
+                index + 1,
+                candidate.start_line
+            );
+        } else {
+            let _ = writeln!(text, "lines {}-{last}:", candidate.start_line);
+        }
         for (offset, line) in candidate.lines.iter().enumerate() {
             let _ = writeln!(text, "{:>5} | {line}", candidate.start_line + offset);
         }
@@ -1248,6 +1442,71 @@ fn describe(outcome: &EditOutcome, hint: Option<&str>) -> String {
         }
     }
     text
+}
+
+/// The report for a request that applied.
+fn applied(outcome: &EditOutcome) -> String {
+    use std::fmt::Write as _;
+
+    let mut text = String::new();
+    let _ = writeln!(
+        text,
+        "edited {}: {} edit(s) applied ({} lines, {} bytes)",
+        outcome.path.display(),
+        outcome.matches.len(),
+        outcome.total_lines,
+        outcome.bytes
+    );
+    for entry in &outcome.matches {
+        let _ = writeln!(
+            text,
+            "  edit {}: {} at lines {}-{}",
+            entry.edit,
+            match_text(entry),
+            entry.start_line,
+            entry.end_line
+        );
+    }
+    text
+}
+
+/// The report for a block that matched in more than one place.
+///
+/// The advice used to be to widen the block, and only that. It is the wrong
+/// first answer for the case this hits most: two identical lines a file apart
+/// cannot be told apart by any amount of surrounding context, and copying twenty
+/// lines to disambiguate something the file already numbers is work the request
+/// does not have to do. Naming the occurrence is one number.
+fn ambiguous_report(failure: &EditFailure) -> String {
+    if failure.confidence.is_some() {
+        return format!(
+            "edit {} has {} plausible region(s) and no single one is clearly best; widen the \
+             block until one is",
+            failure.edit, failure.occurrences
+        );
+    }
+    let at_least = if failure.occurrences > MAX_OCCURRENCES {
+        "at least "
+    } else {
+        ""
+    };
+    format!(
+        "edit {} matches {at_least}{} time(s), so it does not say which one to change; set \
+         \"occurrence\" to pick one (1 is the first, in file order), or widen the block until \
+         only one place matches",
+        failure.edit, failure.occurrences
+    )
+}
+
+/// The report for an `occurrence` the file does not have.
+fn out_of_range(failure: &EditFailure) -> String {
+    format!(
+        "edit {} asks for occurrence {} but the block matches {} time(s); the number counts from \
+         1 in file order",
+        failure.edit,
+        failure.asked_occurrence.unwrap_or(0),
+        failure.occurrences
+    )
 }
 
 fn match_text(entry: &EditMatch) -> String {
@@ -1416,6 +1675,7 @@ mod tests {
                 .map(|(search, replace)| EditSpec {
                     search: search.to_owned(),
                     replace: replace.to_owned(),
+                    occurrence: None,
                 })
                 .collect(),
         };
@@ -1717,8 +1977,15 @@ mod tests {
         assert_eq!(read(&path), before);
 
         let text = output.parts.first().and_then(Part::as_text).expect("text");
-        assert!(text.contains("matches 2 exact occurrence(s)"), "{text}");
-        assert!(text.contains("same-line and overlapping hits"), "{text}");
+        // The message says how to resolve it, not only that it is unresolved:
+        // widening the block is impossible for two identical lines, and the
+        // occurrence is one number.
+        assert!(text.contains("matches 2 time(s)"), "{text}");
+        assert!(
+            text.contains("occurrence"),
+            "the answer is in the message: {text}"
+        );
+        assert!(text.contains("occurrence"), "{text}");
         assert!(
             text.contains("    3 |") && text.contains("   13 |"),
             "{text}"
@@ -1734,8 +2001,11 @@ mod tests {
         assert_eq!(structured["code"], "ambiguous");
         assert_eq!(structured["failure"]["occurrences"], 2);
         let text = describe_failure(&output);
-        assert!(text.contains("matches 2 exact occurrence(s)"), "{text}");
-        assert!(text.contains("same-line and overlapping hits"), "{text}");
+        assert!(text.contains("matches 2 time(s)"), "{text}");
+        assert!(
+            text.contains("occurrence"),
+            "the answer is in the message: {text}"
+        );
         assert_eq!(read(&path), "bar bar\n");
     }
 
@@ -2005,6 +2275,7 @@ mod tests {
             edits: vec![EditSpec {
                 search: "a".to_owned(),
                 replace: "b".to_owned(),
+                occurrence: None,
             }],
         };
         let error = EditTool::new().call(request).await.expect_err("missing");
@@ -2228,23 +2499,278 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_edit_that_changes_nothing_writes_nothing() {
+    async fn an_ambiguous_failure_numbers_its_occurrences() {
+        // Two identical lines a file apart render the same in any neighbourhood,
+        // so a report that shows both without numbering them is a puzzle. The
+        // numbers are the ones `occurrence` counts with, so the heading and the
+        // field are the same answer said twice.
+        let content = "let a = 1;\nlet b = 2;\nlet a = 1;\n";
+        let (path, request) = seeded("numbered", content, vec![("let a = 1;", "let a = 3;")]);
+        let output = run(&request).await;
+        assert!(output.is_error);
+        let text = describe_failure(&output);
+        assert!(
+            text.contains("occurrence 1 at lines"),
+            "the first is numbered: {text}"
+        );
+        assert!(
+            text.contains("occurrence 2 at lines"),
+            "and so is the second: {text}"
+        );
+        // The numbers are what the answer uses, so the message says so.
+        assert!(text.contains("set \"occurrence\""), "{text}");
+        assert_eq!(read(&path), content);
+    }
+
+    #[tokio::test]
+    async fn a_unique_failure_is_not_numbered() {
+        // One candidate is not a choice: numbering it would suggest there are
+        // others, and the field it names has nothing to pick.
+        let (path, request) = seeded(
+            "not-numbered",
+            SOURCE,
+            vec![("pub port: u17,", "pub port: u32,")],
+        );
+        let output = run(&request).await;
+        assert!(output.is_error);
+        let text = describe_failure(&output);
+        assert!(
+            !text.contains("occurrence 1"),
+            "a single candidate is not a list: {text}"
+        );
+        assert_eq!(read(&path), SOURCE);
+    }
+
+    #[tokio::test]
+    async fn an_occurrence_picks_one_of_several_identical_places() {
+        // The case the ambiguity failure hits most, and the answer to it. Two
+        // lines two apart are identical in every neighbourhood a report could
+        // show — copying twenty lines to disambiguate something the file already
+        // numbers is work the request does not have to do. The number is the
+        // whole of it.
+        let content = "let a = 1;\nlet b = 2;\nlet a = 1;\n";
+        let path = scratch("occurrence").join("main.rs");
+        std::fs::write(&path, content).expect("seed");
+        let request = EditRequest {
+            path: path.clone(),
+            edits: vec![EditSpec::new("let a = 1;", "let a = 3;").nth(2)],
+        };
+        let output = run(&request).await;
+        assert!(!output.is_error, "the second one was found: {output:?}");
+        assert_eq!(
+            read(&path),
+            "let a = 1;\nlet b = 2;\nlet a = 3;\n",
+            "the second occurrence changed and the first did not"
+        );
+
+        // The first one, in the same file and the same block: the other way.
+        let path = scratch("occurrence-first").join("main.rs");
+        std::fs::write(&path, content).expect("seed");
+        let request = EditRequest {
+            path: path.clone(),
+            edits: vec![EditSpec::new("let a = 1;", "let a = 3;").nth(1)],
+        };
+        let output = run(&request).await;
+        assert!(!output.is_error, "{output:?}");
+        assert_eq!(read(&path), "let a = 3;\nlet b = 2;\nlet a = 1;\n");
+    }
+
+    #[tokio::test]
+    async fn an_occurrence_the_file_does_not_have_is_refused_with_the_count() {
+        // A number past the end is a mistake, and the useful part of saying so is
+        // the count: "there are two" is what lets the next attempt be right.
+        let content = "let a = 1;\nlet b = 2;\nlet a = 1;\n";
+        let (path, request) = seeded(
+            "occurrence-past",
+            content,
+            vec![("let a = 1;", "let a = 3;")],
+        );
+        let mut request = request;
+        request.edits[0] = request.edits[0].clone().nth(3);
+        // A failure to match is a reported outcome, not a rejected request: the
+        // call answers, and the answer says what went wrong.
+        let output = run(&request).await;
+        assert!(output.is_error, "the third of two does not exist");
+        let text: String = output
+            .parts
+            .iter()
+            .filter_map(norte_core::Part::as_text)
+            .collect();
+        assert!(text.contains("occurrence 3"), "{text}");
+        assert!(
+            text.contains("matches 2 time(s)"),
+            "and how many there are: {text}"
+        );
+        let structured = structured(&output);
+        assert_eq!(structured["code"], "ambiguous");
+        assert_eq!(structured["failure"]["reason"], "no_such_occurrence");
+        assert_eq!(structured["failure"]["asked_occurrence"], 3);
+        assert_eq!(read(&path), content, "nothing was written");
+    }
+
+    #[tokio::test]
+    async fn an_occurrence_of_zero_is_invalid_input() {
+        // Counting starts at one, as the file numbers it: a zero is a request
+        // that meant "the first" and said something else.
+        let (path, mut request) = seeded(
+            "occurrence-zero",
+            SOURCE,
+            vec![("pub port: u16,", "pub port: u32,")],
+        );
+        request.edits[0] = request.edits[0].clone().nth(0);
+        let error = EditTool::new().call(request).await.expect_err("zero");
+        assert!(
+            matches!(&error, Error::InvalidInput(reason) if reason.contains("counted from 1")),
+            "{error}"
+        );
+        assert_eq!(read(&path), SOURCE, "nothing was written");
+    }
+
+    #[tokio::test]
+    async fn an_occurrence_on_a_unique_block_still_applies() {
+        // It is not only for the ambiguous case: a request that names the first
+        // of one is not wrong, and refusing it would make the number a trap.
+        let (path, mut request) = seeded(
+            "occurrence-first-of-one",
+            SOURCE,
+            vec![("pub port: u16,", "pub port: u32,")],
+        );
+        request.edits[0] = request.edits[0].clone().nth(1);
+        let output = run(&request).await;
+        assert!(!output.is_error, "{output:?}");
+        assert!(read(&path).contains("pub port: u32,"));
+    }
+
+    #[tokio::test]
+    async fn an_ambiguous_failure_offers_the_occurrence() {
+        // The advice used to be to widen the block, and only that. For two
+        // identical lines it is advice that cannot be taken: no neighbourhood
+        // tells them apart. The message says what can be done.
+        let content = "let a = 1;\nlet b = 2;\nlet a = 1;\n";
+        let (path, request) = seeded(
+            "ambiguous-advice",
+            content,
+            vec![("let a = 1;", "let a = 3;")],
+        );
+        let output = run(&request).await;
+        assert!(output.is_error, "an ambiguous block is refused");
+        let structured = structured(&output);
+        assert_eq!(structured["code"], "ambiguous");
+        assert_eq!(structured["failure"]["occurrences"], 2);
+        let text = output
+            .parts
+            .iter()
+            .filter_map(norte_core::Part::as_text)
+            .collect::<String>();
+        assert!(
+            text.contains("occurrence"),
+            "the failure says how to pick one: {text}"
+        );
+        assert_eq!(read(&path), content);
+    }
+
+    #[tokio::test]
+    async fn an_identical_search_and_replace_is_invalid_input() {
         let (path, request) = seeded("noop", SOURCE, vec![("pub port: u16,", "pub port: u16,")]);
         let modified = std::fs::metadata(&path)
             .and_then(|metadata| metadata.modified())
             .expect("modified");
-        let output = run(&request).await;
-        assert!(!output.is_error, "a no-op is not a failure");
-        let structured = structured(&output);
-        assert_eq!(structured["code"], "unchanged");
-        assert_eq!(structured["written"], false);
-        let text = output.parts.first().and_then(Part::as_text).expect("text");
-        assert!(text.contains("nothing changed"), "{text}");
+        let error = EditTool::new().call(request).await.expect_err("a no-op");
+        assert!(
+            matches!(&error, Error::InvalidInput(reason) if reason.contains("edit 0") && reason.contains("same text")),
+            "{error}"
+        );
         assert_eq!(read(&path), SOURCE);
         let after = std::fs::metadata(&path)
             .and_then(|metadata| metadata.modified())
             .expect("modified");
         assert_eq!(modified, after, "the file was not rewritten");
+    }
+
+    #[tokio::test]
+    async fn a_no_op_in_a_batch_fails_the_whole_batch() {
+        // The case a model hits most: one real edit and one whose replace it
+        // forgot to change. Reporting both as applied hides the forgotten one.
+        let (path, request) = seeded(
+            "noop-batch",
+            SOURCE,
+            vec![
+                ("pub port: u16,", "pub port: u32,"),
+                ("println!(\"{config:?}\");", "println!(\"{config:?}\");"),
+            ],
+        );
+        let error = EditTool::new().call(request).await.expect_err("a no-op");
+        assert!(
+            matches!(&error, Error::InvalidInput(reason) if reason.contains("edit 1")),
+            "{error}"
+        );
+        assert_eq!(read(&path), SOURCE, "the real edit is not written either");
+    }
+
+    #[tokio::test]
+    async fn a_replace_that_only_differs_in_line_endings_changes_nothing() {
+        // search and replace differ as strings, but the replacement takes the
+        // file's CRLF and lands as the very text it replaces.
+        let content = "one\r\ntwo\r\nthree\r\n";
+        let (path, request) = seeded("noop-crlf", content, vec![("two\r\nthree", "two\nthree")]);
+        let output = run(&request).await;
+        assert!(output.is_error, "a no-op is a failure");
+        let structured = structured(&output);
+        assert_eq!(structured["code"], "unchanged");
+        assert_eq!(structured["written"], false);
+        assert_eq!(structured["failure"]["reason"], "unchanged");
+        assert_eq!(structured["failure"]["edit"], 0);
+        assert_eq!(structured["failure"]["candidates"][0]["start_line"], 1);
+        let text = output.parts.first().and_then(Part::as_text).expect("text");
+        assert!(text.contains("would change nothing"), "{text}");
+        assert!(!text.contains("applied"), "{text}");
+        assert_eq!(read(&path), content);
+    }
+
+    #[tokio::test]
+    async fn a_whitespace_match_whose_replace_is_already_there_changes_nothing() {
+        let content = "fn main() {\n    let  x = 1;\n}\n";
+        let (path, request) = seeded(
+            "noop-whitespace",
+            content,
+            vec![("    let x = 1;", "    let  x = 1;")],
+        );
+        let output = run(&request).await;
+        assert!(output.is_error, "a no-op is a failure");
+        let structured = structured(&output);
+        assert_eq!(structured["code"], "unchanged");
+        assert_eq!(structured["failure"]["reason"], "unchanged");
+        assert_eq!(structured["failure"]["confidence"], 1.0);
+        assert_eq!(read(&path), content);
+    }
+
+    #[tokio::test]
+    async fn edits_that_cancel_each_other_out_are_unchanged() {
+        let (path, request) = seeded(
+            "noop-cancel",
+            SOURCE,
+            vec![
+                ("pub port: u16,", "pub port: u32,"),
+                ("pub port: u32,", "pub port: u16,"),
+            ],
+        );
+        let output = run(&request).await;
+        assert!(output.is_error, "a no-op is a failure");
+        let structured = structured(&output);
+        assert_eq!(structured["code"], "unchanged");
+        assert_eq!(structured["written"], false);
+        let text = output.parts.first().and_then(Part::as_text).expect("text");
+        assert!(text.contains("edit failed"), "{text}");
+        assert!(text.contains("exactly as it was"), "{text}");
+        assert_eq!(read(&path), SOURCE);
+    }
+
+    #[test]
+    fn the_schema_tells_the_model_that_search_and_replace_must_differ() {
+        let schema = serde_json::to_string(&schemars::schema_for!(EditRequest)).expect("schema");
+        assert!(schema.contains("It must differ from search"), "{schema}");
+        assert!(EditTool::DESCRIPTION.contains("has to differ"));
+        assert!(!EditTool::DESCRIPTION.contains("reported as unchanged"));
     }
 
     #[tokio::test]
@@ -2290,6 +2816,7 @@ mod tests {
             edits: vec![EditSpec {
                 search: "pub port: u16,".to_owned(),
                 replace: "pub port: u32,".to_owned(),
+                occurrence: None,
             }],
         };
         let output = run(&request).await;

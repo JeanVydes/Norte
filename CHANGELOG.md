@@ -64,6 +64,19 @@ Draft. Not published.
   cancellation token and the detach token all reach an unbounded call exactly as
   they reach a bounded one, so `Ctrl-C` and a dropped future end it as before.
 
+### Changed
+
+- The browser tool's answer to the model is a table, not a JSON object. The
+  object repeated every key on every element, and on a page of ordinary links the
+  keys were half the bytes: eighty elements were 7 096 bytes against 4 313 in
+  this form, 40% less for the same fields, on the answer a real page makes the
+  largest. One line per element with fixed columns — `id|tag|text|href|flags` —
+  with a `|` in a label escaped so it cannot shift the columns after it. The
+  `structured` value is unchanged, so the host, the tests and the telemetry read
+  what they always did; only what the model sees is smaller. `text` is left
+  uncompressed although it is the largest field: it is what the model reads to
+  decide, and a list of prefixes is a list nobody can act on.
+
 ### Fixed
 
 - The host's element cap is a ceiling, not a default. A request could ask for

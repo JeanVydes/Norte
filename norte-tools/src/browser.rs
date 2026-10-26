@@ -1190,50 +1190,100 @@ async fn execute_browser_action(
 
 /// The answer as text, which is what the model reads.
 ///
-/// One line per element, `|`-separated, instead of the JSON object it is in
-/// `structured`. The object repeats every key on every element, and the keys are
-/// half the bytes: on a page of ordinary links, eighty elements are 7 096 bytes
-/// of JSON against 4 450 of this — 37% less for the same fields, on the answer
-/// that a real page makes the largest.
+/// Every action's answer has the same shape, and this renders all of it: what
+/// the action did, where the page is now, the tabs when the action was about
+/// tabs, and the controls when the action returned any. A renderer that wrote
+/// only the elements answered a `list_tabs` with a header and nothing under it,
+/// which is what this did until a live call to `list_tabs` showed it.
 ///
-/// The fields are positional and fixed, so the header is written once:
-///
-/// ```text
-/// id|tag|text|href|flags
-/// 0|A|See plans|/pricing|
-/// 3|BUTTON|Delete account||disabled
-/// ```
+/// The elements are a table rather than the JSON object they are in
+/// `structured`, because the object repeats every key on every element and the
+/// keys are half the bytes: on a page of ordinary links, eighty elements are
+/// 7 096 bytes of JSON against 4 313 of this — 40% less for the same fields, on
+/// the answer a real page makes the largest.
 ///
 /// `text` is not compressed, though it is the largest field: it is what the
-/// model reads to decide, and a list of prefixes and suffixes is a list nobody
-/// can act on. The bytes that are saved are the ones spent on punctuation.
+/// model reads to decide, and a list of shared prefixes is a list nobody can act
+/// on. The bytes that are saved are the ones spent on punctuation.
 fn describe(output: &BrowserOutput) -> String {
     use std::fmt::Write as _;
     let mut text = String::new();
-    text.push_str("id|tag|text|href|flags\n");
-    for element in &output.elements {
-        let _ = write!(
-            text,
-            "{}|{}|{}|{}|",
-            element.id,
-            element.tag,
-            // A `|` in a label would shift every column after it, so the field
-            // that is the page's own text is the one that cannot contain the
-            // separator.
-            element.text.replace('|', "\\u{7c}"),
-            element.href.as_deref().unwrap_or("")
-        );
-        let mut flags = Vec::new();
-        if element.disabled {
-            flags.push("disabled");
+
+    // What the action did, first: it is the line that says whether the call
+    // worked, and it is the whole answer for an action that changes the page.
+    if !output.message.is_empty() {
+        let _ = writeln!(text, "{}", output.message);
+    }
+    if !output.url.is_empty() {
+        let _ = write!(text, "url: {}", output.url);
+        if !output.title.is_empty() {
+            let _ = write!(text, "  title: {}", output.title);
         }
-        if element.checked {
-            flags.push("checked");
-        }
-        let _ = write!(text, "{}", flags.join(","));
         text.push('\n');
     }
-    text
+
+    // The tabs, one per line, with the driven one marked: a list a model picks a
+    // tab out of, and an empty one would read as a browser with no tabs.
+    if !output.tabs.is_empty() {
+        let _ = writeln!(text, "\ntabs ({}):", output.tabs.len());
+        for tab in &output.tabs {
+            let _ = writeln!(
+                text,
+                "{} {}{} :: {}",
+                if tab.current { "*" } else { " " },
+                tab.id,
+                if tab.title.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({})", tab.title)
+                },
+                tab.url
+            );
+        }
+    }
+
+    // The controls, as a table.
+    if !output.elements.is_empty() {
+        let _ = writeln!(text, "\nid|tag|text|href|flags");
+        for element in &output.elements {
+            let _ = write!(
+                text,
+                "{}|{}|{}|{}|",
+                element.id,
+                element.tag,
+                // A `|` in a label would shift every column after it, so the
+                // field that is the page's own text is the one that cannot
+                // contain the separator.
+                element.text.replace('|', "\\u{7c}"),
+                element.href.as_deref().unwrap_or("")
+            );
+            let mut flags = Vec::new();
+            if element.disabled {
+                flags.push("disabled");
+            }
+            if element.checked {
+                flags.push("checked");
+            }
+            let _ = writeln!(text, "{}", flags.join(","));
+        }
+    }
+
+    // A bounded list says it is bounded, or it reads as the whole page.
+    if output.elements_matched > 0 {
+        let _ = writeln!(
+            text,
+            "({} more matched and were left out; narrow the filter rather than asking for more, which the host's cap will refuse)",
+            output.elements_matched
+        );
+    }
+
+    // The screenshot's bytes are in `structured`; what a model needs to know
+    // here is that there is one and how big.
+    if let Some(png) = &output.screenshot_base64 {
+        let _ = writeln!(text, "\nscreenshot: {} bytes of base64 PNG", png.len());
+    }
+
+    text.trim_end().to_owned() + "\n"
 }
 
 /// The output of a tab action.
@@ -1476,6 +1526,54 @@ mod tests {
         );
     }
 
+    /// An action whose answer is not elements, against a live browser.
+    ///
+    /// A renderer that wrote only the elements answered `list_tabs` with a
+    /// header and nothing under it, and every unit test drove `extract_dom`, so
+    /// they all passed. A live call to `list_tabs` is what showed it; this is
+    /// the test that would have.
+    ///
+    /// ```text
+    /// cargo test -p norte-tools -- --ignored a_tab_action_answers
+    /// ```
+    #[tokio::test]
+    #[ignore = "needs a browser with --remote-debugging-port=9222"]
+    async fn a_tab_action_answers_with_its_tabs() {
+        let tool = BrowserTool::new();
+        let request: BrowserRequest =
+            serde_json::from_value(json!({"action": {"type": "list_tabs"}})).expect("parses");
+        let out = tool
+            .call_with_context(&ToolContext::new(), request)
+            .await
+            .expect("runs");
+        let text: String = out
+            .parts
+            .iter()
+            .filter_map(norte_core::Part::as_text)
+            .collect();
+
+        assert!(
+            text.contains("tabs ("),
+            "the tabs are in the answer: {text}"
+        );
+        assert!(
+            !text.contains("id|tag|text|href|flags"),
+            "and no element table, because there are no elements: {text}"
+        );
+        assert!(
+            text.contains("url:"),
+            "the page the tool is on came with it: {text}"
+        );
+        // The value is unchanged, so the host still reads what it read.
+        let structured = out.structured.expect("structured");
+        assert!(
+            structured["tabs"]
+                .as_array()
+                .is_some_and(|tabs| !tabs.is_empty()),
+            "and the structured value still carries them: {structured}"
+        );
+    }
+
     #[test]
     fn the_schema_declares_the_bound_where_a_model_reads_it() {
         // The bug this pins: `max_elements` and `filter` were siblings of
@@ -1563,6 +1661,57 @@ mod tests {
     }
 
     #[test]
+    fn an_answer_without_elements_is_still_rendered() {
+        // The bug this pins: `describe` wrote only the elements, so an action
+        // that returns none — `list_tabs`, `navigate`, a screenshot — answered
+        // with a header and nothing under it. Every unit test drove
+        // `extract_dom`, so they passed; a live `list_tabs` is what showed it.
+        let tabs = vec![
+            BrowserTab {
+                id: "AAA".to_owned(),
+                title: "Inbox - Outlook".to_owned(),
+                url: "https://outlook.live.com/mail/0/".to_owned(),
+                current: true,
+            },
+            BrowserTab {
+                id: "BBB".to_owned(),
+                title: "Docs".to_owned(),
+                url: "https://example.test/docs".to_owned(),
+                current: false,
+            },
+        ];
+        let output = BrowserOutput {
+            url: "https://outlook.live.com/mail/0/".to_owned(),
+            title: "Inbox - Outlook".to_owned(),
+            message: "2 tabs open".to_owned(),
+            elements: Vec::new(),
+            elements_matched: 0,
+            screenshot_base64: None,
+            tabs,
+            request_digest: Digest::of(b"request"),
+        };
+        let text = describe(&output);
+        assert!(text.contains("2 tabs open"), "the message: {text}");
+        assert!(text.contains("url: https://outlook"), "the page: {text}");
+        assert!(text.contains("* AAA"), "the driven tab is marked: {text}");
+        assert!(text.contains("  BBB"), "the others are not: {text}");
+        assert!(text.contains("Inbox - Outlook"), "a title: {text}");
+        assert!(
+            !text.contains("id|tag|text|href|flags"),
+            "no element table when there are no elements: {text}"
+        );
+
+        // A screenshot says it is one, and how big, rather than dumping base64.
+        let shot = BrowserOutput {
+            message: "Screenshot captured".to_owned(),
+            screenshot_base64: Some("A".repeat(100)),
+            ..output
+        };
+        let text = describe(&shot);
+        assert!(text.contains("100 bytes of base64 PNG"), "{text}");
+    }
+
+    #[test]
     fn the_text_answer_is_a_table_and_keeps_every_field() {
         // What the model reads, as opposed to `structured`, which is what the
         // host keeps. The object repeats its keys on every element and the keys
@@ -1590,15 +1739,22 @@ mod tests {
 
         assert_eq!(
             text,
-            "id|tag|text|href|flags\n\
+            "Extracted 3 visible interactive elements\n\
+             url: https://example.test/  title: Example\n\
+             \n\
+             id|tag|text|href|flags\n\
              5|A|See plans|/pricing|\n\
              3|BUTTON|Delete account||disabled\n\
              9|INPUT|||checked\n",
-            "one header and one line per element"
+            "the answer, its page, and one line per element"
         );
         // The flags are the only field that varies in position, so it is the
         // last one: a row with none ends in an empty field, not a short row.
-        for line in text.lines().skip(1) {
+        for line in text
+            .lines()
+            .skip_while(|line| *line != "id|tag|text|href|flags")
+            .skip(1)
+        {
             assert_eq!(
                 line.matches('|').count(),
                 4,
@@ -1626,7 +1782,11 @@ mod tests {
             request_digest: Digest::of(b"request"),
         };
         let text = describe(&output);
-        let row = text.lines().nth(1).expect("one row");
+        let row = text
+            .lines()
+            .skip_while(|line| *line != "id|tag|text|href|flags")
+            .nth(1)
+            .expect("one row");
         assert_eq!(
             row.matches('|').count(),
             4,

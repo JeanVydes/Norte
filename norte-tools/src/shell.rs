@@ -2287,24 +2287,24 @@ mod tests {
         // The difference from cancelling, and the whole point: the call ends,
         // the process does not. It keeps writing after the call returned.
         let dir = temp_dir("detached");
-        let marker = dir.join("marker");
         let later = dir.join("later");
         let tool = ShellTool::new();
-        let context = ToolContext::new();
+        let sink = Arc::new(Echo::default());
+        let context = ToolContext::new().with_progress(sink.clone());
         let signal = context.detach();
-        let watched = marker.clone();
+        let watched = Arc::clone(&sink);
         tokio::spawn(async move {
-            // Detach only after the first line reached the pipe, so the
-            // assertion on the captured output is not a race with startup.
-            wait_for(&watched).await;
+            // Detach once the first line has reached the capture, not once the
+            // process has written it: the reader fills the capture and only then
+            // emits the progress, so the progress is the first moment the bytes
+            // the detached answer reads are known to be there. Waiting on the
+            // process instead raced that reader, and the assertion below failed
+            // one run in six.
+            wait_for_progress(&watched, "before").await;
             signal.cancel();
         });
 
-        let script = format!(
-            "echo before; touch {}; sleep 1; touch {}",
-            marker.display(),
-            later.display()
-        );
+        let script = format!("echo before; sleep 1; touch {}", later.display());
         let output = tool
             .call_with_context(&context, request(&script))
             .await
@@ -2913,6 +2913,31 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         panic!("the process never recorded its pid at {}", path.display());
+    }
+
+    /// A sink that keeps what it is handed, for a test that has to know when a
+    /// byte went past rather than when the process wrote it.
+    #[derive(Default)]
+    struct Echo(Mutex<String>);
+
+    impl norte_core::ProgressSink for Echo {
+        fn send(&self, progress: ToolProgress) {
+            self.0
+                .lock()
+                .expect("lock")
+                .push_str(&String::from_utf8_lossy(&progress.bytes));
+        }
+    }
+
+    /// Waits for `needle` to appear in what the sink has been handed.
+    async fn wait_for_progress(sink: &Arc<Echo>, needle: &str) {
+        for _ in 0..1000 {
+            if sink.0.lock().expect("lock").contains(needle) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("timed out waiting for {needle:?} in the tool's progress");
     }
 
     #[derive(Default)]

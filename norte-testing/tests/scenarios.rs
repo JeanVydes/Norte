@@ -178,15 +178,23 @@ async fn cancelling_a_turn_reaches_the_running_tool() {
         observed.load(Ordering::SeqCst),
         "the tool must see the turn's cancellation token"
     );
-    assert_eq!(outcome.session.phase, Phase::AwaitingTool);
+    assert_eq!(outcome.session.phase, Phase::Idle);
 
     let head = outcome.session.head.expect("head");
-    let message = store.node(head).await.expect("node").message;
-    assert_eq!(message.role, Role::Assistant);
-    assert!(message.has_tool_calls());
-    assert!(
-        message.tool_results().is_empty(),
-        "a cancelled tool leaves no committed result"
+    let history = store.history(Some(head)).await.expect("history");
+    let assistant = history
+        .iter()
+        .find(|message| message.role == Role::Assistant)
+        .expect("the assistant message");
+    assert!(assistant.has_tool_calls(), "the call is still recorded");
+    let answered = history
+        .iter()
+        .flat_map(|message| message.tool_results())
+        .filter(|result| result.call_id == call_id)
+        .count();
+    assert_eq!(
+        answered, 1,
+        "the cancelled call is answered, so the tool loop is closed"
     );
 }
 
@@ -247,6 +255,80 @@ async fn cancelling_a_turn_reaches_an_early_tool() {
     assert!(
         observed.load(Ordering::SeqCst),
         "an early tool must see the same cancellation token"
+    );
+}
+
+/// A cancellation that lands after the model streamed a tool call but before
+/// any tool ran must still answer that call.
+///
+/// The session goes idle on an interrupt, not parked, so the tool loop never
+/// reaches the call: nothing would run it and nothing would answer it. The call
+/// is committed unanswered — the same shape a person hit when they cancelled a
+/// turn mid-stream and the session then refused every model switch with
+/// `cannot replay vendor continuity across models while a tool result is
+/// pending`, or the next turn landed below an open call.
+#[tokio::test]
+async fn cancelling_mid_stream_answers_the_tool_call_it_committed() {
+    let store = connection();
+    let call_id = CallId::new();
+    // No tool is registered: the call is answered by the engine itself, not run.
+    let scripted = Arc::new(ScriptedModel::new(model("test/echo")).turn_delayed(
+        vec![
+            StreamEvent::ToolCallStart {
+                index: 0,
+                call_id,
+                name: "noop".to_owned(),
+            },
+            StreamEvent::ToolCallDelta {
+                index: 0,
+                call_id,
+                name: None,
+                arguments: "{}".to_owned(),
+            },
+            StreamEvent::ToolCallDone { index: 0 },
+            StreamEvent::Finish(FinishReason::ToolCalls),
+        ],
+        Duration::from_millis(20),
+    ));
+    let engine = HarnessBuilder::new()
+        .store(Arc::clone(&store) as Arc<dyn Store>)
+        .blobs(Arc::new(InMemoryBlobStore::new()))
+        .model(scripted)
+        .build()
+        .expect("engine");
+    let session = engine.create().await.expect("create");
+
+    let mut stream = engine.send(session.id, Message::user("go"));
+    // Cancel the moment the call is complete, before the stream finishes and
+    // before any tool runs.
+    loop {
+        match stream.next().await.expect("event").expect("ok") {
+            EngineEvent::PartCompleted { .. } => break,
+            EngineEvent::ToolCallStarted { .. } => {
+                panic!("no tool must run before the cancel");
+            }
+            _ => {}
+        }
+    }
+    stream.cancel();
+    let outcome = stream.finish().await.expect("turn");
+
+    assert_eq!(outcome.session.phase, Phase::Idle);
+    let head = outcome.session.head.expect("head");
+    let history = store.history(Some(head)).await.expect("history");
+    let assistant = history
+        .iter()
+        .find(|message| message.role == Role::Assistant)
+        .expect("the assistant message");
+    assert!(assistant.has_tool_calls(), "the call is recorded");
+    let answered = history
+        .iter()
+        .flat_map(|message| message.tool_results())
+        .filter(|result| result.call_id == call_id)
+        .count();
+    assert_eq!(
+        answered, 1,
+        "the interrupted call is answered, not left open"
     );
 }
 

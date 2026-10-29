@@ -21,7 +21,10 @@ use norte_core::error::{Error, Result};
 use norte_core::id::{NodeId, SessionId};
 use norte_core::model::TurnOptions;
 
-use super::{ChannelSink, Consultation, Harness, TurnOutcome, session_turn_options, turn_metadata};
+use super::{
+    ChannelSink, Consultation, Harness, TurnOutcome, session_turn_options, turn_metadata,
+    unanswered_call_errors,
+};
 
 impl Harness {
     /// Walks the session forward until the turn ends.
@@ -170,7 +173,9 @@ impl Harness {
     ///
     /// The phase follows the answer: an interrupted one leaves the session
     /// idle, an answer with tool calls waits for them, and a final answer ends
-    /// the turn.
+    /// the turn. An interrupted answer that had already streamed a call is
+    /// closed here too: the error result for each unanswered call commits
+    /// beside the message.
     async fn commit_answer(
         &self,
         session: &mut Session,
@@ -189,13 +194,28 @@ impl Harness {
         } else {
             Phase::Idle
         };
+        // An answer with tool calls that the interruption left unrun is a call
+        // no turn will ever execute: the session goes idle, not parked, so the
+        // loop never reaches `run_tools` for it. Commit an error result for each
+        // open call in the same commit, so the graph keeps the invariant a
+        // `tool_call` is answered by its `tool_result` — the one a replay across
+        // models and the store's own history depend on.
+        let mut nodes = vec![node];
+        if interrupted {
+            let unanswered = unanswered_call_errors(message);
+            if !unanswered.is_empty() {
+                let parent = node_id;
+                nodes.push(Node::message(Message::tool(unanswered), Some(parent)));
+            }
+        }
+        let head = nodes.last().map(|node| node.id);
         *session = self
             .commit(
                 Commit {
                     session_id: session.id,
                     expected_version: Some(session.version),
-                    nodes: vec![node],
-                    head: Some(node_id),
+                    nodes,
+                    head,
                     phase,
                     turn: session.turn,
                     grants: session.grants.clone(),

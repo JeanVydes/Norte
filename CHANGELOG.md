@@ -79,6 +79,16 @@ Draft. Not published.
 
 ### Fixed
 
+- Cancelling a turn no longer leaves a tool call unanswered. A cancel that
+  landed after the model streamed a call — or while tools ran — committed the
+  assistant message and stopped, and the session went idle with a `tool_call`
+  it would never run: the loop was closed for nobody, so the next turn appended
+  below an open call, and a replay across models refused to drop a continuity
+  token while a result was pending, which is a session that can no longer switch
+  model or compact. The engine now commits a cancelled error result for every
+  call it did not answer, in the same commit as the message, so an interrupted
+  turn leaves the session idle and the tool loop closed.
+
 - The host's element cap is a ceiling, not a default. A request could ask for
   more and get it: `max_elements: 5000` on a page of twelve hundred links
   returned all twelve hundred — 107 KB, about thirty thousand tokens, a third of

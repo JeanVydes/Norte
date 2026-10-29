@@ -259,6 +259,37 @@ fn turn_metadata(session: &Session, effective: &TurnOptions) -> BTreeMap<String,
     metadata
 }
 
+/// An error result for every call of `message` that has none, in the order the
+/// message lists them.
+///
+/// A cancelled turn commits the assistant message it streamed so far, and that
+/// message may already carry tool calls. Leaving them unanswered breaks the
+/// invariant every wire and every replay depends on — a `tool_call` has its
+/// `tool_result` — and the store keeps the break forever: the next turn appends
+/// below an open call, so the history is one no provider accepts, and a replay
+/// across models cannot repair it (the adapter refuses to drop a token while a
+/// result is pending). Answering them with a cancelled error keeps the graph
+/// closed and the session movable.
+fn unanswered_call_errors(message: &Message) -> Vec<ToolResultPart> {
+    let answered: BTreeSet<CallId> = message
+        .tool_results()
+        .into_iter()
+        .map(|result| result.call_id)
+        .collect();
+    message
+        .tool_calls()
+        .into_iter()
+        .filter(|call| !answered.contains(&call.call_id))
+        .map(|call| ToolResultPart::error(call.call_id, CALL_CANCELLED_REASON))
+        .collect()
+}
+
+/// The reason a call answered by the engine itself carries.
+///
+/// A person cancelled the turn before the call ran, and the model is told so in
+/// the words it reads everything else in: one text part, an error result.
+const CALL_CANCELLED_REASON: &str = "tool call cancelled before it ran";
+
 /// The tool results a parked assistant message already produced, in call order.
 /// Resuming seeds them so a call that ran before the park is never run twice
 /// (FR-APPR-6); an unreadable value is treated as "nothing done yet".

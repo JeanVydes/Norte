@@ -27,8 +27,8 @@ use norte_core::model::PARTIAL_TOOLS_KEY;
 use norte_core::tool::ToolCallInfo;
 
 use super::{
-    Authorization, CallSite, Harness, PreparedCall, ToolTurn, denial_reason, execute_call,
-    partial_results, request_messages, results_in_call_order,
+    Authorization, CALL_CANCELLED_REASON, CallSite, Harness, PreparedCall, ToolTurn, denial_reason,
+    execute_call, partial_results, request_messages, results_in_call_order,
 };
 
 impl Harness {
@@ -77,7 +77,7 @@ impl Harness {
                 continue;
             }
             if cancellation.is_cancelled() {
-                return Ok(session.clone());
+                break;
             }
             if let Some(parked) = self
                 .run_one_tool(&turn, call, &mut results, cancellation)
@@ -86,10 +86,23 @@ impl Harness {
                 return Ok(parked);
             }
             if cancellation.is_cancelled() {
-                return Ok(session.clone());
+                break;
             }
         }
 
+        // A cancellation can land before every call has run. The calls it left
+        // unrun are answered with a cancelled error, so the committed tool
+        // message lists a result for every call of the head — the one invariant
+        // a replay across models and the store's history depend on. Running out
+        // of the loop on a park keeps the old shape: the results already
+        // committed are the park's, and the head stays open on purpose.
+        if cancellation.is_cancelled() {
+            for call in &calls {
+                if !results.iter().any(|result| result.call_id == call.call_id) {
+                    results.push(ToolResultPart::error(call.call_id, CALL_CANCELLED_REASON));
+                }
+            }
+        }
         let settled = results_in_call_order(&calls, &[results.as_slice()]);
         let node = Node::message(Message::tool(settled), Some(head));
         let node_id = node.id;

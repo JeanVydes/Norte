@@ -118,7 +118,6 @@ async fn appending_outside_idle_is_rejected() {
             head: None,
             phase: Phase::Streaming,
             turn: 0,
-            grants: Vec::new(),
             metadata: None,
         })
         .await

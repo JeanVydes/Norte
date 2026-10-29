@@ -15,7 +15,6 @@ use tokio_util::sync::CancellationToken;
 
 use crate::domain::session::Session;
 use crate::event::{EngineEvent, StreamDelta};
-use crate::policy::{PolicyOutcome, PolicyView, combine};
 use norte_core::domain::continuity::{ContinuityToken, ReplayDecision};
 use norte_core::domain::media::{MediaPart, MediaSource};
 use norte_core::domain::message::{FinishReason, Message, MessageOrigin, MessageStatus};
@@ -30,7 +29,7 @@ use norte_core::stream::{Accumulated, StreamAccumulator, StreamEvent};
 
 use super::{
     CallSite, Digesting, Harness, PreparedCall, Reconstructed, cache_boundaries, digest_of,
-    execute_call, materialize_message, request_messages, stream_delta,
+    execute_call, materialize_message, stream_delta,
 };
 
 impl Harness {
@@ -122,13 +121,7 @@ impl Harness {
         )
         .await;
         let (accumulated, interrupted, early_results) = self
-            .drain_stream(
-                session,
-                sender,
-                cancellation,
-                &mut stream,
-                request_messages(&history),
-            )
+            .drain_stream(session, sender, cancellation, &mut stream)
             .await?;
 
         let message = self
@@ -178,7 +171,6 @@ impl Harness {
         sender: &mpsc::Sender<EngineEvent>,
         cancellation: &CancellationToken,
         stream: &mut ModelStream,
-        history: &[Message],
     ) -> Result<(Accumulated, bool, Vec<ToolResultPart>)> {
         let mut accumulator = StreamAccumulator::new(self.config.limits);
         let mut continuity: BTreeMap<u32, ContinuityToken> = BTreeMap::new();
@@ -245,14 +237,8 @@ impl Harness {
                 };
                 completed.push(part);
                 if let Some(call) = ready {
-                    if let Some(handle) = self.dispatch_early(
-                        session,
-                        sender,
-                        &call,
-                        &completed,
-                        history,
-                        cancellation,
-                    ) {
+                    if let Some(handle) = self.dispatch_early(session, sender, &call, cancellation)
+                    {
                         early.push((call.call_id, handle));
                     }
                 }
@@ -292,40 +278,17 @@ impl Harness {
         session: &Session,
         sender: &mpsc::Sender<EngineEvent>,
         call: &ToolCallPart,
-        completed: &[Part],
-        history: &[Message],
         cancellation: &CancellationToken,
     ) -> Option<JoinHandle<ToolResultPart>> {
-        if !(self.config.early_tool_execution && self.config.auto_execute_tools) {
+        if !(self.config.early_tool_execution) {
             return None;
         }
         let Ok(tool_name) = ToolName::new(call.name.clone()) else {
             return None;
         };
         self.tools.spec(&tool_name)?;
-        let message = Message::new(Role::Assistant, completed.to_vec());
-        let decisions = {
-            let view = PolicyView {
-                session,
-                model: self.model.reference(),
-                capabilities: self.model.capabilities(),
-                call,
-                message: &message,
-                prior: &[],
-                results: &[],
-                history,
-            };
-            self.policies.evaluate(&view)
-        };
-        let arguments = match combine(&decisions) {
-            PolicyOutcome::Allow => call.arguments.clone(),
-            PolicyOutcome::Transform { arguments, .. } => arguments,
-            // `#[non_exhaustive]`: anything that is not an allow, a transform
-            // or an explicit approval is not something to run speculatively —
-            // including an outcome a future core adds and this build cannot read.
-            _ => return None,
-        };
-        let metadata = self.call_metadata(session, call, &tool_name, &arguments);
+
+        let metadata = self.call_metadata(session, call, &tool_name, &call.arguments);
         Some(tokio::spawn(execute_call(
             Arc::clone(&self.tools),
             Arc::clone(&self.observers),
@@ -337,7 +300,7 @@ impl Harness {
             PreparedCall {
                 call: call.clone(),
                 tool: tool_name,
-                arguments,
+                arguments: call.arguments.clone(),
                 metadata,
             },
             cancellation.clone(),

@@ -139,7 +139,7 @@ COOKBOOK_MODEL=deepseek/deepseek-v4.1-flash-1017 \
 cargo run -p norte-cookbook --example events
 ```
 
-`events`, `streaming`, `approval`, `policy`, `policy_context`, `tools`, `agent`,
+`events`, `streaming`, `observer`, `tools`, `agent`,
 `executors`, `observers`, `cache`, `export_import`, `branching`. Each file is
 meant to be read and copied on its own. `norte-cookbook` is not a library:
 nothing is shared between recipes on purpose.

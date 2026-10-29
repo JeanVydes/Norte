@@ -1,10 +1,9 @@
-use crate::approval::ApprovalRecord;
 use crate::domain::commit::Commit;
 use crate::domain::node::Node;
 use crate::domain::session::Session;
 use norte_core::domain::message::Message;
 use norte_core::error::Result;
-use norte_core::id::{ApprovalId, BlobId, NodeId, SessionId};
+use norte_core::id::{BlobId, NodeId, SessionId};
 
 /// Persistence port for sessions, the conversation graph and approvals.
 ///
@@ -27,17 +26,6 @@ pub trait Store: Send + Sync {
 
     /// The direct children of `id`, in creation order.
     async fn children(&self, id: NodeId) -> Result<Vec<NodeId>>;
-
-    /// Writes one approval record, whether newly parked or decided.
-    async fn save_approval(&self, record: ApprovalRecord) -> Result<()>;
-
-    /// The approval record with this id, if it exists.
-    async fn approval(&self, id: ApprovalId) -> Result<Option<ApprovalRecord>>;
-
-    /// Every approval record recorded for the session, decided or not, oldest
-    /// first. The host-facing view of what still needs a decision is
-    /// `norte_harness::Harness::pending_approvals`, which this port backs.
-    async fn approvals(&self, session: SessionId) -> Result<Vec<ApprovalRecord>>;
 
     /// The conversation the model sees: every ancestor message, root first.
     async fn history(&self, head: Option<NodeId>) -> Result<Vec<Message>> {

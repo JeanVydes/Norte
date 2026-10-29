@@ -11,8 +11,8 @@ fall. It is a class, not a cache: the engine declares, the provider decides.
 tool kind, streaming granularity, cache mode, limits). Checked before a request is
 built. See [Models and capabilities](../concepts/models-and-capabilities.md).
 
-**Commit** — the single atomic write that ends a turn: messages, phase, version,
-head and any new approval, together. Compare-and-swap on `expected_version`.
+**Commit** — the single atomic write that ends a turn: messages, phase, version
+and head, together. Compare-and-swap on `expected_version`.
 
 **Continuity token** — an opaque blob a provider hands back (a thought signature,
 an encrypted reasoning block) that must be returned unchanged on the next request.
@@ -25,14 +25,10 @@ and consumed by `Harness::import`. Deterministic and append-only.
 whole assembled request.
 
 **Harness** — the object that owns the store, the blob store, the model, the tool
-registry, the policies, the layers and the observers, and runs turns.
+registry, the interceptors, the layers and the observers, and runs turns.
 
 **EngineEvent** — the lifecycle of a turn: phase changes, deltas, part
-completions, tool starts and finishes, approvals, commits, request reconstruction,
-errors. See [Streaming](../concepts/streaming.md).
-
-**Grant** — a live tool approval, with a scope (`Call`, `Tool`, `Session`,
-`Global`) and the actor who issued it.
+completions, tool starts and finishes, commits, request reconstruction, errors. See [Streaming](../concepts/streaming.md).
 
 **Layer** — a wrapper around the model call that can rewrite a request, answer it
 locally, or pass it on. See [Layers and observers](../concepts/layers-and-observers.md).
@@ -59,11 +55,11 @@ branching and rewinding possible.
 **Part** — a typed piece of a message: text, reasoning, media, tool call, tool
 result, provider-executed block, refusal, or an extension kept verbatim.
 
-**Phase** — a session's state: `Idle`, `Streaming`, `AwaitingTool`,
-`AwaitingApproval`.
+**Phase** — a session's state: `Idle`, `Streaming` or `AwaitingTool`.
 
-**Policy** — a function over a `PolicyView` returning a `Decision`: allow, deny,
-transform the arguments, require approval, or rate-limit.
+**Interceptor** — a hook the engine consults at the safe points of a running
+turn, which may let it go on, add messages to the history, or stop it. See
+[Interceptors, and confining a tool](../concepts/interceptors.md).
 
 **ProviderId** — the routing/labelling name of a provider, `[a-z0-9_-]`.
 
@@ -71,10 +67,10 @@ transform the arguments, require approval, or rate-limit.
 history, announced by `RequestReconstructed` once per model request.
 
 **Session** — the durable unit: a tree of commits, a phase, a version, a turn
-counter, grants and metadata.
+counter and metadata.
 
-**Store / BlobStore** — the two persistence ports. `Store` holds sessions, nodes
-and approvals; `BlobStore` holds content-addressed bytes.
+**Store / BlobStore** — the two persistence ports. `Store` holds sessions and
+nodes; `BlobStore` holds content-addressed bytes.
 
 **StreamDelta** — a piece of the model's output as it arrives: text, reasoning,
 refusal, tool arguments, media, continuity, safety ratings, log probabilities.

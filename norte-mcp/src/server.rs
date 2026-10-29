@@ -207,13 +207,7 @@ impl std::fmt::Debug for McpServer {
 }
 
 fn spec_to_definition(spec: &ToolSpec) -> ToolDefinition {
-    let mut extra = BTreeMap::new();
-    if let Some(approval) = &spec.approval {
-        extra.insert(
-            "_meta".to_owned(),
-            serde_json::json!({ "norte/approval": approval }),
-        );
-    }
+    let extra = BTreeMap::new();
     ToolDefinition {
         name: spec.name.as_str().to_owned(),
         title: None,

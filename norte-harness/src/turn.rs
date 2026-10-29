@@ -79,7 +79,7 @@ impl Harness {
                 None => None,
             };
             if let Some(message) = &head_message {
-                if message.role == Role::Assistant && !self.continues_turn(&session).await? {
+                if message.role == Role::Assistant && !Self::continues_turn(&session, message) {
                     let Some(outcome) = self
                         .end_of_turn(&mut session, &sender, last.clone(), message)
                         .await?
@@ -91,7 +91,7 @@ impl Harness {
             }
 
             match session.phase {
-                Phase::AwaitingTool | Phase::AwaitingApproval => {
+                Phase::AwaitingTool => {
                     session = self
                         .run_tools(&session, &sender, &cancellation, &early_results)
                         .await?;
@@ -135,12 +135,6 @@ impl Harness {
                             message: last,
                         });
                     }
-                    if session.phase == Phase::AwaitingTool && !self.config.auto_execute_tools {
-                        return Ok(TurnOutcome {
-                            session,
-                            message: last,
-                        });
-                    }
                 }
             }
         }
@@ -148,25 +142,11 @@ impl Harness {
 
     /// Whether the loop keeps working from the current head.
     ///
-    /// The turn ends at a final assistant message. It carries on while tools are
-    /// pending, and a parked session carries on too once the host has nothing
-    /// left to decide: a granted call runs, a denied one fails, and a call with
-    /// no record at all asks again — which is how an imported or expired
-    /// session finds its way forward (FR-APPR-5).
-    async fn continues_turn(&self, session: &Session) -> Result<bool> {
-        let Some(head) = session.head else {
-            return Ok(false);
-        };
-        let message = self.store.node(head).await?.message;
-        let mid_flight = matches!(session.phase, Phase::AwaitingTool | Phase::AwaitingApproval)
-            && message.has_tool_calls();
-        if !mid_flight {
-            return Ok(false);
-        }
-        if session.phase == Phase::AwaitingTool {
-            return Ok(true);
-        }
-        Ok(self.pending_approvals(session.id).await?.is_empty())
+    /// The turn ends at a final assistant message. It carries on while the
+    /// session is still waiting for the calls that message asked for: they run,
+    /// and the model is asked again with their results.
+    fn continues_turn(session: &Session, message: &Message) -> bool {
+        session.phase == Phase::AwaitingTool && message.has_tool_calls()
     }
 
     /// Commits the answer the model produced.
@@ -218,7 +198,6 @@ impl Harness {
                     head,
                     phase,
                     turn: session.turn,
-                    grants: session.grants.clone(),
                     metadata: Some(turn_metadata(session, options)),
                 },
                 sender,
@@ -357,7 +336,6 @@ impl Harness {
                     head: parent,
                     phase: session.phase,
                     turn: session.turn,
-                    grants: session.grants.clone(),
                     metadata: None,
                 },
                 sender,
@@ -399,7 +377,6 @@ impl Harness {
                     head: Some(head),
                     phase: Phase::Streaming,
                     turn: session.turn + 1,
-                    grants: session.grants.clone(),
                     metadata: None,
                 },
                 sender,

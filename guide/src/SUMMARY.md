@@ -10,7 +10,7 @@
 - [Streaming](concepts/streaming.md)
 - [Models and capabilities](concepts/models-and-capabilities.md)
 - [Tools](concepts/tools.md)
-- [Policies and approval](concepts/policies-and-approval.md)
+- [Interceptors, and confining a tool](concepts/interceptors.md)
 - [Usage and cost](concepts/usage-and-cost.md)
 - [History and durability](concepts/history-and-durability.md)
 - [Layers and observers](concepts/layers-and-observers.md)

@@ -52,7 +52,6 @@ impl Harness {
             head: None,
             phase: Phase::Idle,
             turn: 0,
-            grants: Vec::new(),
             metadata: Some(session.metadata.clone()),
         };
         let session = self.store.commit(commit).await?;
@@ -134,7 +133,6 @@ impl Harness {
                 head: parent,
                 phase: current.phase,
                 turn: current.turn,
-                grants: current.grants.clone(),
                 metadata: None,
             })
             .await?;
@@ -225,7 +223,6 @@ impl Harness {
                 head: parent,
                 phase: conversation.phase,
                 turn: conversation.turn,
-                grants: Vec::new(),
                 metadata: Some(metadata),
             })
             .await?;

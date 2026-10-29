@@ -28,23 +28,14 @@ let harness = HarnessBuilder::new()
 [`ToolRegistry`]: norte_core::ToolRegistry
 "]
 
-/// The record of an approval decision, and the grant it issues.
-/// The record of an approval decision, and the grant it issues.
-pub mod approval;
-/// What the host decides about a call a policy parked.
-pub mod approvals;
 pub mod domain;
 /// The events the harness emits while a turn runs.
 pub mod event;
-/// The grants a session holds.
-pub mod grant;
 /// In-memory reference implementations of the ports.
 pub mod interceptor;
 pub mod memory;
 /// Observers and transforms that watch a turn's events.
 pub mod observer;
-/// The tool-call decision: a rule over one call, evaluated before it runs.
-pub mod policy;
 /// Building and reconstructing one request.
 pub mod request;
 /// Reading and committing a session's durable state.
@@ -68,22 +59,16 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-pub use crate::approval::{ApprovalRecord, AuditAction};
 pub use crate::domain::commit::Commit;
 pub use crate::domain::conversation::{CONVERSATION_SCHEMA_VERSION, Conversation};
 pub use crate::domain::node::{Node, NodeKind};
 pub use crate::domain::session::{Phase, Session};
 pub use crate::event::{EngineEvent, EventSink, StreamDelta};
-pub use crate::grant::{Grant, GrantScope};
 pub use crate::interceptor::{Interception, InterceptionContext, InterceptorSet, TurnInterceptor};
 pub use crate::observer::{Observer, ObserverSet, StreamTransform};
-pub use crate::policy::{
-    Decision, Policy, PolicyDecision, PolicyOutcome, PolicySet, PolicyView, ToolApprovalPolicy,
-    combine,
-};
 pub use crate::store::Store;
 use norte_core::BlobStore;
-use norte_core::capability::{Capabilities, ReasoningRequest};
+use norte_core::capability::ReasoningRequest;
 use norte_core::domain::message::{Message, Usage};
 use norte_core::domain::part::{Part, ToolCallPart, ToolResultPart};
 use norte_core::domain::role::Role;
@@ -92,8 +77,7 @@ use norte_core::id::{CallId, Digest, SessionId, ToolName};
 use norte_core::layer::{Continuation, LayerContext, LayerStack};
 use norte_core::media_adapter::MediaAdapter;
 use norte_core::model::{
-    GenerationParams, Model, ModelRequest, ModelStream, PARTIAL_TOOLS_KEY, StreamLimits,
-    TURN_OPTIONS_KEY, TurnOptions,
+    GenerationParams, Model, ModelRequest, ModelStream, StreamLimits, TURN_OPTIONS_KEY, TurnOptions,
 };
 use norte_core::preprocess::MediaPreprocessor;
 use norte_core::stream::StreamEvent;
@@ -144,12 +128,6 @@ pub struct HarnessConfig {
     /// must keep counting past it. A coding agent that reads, edits and reads
     /// back raises it.
     pub max_iterations: usize,
-    /// Whether allowed tool calls run inside the turn.
-    ///
-    /// `true` by default. When `false`, the turn parks at
-    /// [`Phase::AwaitingTool`] and the host runs the
-    /// calls and resumes it.
-    pub auto_execute_tools: bool,
     /// When `true` (and `auto_execute_tools` is also `true`), a tool call whose
     /// arguments complete mid-stream begins executing before the assistant
     /// message finishes, subject to the host's tool policy (FR-STREAM-4).
@@ -177,7 +155,6 @@ impl Default for HarnessConfig {
             inline_threshold: 64 * 1024,
             approval_ttl: Duration::from_secs(10 * 60),
             max_iterations: 16,
-            auto_execute_tools: true,
             early_tool_execution: false,
             tool_metadata: None,
         }
@@ -248,11 +225,9 @@ fn session_turn_options(session: &Session) -> TurnOptions {
 }
 
 /// Session metadata with the effective request options of the current turn
-/// (FR-EXP-7), preserving every host key. The parked-results key is dropped:
-/// a fresh generate means the previous message's calls are settled.
+/// (FR-EXP-7), preserving every host key.
 fn turn_metadata(session: &Session, effective: &TurnOptions) -> BTreeMap<String, Value> {
     let mut metadata = session.metadata.clone();
-    metadata.remove(PARTIAL_TOOLS_KEY);
     if let Ok(value) = serde_json::to_value(effective) {
         metadata.insert(TURN_OPTIONS_KEY.to_owned(), value);
     }
@@ -290,35 +265,12 @@ fn unanswered_call_errors(message: &Message) -> Vec<ToolResultPart> {
 /// the words it reads everything else in: one text part, an error result.
 const CALL_CANCELLED_REASON: &str = "tool call cancelled before it ran";
 
-/// The tool results a parked assistant message already produced, in call order.
-/// Resuming seeds them so a call that ran before the park is never run twice
-/// (FR-APPR-6); an unreadable value is treated as "nothing done yet".
-fn partial_results(session: &Session) -> Vec<ToolResultPart> {
-    session
-        .metadata
-        .get(PARTIAL_TOOLS_KEY)
-        .and_then(|value| serde_json::from_value(value.clone()).ok())
-        .unwrap_or_default()
-}
-
-/// The messages of the request in flight: from the last user message to the end
-/// of the history, inclusive. This is what a tool policy sees as `history`, so
-/// it can read what this request has already done without a store round trip
-/// per call (FR-POL-4).
-fn request_messages(history: &[Message]) -> &[Message] {
-    let start = history
-        .iter()
-        .rposition(|message| message.role == Role::User)
-        .unwrap_or(0);
-    &history[start..]
-}
-
 /// The results the calls of one message already have, in the order the message
 /// lists them, taking the first source that holds a result for a call.
 ///
-/// Neither a park nor an early dispatch produces results in call order — the
-/// first is truncated, the second is shuffled by completion — and a policy reads
-/// them the way the message reads (FR-POL-4).
+/// Early dispatch does not produce results in call order — it is shuffled by
+/// completion — and the tool message has to read the way the assistant message
+/// does.
 fn results_in_call_order(
     calls: &[ToolCallPart],
     sources: &[&[ToolResultPart]],
@@ -358,31 +310,6 @@ fn cache_boundaries(messages: &[Message]) -> Vec<u32> {
     boundaries
 }
 
-/// How a gated call resolved.
-enum Authorization {
-    /// A matching, verified grant is in force: run the call.
-    Granted,
-    /// The host said no: the model gets a failed call carrying the reason.
-    Denied(String),
-    /// The operator has not decided yet: park until they do.
-    Pending,
-}
-
-/// The reason the host gave when it denied a call, shaped for the model to read.
-fn denial_reason(record: &ApprovalRecord) -> String {
-    let reason = record
-        .audit
-        .iter()
-        .rev()
-        .find(|entry| entry.action == AuditAction::Denied)
-        .and_then(|entry| entry.detail.clone())
-        .filter(|reason| !reason.trim().is_empty());
-    match reason {
-        Some(reason) => format!("the operator denied this call: {reason}"),
-        None => "the operator denied this call".to_owned(),
-    }
-}
-
 /// The pure state machine over a session. It holds configuration only; every
 /// piece of durable state lives in the store. One transition produces exactly
 /// one atomic commit.
@@ -392,7 +319,6 @@ pub struct Harness {
     blobs: Arc<dyn BlobStore>,
     model: Arc<dyn Model>,
     tools: Arc<ToolRegistry>,
-    policies: Arc<PolicySet>,
     layers: Arc<LayerStack>,
     interceptors: Arc<InterceptorSet>,
     observers: Arc<ObserverSet>,
@@ -573,9 +499,6 @@ fn into_result(call: &ToolCallPart, output: ToolOutput) -> ToolResultPart {
 struct ToolTurn<'a> {
     session: &'a Session,
     sender: &'a mpsc::Sender<EngineEvent>,
-    message: &'a Message,
-    capabilities: &'a Capabilities,
-    history: &'a [Message],
 }
 
 /// The session and turn a tool call belongs to. Grouped so it can be moved into
@@ -904,7 +827,6 @@ pub struct HarnessBuilder {
     blobs: Option<Arc<dyn BlobStore>>,
     model: Option<Arc<dyn Model>>,
     tools: ToolRegistry,
-    policies: PolicySet,
     layers: LayerStack,
     interceptors: Vec<Arc<dyn TurnInterceptor>>,
     observers: Vec<Arc<dyn Observer>>,
@@ -1123,15 +1045,6 @@ impl HarnessBuilder {
         self
     }
 
-    /// Sets the policy set evaluated for every tool call, in order.
-    ///
-    /// Empty by default, which lets every call that reaches it run.
-    #[must_use]
-    pub fn policies(mut self, policies: PolicySet) -> Self {
-        self.policies = policies;
-        self
-    }
-
     /// Sets the layer stack that wraps each model call.
     ///
     /// Empty by default.
@@ -1243,7 +1156,6 @@ impl HarnessBuilder {
             blobs,
             model,
             tools: Arc::new(self.tools),
-            policies: Arc::new(self.policies),
             layers: Arc::new(self.layers),
             interceptors: Arc::new(InterceptorSet::new(self.interceptors)),
             observers: Arc::new(ObserverSet::with_transforms(

@@ -12,9 +12,6 @@ pub trait Store {
     async fn node(&self, node: NodeId) -> Result<Node>;
     async fn ancestors(&self, node: NodeId) -> Result<Vec<NodeId>>;
     async fn children(&self, node: NodeId) -> Result<Vec<NodeId>>;
-    async fn save_approval(&self, record: ApprovalRecord) -> Result<()>;
-    async fn approval(&self, id: ApprovalId) -> Result<Option<ApprovalRecord>>;
-    async fn approvals(&self, session: SessionId) -> Result<Vec<ApprovalRecord>>;
     // async fn history(&self, head: Option<NodeId>) -> Result<Vec<Message>>;  // default impl
 }
 
@@ -27,7 +24,7 @@ pub trait BlobStore {
 ```
 
 `InMemoryStore` and `InMemoryBlobStore` implement both, atomically, with the
-optimistic-concurrency check and the approval ledger included. They are not a
+optimistic-concurrency check included. They are not a
 mock: they are the right default for a CLI, a desktop app or a single-process
 worker. Implement the traits over your own database and object store when a
 session has to outlive the process.
@@ -74,13 +71,6 @@ That is why parts exist. Continuity tokens, provider-executed blocks and
 reasoning signatures are kept verbatim precisely so the reconstructed request
 does not differ from the original by a byte.
 
-## Approvals survive restarts
-
-`ApprovalRecord`s live in the `Store`, not in memory. A session parked at
-`AwaitingApproval` can be picked up by a different process, decided there, and
-resumed. `engine.pending_approvals(session)` returns the live ones; the audit
-entries stay with the record.
-
 ## What a commit does not cover
 
 A commit makes the *conversation* durable; it says nothing about the world
@@ -103,5 +93,5 @@ the requirement is FR-ERR-6.
   by the engine. A host that deletes sessions owns the garbage collection.
 - **No effect-delivery machinery.** Leases, effect classes and an
   `OutcomeUnknown` state are not in the engine: deciding which effects are
-  idempotent, and resolving an ambiguous one, is host policy, like retries and
-  rate limits (FR-ERR-4, FR-ERR-6).
+  idempotent, and resolving an ambiguous one, is the host's decision, like
+  retries and rate limits (FR-ERR-4, FR-ERR-6).

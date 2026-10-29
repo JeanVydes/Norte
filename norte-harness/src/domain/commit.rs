@@ -5,7 +5,6 @@ use serde_json::Value;
 
 use crate::domain::node::Node;
 use crate::domain::session::{Phase, Session};
-use crate::grant::Grant;
 use norte_core::error::{Error, Result};
 use norte_core::id::{NodeId, SessionId};
 
@@ -27,9 +26,6 @@ pub struct Commit {
     pub phase: Phase,
     /// The turn counter after the commit.
     pub turn: u64,
-    /// The grants in force after the commit.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub grants: Vec<Grant>,
     /// Replaces the session metadata when set; `None` keeps it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<BTreeMap<String, Value>>,
@@ -72,7 +68,6 @@ impl Commit {
         session.head = self.head.or(session.head);
         session.phase = self.phase;
         session.turn = self.turn;
-        session.grants = self.grants;
         session.version = session.version.saturating_add(1);
         session.updated_at = chrono::Utc::now();
     }

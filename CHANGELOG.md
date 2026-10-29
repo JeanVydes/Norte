@@ -188,6 +188,33 @@ Draft. Not published.
 
 ### Removed
 
+- Human approval, in every part it had grown: `ApprovalRecord`, its audit trail,
+  grants and their scopes, `Policy` and `PolicySet` with its five decisions, the
+  store's approval methods, `AwaitingApproval`, the three approval events and
+  `ToolDeclaration::with_approval`. Approval was the second way to say what a
+  tool call may do, and it was the larger half of the harness: it needed a
+  ledger, a phase of its own, a resume path, expiry, revocation and an argument
+  digest to bind a grant to the arguments it was issued for — and every one of
+  those existed only because a turn could stop and wait for a person. Nothing
+  else needed it, and the cost was that the engine had two seams where a host
+  decides, one of which could park a turn in the middle of its own tool loop.
+
+  What is left is one seam and one rule. A decision about the conversation — this
+  session has spent too much, do not start that — is a `TurnInterceptor`,
+  consulted at the safe points of a running turn, which may inject messages,
+  stop the turn, or step aside. A decision about one tool call belongs to that
+  tool's own declaration, where the arguments are typed: wrap the executor to
+  re-root a path or refuse an argument, and the refusal reaches the model as a
+  tool result it reads exactly like a failure. `norte-tools` still ships the
+  executors and no policy, so confining them remains the host's job, and a
+  host that wants a hook the engine consults before a call has the interceptor.
+
+  Reaching it: `HarnessBuilder::policies` and `HarnessConfig::approval_ttl` and
+  `auto_execute_tools` are gone with it. `auto_execute_tools` defaulted to
+  `true`, so removing it changes nothing for a host that never set it: the turn
+  runs its calls and keeps going, and the one place it was read — a park that
+  never came back — is gone with approval.
+
 - The steering queue of the session. `Session::queue`, `Commit::queue` and the
   `queue` of the exported envelope are gone, and so is `Engine::steer`. A
   message written to the session while a turn runs could not be committed

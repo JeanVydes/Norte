@@ -70,8 +70,6 @@ entity_id!(NodeId);
 entity_id!(SessionId);
 entity_id!(CallId);
 entity_id!(GenerationId);
-entity_id!(ApprovalId);
-entity_id!(GrantId);
 
 const HEX: &[u8; 16] = b"0123456789abcdef";
 

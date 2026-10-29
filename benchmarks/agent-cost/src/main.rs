@@ -76,18 +76,21 @@ use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
 use norte_bench_support::report::{Align, Report};
 use norte_bench_support::{Mode, RecordingOpenAi, Route, Run, captured as new_capture};
 use norte_core::{
-    CallId, Capabilities, Message, Modality, Part, SessionId, StreamingGranularity, ToolKind,
-    ToolRegistry, Usage,
+    CallId, Capabilities, Error as NorteError, FnExecutor, Message, Modality, Part,
+    Result as NorteResult, SessionId, StreamingGranularity, ToolArgs, ToolDeclaration, ToolKind,
+    ToolOutput, ToolRegistry, Usage,
 };
-use norte_harness::{Decision, InMemoryBlobStore, InMemoryStore, Policy, PolicySet, PolicyView};
-use norte_harness::{EngineEvent, StreamDelta};
+use norte_harness::{EngineEvent, InMemoryBlobStore, InMemoryStore, StreamDelta};
 use norte_harness::{Harness, HarnessBuilder, HarnessConfig};
-use norte_tools::{EditTool, ReadTool, ShellTool, WriteTool};
+use norte_tools::{
+    EditRequest, EditTool, ReadRequest, ReadTool, ShellRequest, ShellTool, WriteRequest, WriteTool,
+};
 use serde_json::{Value, json};
 
 /// The workflow every task follows: read what is on disk, change it in place,
@@ -1496,131 +1499,111 @@ fn money_value(reported: Option<f64>) -> String {
     reported.map_or_else(String::new, |reported| format!("{reported:.6}"))
 }
 
-/// Re-roots a relative path the model names into `root`, leaving everything
-/// else in the call alone: a `Transform` replaces the arguments object, so the
-/// fields the tool needs are copied over rather than rebuilt (FR-POL-2).
-struct IntoSandbox {
-    root: PathBuf,
+/// A tool request whose `path` the host may re-root.
+trait Pathed {
+    /// The path the call names.
+    fn path_mut(&mut self) -> &mut PathBuf;
 }
 
-impl Policy for IntoSandbox {
-    fn name(&self) -> &'static str {
-        "into-sandbox"
-    }
-
-    fn decide(&self, view: &PolicyView<'_>) -> Decision {
-        let Some(path) = path_of(view) else {
-            return Decision::Allow;
-        };
-        if escapes(path) {
-            return Decision::Allow;
-        }
-        let mut arguments = view.call.arguments.clone();
-        let Some(object) = arguments.as_object_mut() else {
-            return Decision::Allow;
-        };
-        let landed = self.root.join(path);
-        object.insert(
-            "path".to_owned(),
-            Value::String(landed.to_string_lossy().into_owned()),
-        );
-        Decision::Transform(arguments)
+impl Pathed for ReadRequest {
+    fn path_mut(&mut self) -> &mut PathBuf {
+        &mut self.path
     }
 }
 
-/// Refuses a path that tries to leave the scratch directory.
-struct StayInside {
-    root: PathBuf,
-}
-
-impl Policy for StayInside {
-    fn name(&self) -> &'static str {
-        "stay-inside"
-    }
-
-    fn decide(&self, view: &PolicyView<'_>) -> Decision {
-        match path_of(view) {
-            Some(path) if escapes(path) => Decision::Deny(format!(
-                "{path} is outside {}; every path is relative and lands in the scratch directory",
-                self.root.display()
-            )),
-            _ => Decision::Allow,
-        }
+impl Pathed for WriteRequest {
+    fn path_mut(&mut self) -> &mut PathBuf {
+        &mut self.path
     }
 }
 
-/// Narrows the command tool to what the benchmark is for: the crate's own build.
+impl Pathed for EditRequest {
+    fn path_mut(&mut self) -> &mut PathBuf {
+        &mut self.path
+    }
+}
+
+/// A file executor that lands every path it is given under `root`.
 ///
-/// A command request may name any program, and authorizing it is the host's job,
-/// not the executor's. So the host sets the working directory (the request cannot
-/// widen it), allows `cargo` and nothing else, and refuses the shell — and it
-/// refuses an argument that could reach outside the scratch directory. What comes
-/// back, compiler error included, is a tool result the model reads.
-struct CargoOnly {
+/// A path that tries to leave is refused with a reason the model reads, which is
+/// what the host owes it: the executors write where they are told and confine
+/// nothing, so the decision belongs to the call, where the arguments are typed.
+struct Sandboxed<A> {
+    inner: Arc<dyn FnExecutor<A, ToolOutput>>,
     root: PathBuf,
 }
 
-impl Policy for CargoOnly {
-    fn name(&self) -> &'static str {
-        "cargo-only"
+#[async_trait]
+impl<A> FnExecutor<A, ToolOutput> for Sandboxed<A>
+where
+    A: Pathed + ToolArgs,
+{
+    async fn call(&self, mut args: A) -> NorteResult<ToolOutput> {
+        let path = args.path_mut();
+        if escapes(path) {
+            return Err(NorteError::InvalidInput(format!(
+                "{} is outside {}; every path is relative and lands in the scratch directory",
+                path.display(),
+                self.root.display()
+            )));
+        }
+        *path = self.root.join(&*path);
+        self.inner.call(args).await
     }
+}
 
-    fn decide(&self, view: &PolicyView<'_>) -> Decision {
-        if view.call.name != "shell" {
-            return Decision::Allow;
-        }
-        let mut arguments = view.call.arguments.clone();
-        let Some(object) = arguments.as_object_mut() else {
-            return Decision::Deny("command: the arguments must be an object".to_owned());
-        };
-        let command = object.get("command").cloned().unwrap_or(Value::Null);
-        if command.get("kind").and_then(Value::as_str) != Some("program") {
-            return Decision::Deny(
-                "command: the request needs `command` as an object with `kind` and `program`, \
-                 for example {\"command\":{\"kind\":\"program\",\"program\":\"cargo\",\
-                 \"args\":[\"test\",\"--offline\"]}}; the shell is not available"
-                    .to_owned(),
-            );
-        }
-        let Some(program) = command.get("program").and_then(Value::as_str) else {
-            return Decision::Deny("command: the program variant needs a `program`".to_owned());
-        };
+/// The same declaration, with its paths confined to `root`.
+fn sandbox<A>(declaration: ToolDeclaration<A>, root: &Path) -> ToolDeclaration<A>
+where
+    A: Pathed + ToolArgs + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+{
+    ToolDeclaration {
+        name: declaration.name,
+        description: declaration.description,
+        parameters: declaration.parameters,
+        executor: Arc::new(Sandboxed {
+            inner: declaration.executor,
+            root: root.to_path_buf(),
+        }),
+    }
+}
+
+/// A shell executor that runs the crate's own build and nothing else.
+///
+/// A shell request may run any script, and authorizing it is the host's job, not
+/// the executor's. So the host sets the working directory — the request cannot
+/// widen it — refuses a script that names a program other than `cargo`, and
+/// refuses an argument that could reach outside the scratch directory. What
+/// comes back, compiler error included, is a tool result the model reads.
+struct CargoOnly {
+    inner: Arc<dyn FnExecutor<ShellRequest, ToolOutput>>,
+    root: PathBuf,
+}
+
+#[async_trait]
+impl FnExecutor<ShellRequest, ToolOutput> for CargoOnly {
+    async fn call(&self, mut request: ShellRequest) -> NorteResult<ToolOutput> {
+        let script = request.script.trim();
+        let program = script.split_whitespace().next().unwrap_or_default();
         if program != "cargo" {
-            return Decision::Deny(format!(
-                "command: only `cargo` runs here, and that request asks for `{program}`"
-            ));
+            return Err(NorteError::InvalidInput(format!(
+                "only `cargo` runs here, and that request asks for `{program}`"
+            )));
         }
-        let args = command
-            .get("args")
-            .cloned()
-            .unwrap_or(Value::Array(Vec::new()));
-        if let Some(offender) = args
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-            .find(|arg| arg.starts_with('/') || arg.contains(".."))
+        if let Some(offender) = script
+            .split_whitespace()
+            .find(|word| word.starts_with('/') || word.contains(".."))
         {
-            return Decision::Deny(format!(
-                "command: `{offender}` could reach outside the scratch directory; \
-                 paths are relative to it"
-            ));
+            return Err(NorteError::InvalidInput(format!(
+                "`{offender}` could reach outside the scratch directory; paths are relative to it"
+            )));
         }
-        object.insert(
-            "cwd".to_owned(),
-            Value::String(self.root.to_string_lossy().into_owned()),
-        );
-        Decision::Transform(arguments)
+        request.cwd = Some(self.root.clone());
+        self.inner.call(request).await
     }
 }
 
-/// The `path` argument of every file call, whatever else the call carries.
-fn path_of<'b>(view: &PolicyView<'b>) -> Option<&'b str> {
-    view.call.arguments.get("path").and_then(Value::as_str)
-}
-
-fn escapes(path: &str) -> bool {
-    let path = Path::new(path);
+fn escapes(path: &Path) -> bool {
     path.is_absolute()
         || path
             .components()
@@ -1635,13 +1618,13 @@ fn scratch() -> Result<PathBuf, Box<dyn Error>> {
     Ok(root)
 }
 
-/// The wiring: the four executors, the policies that decide their paths and the
-/// one program the command tool may run, and the model the route names.
+/// The wiring: the four executors, confined to the scratch directory, and the
+/// model the route names.
 fn engine(root: &Path, route: &Route) -> Result<Harness, Box<dyn Error>> {
     let mut tools = ToolRegistry::new();
-    tools.register_tool_declaration(ReadTool::new().into_declaration())?;
-    tools.register_tool_declaration(WriteTool::new().into_declaration())?;
-    tools.register_tool_declaration(EditTool::new().into_declaration())?;
+    tools.register_tool_declaration(sandbox(ReadTool::new().into_declaration(), root))?;
+    tools.register_tool_declaration(sandbox(WriteTool::new().into_declaration(), root))?;
+    tools.register_tool_declaration(sandbox(EditTool::new().into_declaration(), root))?;
     // The command executor clears the environment and keeps only what the host
     // gives it, so the host gives it its own: `cargo` lives on `PATH`, and a
     // process with no `PATH` cannot find it. The key is in the redaction list, so
@@ -1652,19 +1635,16 @@ fn engine(root: &Path, route: &Route) -> Result<Harness, Box<dyn Error>> {
     if let Ok(key) = std::env::var(&route.key_env) {
         command = command.with_secrets([key]);
     }
-    tools.register_tool_declaration(command.into_declaration())?;
-
-    let policies = PolicySet::new(vec![
-        Arc::new(IntoSandbox {
+    let command = command.into_declaration();
+    tools.register_tool_declaration(ToolDeclaration {
+        name: command.name,
+        description: command.description,
+        parameters: command.parameters,
+        executor: Arc::new(CargoOnly {
+            inner: command.executor,
             root: root.to_path_buf(),
         }),
-        Arc::new(StayInside {
-            root: root.to_path_buf(),
-        }),
-        Arc::new(CargoOnly {
-            root: root.to_path_buf(),
-        }),
-    ]);
+    })?;
 
     let capabilities = Capabilities::builder()
         .input(Modality::Text)
@@ -1679,7 +1659,6 @@ fn engine(root: &Path, route: &Route) -> Result<Harness, Box<dyn Error>> {
         .blobs(Arc::new(InMemoryBlobStore::new()))
         .model(Arc::new(probe))
         .tools(tools)
-        .policies(policies)
         // A real coding agent reads, edits and reads back over a dozen times; the
         // default budget of 16 is a chat turn's, not a session's, and a request
         // that runs out of budget is one the provider already billed.

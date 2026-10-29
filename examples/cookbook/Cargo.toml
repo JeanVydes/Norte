@@ -33,10 +33,6 @@ name = "agent"
 path = "examples/harness/agent/main.rs"
 
 [[example]]
-name = "approval"
-path = "examples/harness/approval/main.rs"
-
-[[example]]
 name = "branching"
 path = "examples/harness/branching/main.rs"
 
@@ -55,14 +51,6 @@ path = "examples/harness/observer/main.rs"
 [[example]]
 name = "observers"
 path = "examples/harness/observers/main.rs"
-
-[[example]]
-name = "policy"
-path = "examples/harness/policy/main.rs"
-
-[[example]]
-name = "policy_context"
-path = "examples/harness/policy_context/main.rs"
 
 [[example]]
 name = "rate_limit"

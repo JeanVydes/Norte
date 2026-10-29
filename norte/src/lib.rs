@@ -101,9 +101,7 @@ pub mod prelude {
         ToolOutput, ToolRegistry, TurnOptions, Usage,
     };
     #[cfg(feature = "harness")]
-    pub use norte_harness::{
-        Decision, Harness, HarnessBuilder, InMemoryStore, Policy, PolicySet, PolicyView,
-    };
+    pub use norte_harness::{Harness, HarnessBuilder, InMemoryStore, TurnInterceptor};
 
     #[cfg(feature = "tools")]
     pub use norte_tools::{EditTool, ReadTool, ShellTool, WriteTool};

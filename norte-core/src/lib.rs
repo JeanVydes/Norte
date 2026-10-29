@@ -3,7 +3,6 @@
 
 extern crate self as norte_core;
 
-/// Tool-call approval: records, grants and the audit trail.
 /// The blob port: content-addressed bytes for media.
 pub mod blob;
 /// What a model declares it can do, and the typed features the engine checks.
@@ -54,8 +53,8 @@ pub use domain::part::{
 pub use domain::role::Role;
 pub use error::{Error, ProviderError, ProviderErrorKind, Result};
 pub use id::{
-    ApprovalId, BlobId, CallId, Digest, GenerationId, GrantId, ModelId, ModelRef, NodeId,
-    ProviderId, SessionId, ToolName, WireFamily,
+    BlobId, CallId, Digest, GenerationId, ModelId, ModelRef, NodeId, ProviderId, SessionId,
+    ToolName, WireFamily,
 };
 pub use layer::{
     Continuation, Layer, LayerContext, LayerStack, ModelContinuation, ShortCircuitReason,

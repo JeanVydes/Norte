@@ -1,11 +1,9 @@
 use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
+use norte_core::id::{NodeId, SessionId};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-
-use crate::grant::Grant;
-use norte_core::id::{NodeId, SessionId};
 
 /// Durable position of a session in the turn loop. Unknown phases fail to
 /// deserialize instead of being coerced to a default.
@@ -20,8 +18,6 @@ pub enum Phase {
     Streaming,
     /// The model asked for tool calls the host must run.
     AwaitingTool,
-    /// A gated tool call is parked until the host decides.
-    AwaitingApproval,
 }
 
 impl Phase {
@@ -29,12 +25,6 @@ impl Phase {
     #[must_use]
     pub fn is_idle(self) -> bool {
         matches!(self, Phase::Idle)
-    }
-
-    /// Whether the session is waiting on the host.
-    #[must_use]
-    pub fn is_blocked(self) -> bool {
-        matches!(self, Phase::AwaitingTool | Phase::AwaitingApproval)
     }
 }
 
@@ -53,9 +43,6 @@ pub struct Session {
     pub version: u64,
     /// How many turns the session has run.
     pub turn: u64,
-    /// Grants in force for this session.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub grants: Vec<Grant>,
     /// Host-visible extras, which the engine never interprets.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub metadata: BTreeMap<String, Value>,
@@ -76,7 +63,6 @@ impl Session {
             phase: Phase::Idle,
             version: 0,
             turn: 0,
-            grants: Vec::new(),
             metadata: BTreeMap::new(),
             created_at: now,
             updated_at: now,
@@ -108,12 +94,7 @@ mod tests {
 
     #[test]
     fn phases_round_trip() {
-        for phase in [
-            Phase::Idle,
-            Phase::Streaming,
-            Phase::AwaitingTool,
-            Phase::AwaitingApproval,
-        ] {
+        for phase in [Phase::Idle, Phase::Streaming, Phase::AwaitingTool] {
             let json = serde_json::to_string(&phase).expect("serialize");
             let decoded: Phase = serde_json::from_str(&json).expect("deserialize");
             assert_eq!(decoded, phase);

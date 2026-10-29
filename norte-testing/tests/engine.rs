@@ -1,17 +1,14 @@
 //! Harness integration tests driven by the scripted model.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use norte_core::{
     CallId, ContinuityFragment, ContinuityScope, ContinuitySemantics, Error, Feature, FinishReason,
-    FnExecutor, LogprobValue, Message, MessageStatus, Part, Result, Role, StreamEvent,
-    TokenLogprob, ToolContext, ToolName, ToolRegistry, ToolResultPart, WireFamily,
+    FnExecutor, LogprobValue, Message, MessageStatus, Result, Role, StreamEvent, TokenLogprob,
+    ToolContext, ToolRegistry, WireFamily,
 };
-use norte_harness::{Decision, Policy, PolicySet, PolicyView, Store, ToolApprovalPolicy};
+use norte_harness::Store;
 use norte_harness::{EngineEvent, Phase};
 use norte_harness::{Harness, HarnessBuilder, HarnessConfig};
 use norte_testing::{
@@ -42,92 +39,13 @@ impl FnExecutor<EchoArgs, EchoResult> for Echo {
     }
 }
 
-#[derive(Debug)]
-#[norte_core::tool(name = "plain", description = "A tool nobody has to approve")]
-struct Plain {
-    hits: Arc<AtomicUsize>,
-}
-
-#[async_trait::async_trait]
-impl FnExecutor<EchoArgs, EchoResult> for Plain {
-    async fn call(&self, args: EchoArgs) -> Result<EchoResult> {
-        self.hits.fetch_add(1, Ordering::SeqCst);
-        Ok(EchoResult { echoed: args.text })
-    }
-}
-
-#[derive(Debug)]
-#[norte_core::tool(name = "guarded", description = "A tool the operator must approve")]
-struct Guarded {
-    hits: Arc<AtomicUsize>,
-}
-
-#[async_trait::async_trait]
-impl FnExecutor<EchoArgs, EchoResult> for Guarded {
-    async fn call(&self, args: EchoArgs) -> Result<EchoResult> {
-        self.hits.fetch_add(1, Ordering::SeqCst);
-        Ok(EchoResult { echoed: args.text })
-    }
-}
-
-struct Rewrite;
-
-impl Policy for Rewrite {
-    fn name(&self) -> &'static str {
-        "rewrite"
-    }
-
-    fn decide(&self, view: &PolicyView<'_>) -> Decision {
-        let text = view
-            .call
-            .arguments
-            .get("text")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default();
-        Decision::Transform(json!({ "text": format!("{text}!") }))
-    }
-}
-
-#[derive(Debug)]
-#[norte_core::tool(
-    name = "contextual",
-    description = "Records the host context it ran with"
-)]
-struct Contextual {
-    seen: Arc<Mutex<Vec<BTreeMap<String, serde_json::Value>>>>,
-}
-
-#[async_trait::async_trait]
-impl FnExecutor<EchoArgs, EchoResult> for Contextual {
-    async fn call(&self, args: EchoArgs) -> Result<EchoResult> {
-        Ok(EchoResult { echoed: args.text })
-    }
-
-    async fn call_with_context(&self, context: &ToolContext, args: EchoArgs) -> Result<EchoResult> {
-        self.seen
-            .lock()
-            .expect("lock")
-            .push(context.metadata.clone());
-        Ok(EchoResult { echoed: args.text })
-    }
-}
-
 struct Fixture {
     engine: Harness,
     store: Arc<InMemoryStore>,
     model: Arc<ScriptedModel>,
 }
 
-fn fixture(model: Arc<ScriptedModel>, tools: ToolRegistry, policies: PolicySet) -> Fixture {
-    fixture_with_config(model, tools, policies, HarnessConfig::default())
-}
-
-fn fixture_with_config(
-    model: Arc<ScriptedModel>,
-    tools: ToolRegistry,
-    policies: PolicySet,
-    config: HarnessConfig,
-) -> Fixture {
+fn fixture(model: Arc<ScriptedModel>, tools: ToolRegistry, config: HarnessConfig) -> Fixture {
     let store = Arc::new(InMemoryStore::new());
     let blobs = Arc::new(InMemoryBlobStore::new());
     let engine = HarnessBuilder::new()
@@ -135,7 +53,6 @@ fn fixture_with_config(
         .blobs(blobs)
         .model(model.clone())
         .tools(tools)
-        .policies(policies)
         .config(config)
         .build()
         .expect("build engine");
@@ -149,7 +66,7 @@ fn fixture_with_config(
 #[tokio::test]
 async fn a_text_turn_is_committed_and_reported() {
     let scripted = Arc::new(ScriptedModel::new(model("test/echo")).turn_text("hello world"));
-    let harness = fixture(scripted, ToolRegistry::new(), PolicySet::default());
+    let harness = fixture(scripted, ToolRegistry::new(), HarnessConfig::default());
 
     let session = harness.engine.create().await.expect("create");
     let outcome = harness
@@ -188,7 +105,7 @@ async fn tool_calls_run_and_feed_the_next_turn() {
     let mut tools = ToolRegistry::new();
     tools.register_declarator(&Echo).expect("register echo");
 
-    let harness = fixture(scripted, tools, PolicySet::default());
+    let harness = fixture(scripted, tools, HarnessConfig::default());
     let session = harness.engine.create().await.expect("create");
     let outcome = harness
         .engine
@@ -247,33 +164,6 @@ fn two_call_turn(first: (CallId, &str, &str), second: (CallId, &str, &str)) -> V
     events
 }
 
-/// Two counting tools and a policy that gates `guarded`, so a message can run
-/// one call and then park on the next.
-fn counting_tools() -> (ToolRegistry, Arc<AtomicUsize>, Arc<AtomicUsize>) {
-    let plain = Arc::new(AtomicUsize::new(0));
-    let guarded = Arc::new(AtomicUsize::new(0));
-    let mut tools = ToolRegistry::new();
-    tools
-        .register_declarator(&Plain {
-            hits: Arc::clone(&plain),
-        })
-        .expect("register plain");
-    tools
-        .register_declarator(&Guarded {
-            hits: Arc::clone(&guarded),
-        })
-        .expect("register guarded");
-    (tools, plain, guarded)
-}
-
-fn guarded_policy() -> PolicySet {
-    PolicySet::new(vec![Arc::new(ToolApprovalPolicy::new(
-        "guard",
-        vec![ToolName::new("guarded").expect("tool")],
-        "guarded needs a human",
-    ))])
-}
-
 #[tokio::test]
 async fn two_calls_in_one_message_each_get_a_result() {
     let first = CallId::new();
@@ -289,7 +179,7 @@ async fn two_calls_in_one_message_each_get_a_result() {
     let mut tools = ToolRegistry::new();
     tools.register_declarator(&Echo).expect("register echo");
 
-    let harness = fixture(scripted, tools, PolicySet::default());
+    let harness = fixture(scripted, tools, HarnessConfig::default());
     let session = harness.engine.create().await.expect("create");
     let outcome = harness
         .engine
@@ -322,169 +212,8 @@ async fn two_calls_in_one_message_each_get_a_result() {
     assert_eq!(results[1].structured, Some(json!({ "echoed": "two" })));
 }
 
-#[tokio::test]
-async fn a_park_after_a_call_does_not_run_that_call_again() {
-    let first = CallId::new();
-    let second = CallId::new();
-    let scripted = Arc::new(
-        ScriptedModel::new(model("test/plain"))
-            .turn(two_call_turn(
-                (first, "plain", "one"),
-                (second, "guarded", "two"),
-            ))
-            .turn_text("done"),
-    );
-    let (tools, plain_hits, guarded_hits) = counting_tools();
-    let harness = fixture(scripted, tools, guarded_policy());
-
-    let session = harness.engine.create().await.expect("create");
-    let outcome = harness
-        .engine
-        .send(session.id, Message::user("go"))
-        .finish()
-        .await
-        .expect("turn");
-    assert_eq!(outcome.session.phase, Phase::AwaitingApproval);
-    assert_eq!(
-        plain_hits.load(Ordering::SeqCst),
-        1,
-        "the call before the park ran once"
-    );
-    assert_eq!(
-        guarded_hits.load(Ordering::SeqCst),
-        0,
-        "the gated call has not run"
-    );
-
-    // The result the message already produced travels with the park commit, so a
-    // resume seeds it instead of running the call a second time (FR-APPR-8).
-    let stored: Vec<ToolResultPart> = serde_json::from_value(
-        outcome
-            .session
-            .metadata
-            .get(norte_core::PARTIAL_TOOLS_KEY)
-            .expect("the park commit records the results already produced")
-            .clone(),
-    )
-    .expect("partial results decode");
-    assert_eq!(stored.len(), 1);
-    assert_eq!(stored[0].call_id, first);
-    assert_eq!(stored[0].structured, Some(json!({ "echoed": "one" })));
-
-    let pending = harness
-        .engine
-        .pending_approvals(session.id)
-        .await
-        .expect("pending");
-    assert_eq!(pending.len(), 1);
-    assert_eq!(pending[0].call_id, second);
-    harness
-        .engine
-        .approve(
-            pending[0].id,
-            norte_harness::GrantScope::Call(second),
-            "tester",
-        )
-        .await
-        .expect("approve");
-
-    let outcome = harness
-        .engine
-        .resume(session.id)
-        .finish()
-        .await
-        .expect("resume");
-    assert_eq!(outcome.session.phase, Phase::Idle);
-    assert_eq!(guarded_hits.load(Ordering::SeqCst), 1);
-    assert_eq!(
-        plain_hits.load(Ordering::SeqCst),
-        1,
-        "resuming must not re-run the call that ran before the park"
-    );
-}
-
-#[tokio::test]
-async fn early_tool_execution_does_not_run_a_call_twice_across_a_park() {
-    let first = CallId::new();
-    let second = CallId::new();
-    let scripted = Arc::new(
-        ScriptedModel::new(model("test/plain"))
-            .turn(two_call_turn(
-                (first, "plain", "one"),
-                (second, "guarded", "two"),
-            ))
-            .turn_text("done"),
-    );
-    let (tools, plain_hits, guarded_hits) = counting_tools();
-    let config = HarnessConfig {
-        early_tool_execution: true,
-        ..HarnessConfig::default()
-    };
-    let harness = fixture_with_config(scripted, tools, guarded_policy(), config);
-
-    let session = harness.engine.create().await.expect("create");
-    let outcome = harness
-        .engine
-        .send(session.id, Message::user("go"))
-        .finish()
-        .await
-        .expect("turn");
-    assert_eq!(outcome.session.phase, Phase::AwaitingApproval);
-    assert_eq!(
-        plain_hits.load(Ordering::SeqCst),
-        1,
-        "the early call ran during the stream"
-    );
-
-    let pending = harness
-        .engine
-        .pending_approvals(session.id)
-        .await
-        .expect("pending");
-    assert_eq!(pending.len(), 1);
-    harness
-        .engine
-        .approve(
-            pending[0].id,
-            norte_harness::GrantScope::Call(second),
-            "tester",
-        )
-        .await
-        .expect("approve");
-
-    let outcome = harness
-        .engine
-        .resume(session.id)
-        .finish()
-        .await
-        .expect("resume");
-    assert_eq!(outcome.session.phase, Phase::Idle);
-    assert_eq!(guarded_hits.load(Ordering::SeqCst), 1);
-    assert_eq!(
-        plain_hits.load(Ordering::SeqCst),
-        1,
-        "an early call must not run again after the park"
-    );
-
-    let history = harness
-        .store
-        .history(outcome.session.head)
-        .await
-        .expect("history");
-    let tool_message = history
-        .iter()
-        .find(|message| message.role == Role::Tool)
-        .expect("tool message");
-    let results = tool_message.tool_results();
-    assert_eq!(results.len(), 2);
-    assert_eq!(results[0].call_id, first, "results keep call order");
-    assert_eq!(results[1].call_id, second);
-    assert!(
-        !outcome.session.metadata.contains_key("norte.partial_tools"),
-        "the parked-results key is cleared once the tool message commits"
-    );
-}
-
+/// Runs one echo turn and reports how many commits had succeeded when the tool
+/// finished, so early and sequential execution can be compared.
 /// Runs one echo turn and reports how many commits had succeeded when the tool
 /// finished, so early and sequential execution can be compared.
 async fn tool_finish_commit_offset(config: HarnessConfig) -> usize {
@@ -514,7 +243,7 @@ async fn tool_finish_commit_offset(config: HarnessConfig) -> usize {
     let mut tools = ToolRegistry::new();
     tools.register_declarator(&Echo).expect("register echo");
 
-    let harness = fixture_with_config(scripted, tools, PolicySet::default(), config);
+    let harness = fixture(scripted, tools, config);
     let session = harness.engine.create().await.expect("create");
 
     let mut stream = harness
@@ -560,7 +289,7 @@ async fn an_unknown_tool_is_reported_to_the_model_as_an_error() {
             .turn_tool_call(call_id, "missing", &json!({}))
             .turn_text("recovered"),
     );
-    let harness = fixture(scripted, ToolRegistry::new(), PolicySet::default());
+    let harness = fixture(scripted, ToolRegistry::new(), HarnessConfig::default());
     let session = harness.engine.create().await.expect("create");
     let outcome = harness
         .engine
@@ -583,440 +312,9 @@ async fn an_unknown_tool_is_reported_to_the_model_as_an_error() {
 }
 
 #[tokio::test]
-async fn a_required_approval_blocks_then_resumes() {
-    let call_id = CallId::new();
-    let scripted = Arc::new(
-        ScriptedModel::new(model("test/echo"))
-            .turn_tool_call(call_id, "echo", &json!({ "text": "secret" }))
-            .turn_text("finished"),
-    );
-    let mut tools = ToolRegistry::new();
-    tools.register_declarator(&Echo).expect("register echo");
-    let policies = PolicySet::new(vec![Arc::new(ToolApprovalPolicy::new(
-        "guard",
-        vec![ToolName::new("echo").expect("tool")],
-        "echo touches the world",
-    ))]);
-    let harness = fixture(scripted, tools, policies);
-
-    let session = harness.engine.create().await.expect("create");
-    let outcome = harness
-        .engine
-        .send(session.id, Message::user("go"))
-        .finish()
-        .await
-        .expect("turn");
-    assert_eq!(outcome.session.phase, Phase::AwaitingApproval);
-    assert_eq!(harness.model.request_count(), 1);
-
-    let pending = harness
-        .engine
-        .pending_approvals(session.id)
-        .await
-        .expect("pending");
-    assert_eq!(pending.len(), 1);
-    let record = pending[0].clone();
-
-    harness
-        .engine
-        .approve(
-            record.id,
-            norte_harness::GrantScope::Call(call_id),
-            "tester",
-        )
-        .await
-        .expect("approve");
-
-    let outcome = harness
-        .engine
-        .resume(session.id)
-        .finish()
-        .await
-        .expect("turn");
-    assert_eq!(outcome.session.phase, Phase::Idle);
-    assert_eq!(
-        outcome.message.as_ref().map(Message::text).as_deref(),
-        Some("finished")
-    );
-
-    let history = harness
-        .store
-        .history(outcome.session.head)
-        .await
-        .expect("history");
-    let result = history[2].tool_results()[0];
-    assert!(!result.is_error);
-    assert_eq!(result.structured, Some(json!({ "echoed": "secret" })));
-    assert!(
-        !outcome.session.grants.is_empty(),
-        "the approval leaves a grant"
-    );
-}
-
-#[tokio::test]
-async fn a_later_transform_cannot_bypass_an_earlier_approval() {
-    let call_id = CallId::new();
-    let hits = Arc::new(AtomicUsize::new(0));
-    let scripted = Arc::new(
-        ScriptedModel::new(model("test/echo"))
-            .turn_tool_call(call_id, "plain", &json!({ "text": "secret" }))
-            .turn_text("finished"),
-    );
-    let mut tools = ToolRegistry::new();
-    tools
-        .register_declarator(&Plain {
-            hits: Arc::clone(&hits),
-        })
-        .expect("register plain");
-    let policies = PolicySet::new(vec![
-        Arc::new(ToolApprovalPolicy::new(
-            "guard",
-            vec![ToolName::new("plain").expect("tool")],
-            "plain touches the world",
-        )),
-        Arc::new(Rewrite),
-    ]);
-    let harness = fixture(scripted, tools, policies);
-
-    let session = harness.engine.create().await.expect("create");
-    let outcome = harness
-        .engine
-        .send(session.id, Message::user("go"))
-        .finish()
-        .await
-        .expect("turn");
-    assert_eq!(outcome.session.phase, Phase::AwaitingApproval);
-    assert_eq!(
-        hits.load(Ordering::SeqCst),
-        0,
-        "a transform after an approval must not run the call"
-    );
-
-    let pending = harness
-        .engine
-        .pending_approvals(session.id)
-        .await
-        .expect("pending");
-    assert_eq!(pending.len(), 1);
-    assert_eq!(pending[0].arguments, Some(json!({ "text": "secret!" })));
-
-    harness
-        .engine
-        .approve(
-            pending[0].id,
-            norte_harness::GrantScope::Call(call_id),
-            "tester",
-        )
-        .await
-        .expect("approve");
-    let outcome = harness
-        .engine
-        .resume(session.id)
-        .finish()
-        .await
-        .expect("resume");
-    assert_eq!(outcome.session.phase, Phase::Idle);
-    assert_eq!(hits.load(Ordering::SeqCst), 1);
-    let history = harness
-        .store
-        .history(outcome.session.head)
-        .await
-        .expect("history");
-    let result = history[2].tool_results()[0];
-    assert_eq!(result.structured, Some(json!({ "echoed": "secret!" })));
-}
-
-#[tokio::test]
-async fn an_earlier_transform_is_what_the_human_approves_and_runs() {
-    let call_id = CallId::new();
-    let hits = Arc::new(AtomicUsize::new(0));
-    let scripted = Arc::new(
-        ScriptedModel::new(model("test/echo"))
-            .turn_tool_call(call_id, "plain", &json!({ "text": "secret" }))
-            .turn_text("finished"),
-    );
-    let mut tools = ToolRegistry::new();
-    tools
-        .register_declarator(&Plain {
-            hits: Arc::clone(&hits),
-        })
-        .expect("register plain");
-    let policies = PolicySet::new(vec![
-        Arc::new(Rewrite),
-        Arc::new(ToolApprovalPolicy::new(
-            "guard",
-            vec![ToolName::new("plain").expect("tool")],
-            "plain touches the world",
-        )),
-    ]);
-    let harness = fixture(scripted, tools, policies);
-
-    let session = harness.engine.create().await.expect("create");
-    let outcome = harness
-        .engine
-        .send(session.id, Message::user("go"))
-        .finish()
-        .await
-        .expect("turn");
-    assert_eq!(outcome.session.phase, Phase::AwaitingApproval);
-    let pending = harness
-        .engine
-        .pending_approvals(session.id)
-        .await
-        .expect("pending");
-    assert_eq!(pending[0].arguments, Some(json!({ "text": "secret!" })));
-    harness
-        .engine
-        .approve(
-            pending[0].id,
-            norte_harness::GrantScope::Call(call_id),
-            "tester",
-        )
-        .await
-        .expect("approve");
-    harness
-        .engine
-        .resume(session.id)
-        .finish()
-        .await
-        .expect("resume");
-    assert_eq!(hits.load(Ordering::SeqCst), 1);
-}
-
-#[tokio::test]
-async fn the_host_context_reaches_a_tool_that_resumes_after_approval() {
-    let call_id = CallId::new();
-    let seen = Arc::new(Mutex::new(Vec::new()));
-    let scripted = Arc::new(
-        ScriptedModel::new(model("test/echo"))
-            .turn_tool_call(call_id, "contextual", &json!({ "text": "hello" }))
-            .turn_text("done"),
-    );
-    let mut tools = ToolRegistry::new();
-    tools
-        .register_declarator(&Contextual {
-            seen: Arc::clone(&seen),
-        })
-        .expect("register contextual");
-    let policies = PolicySet::new(vec![Arc::new(ToolApprovalPolicy::new(
-        "guard",
-        vec![ToolName::new("contextual").expect("tool")],
-        "contextual touches the world",
-    ))]);
-
-    let engine = HarnessBuilder::new()
-        .store(Arc::new(InMemoryStore::new()))
-        .blobs(Arc::new(InMemoryBlobStore::new()))
-        .model(scripted)
-        .tools(tools)
-        .policies(policies)
-        .tool_metadata(|info| {
-            BTreeMap::from([
-                ("tenant".to_owned(), json!("acme")),
-                ("tool".to_owned(), json!(info.tool.as_str())),
-                ("turn".to_owned(), json!(info.turn)),
-                ("arguments".to_owned(), info.arguments.clone()),
-            ])
-        })
-        .build()
-        .expect("build engine");
-
-    let session = engine.create().await.expect("create");
-    let outcome = engine
-        .send(session.id, Message::user("go"))
-        .finish()
-        .await
-        .expect("turn");
-    assert_eq!(outcome.session.phase, Phase::AwaitingApproval);
-    assert!(
-        seen.lock().expect("lock").is_empty(),
-        "the parked call has not run yet"
-    );
-
-    let pending = engine.pending_approvals(session.id).await.expect("pending");
-    engine
-        .approve(
-            pending[0].id,
-            norte_harness::GrantScope::Call(call_id),
-            "tester",
-        )
-        .await
-        .expect("approve");
-    engine.resume(session.id).finish().await.expect("resume");
-
-    let seen = seen.lock().expect("lock");
-    assert_eq!(seen.len(), 1, "the resumed call ran exactly once");
-    assert_eq!(seen[0]["tenant"], json!("acme"));
-    assert_eq!(seen[0]["tool"], json!("contextual"));
-    assert_eq!(seen[0]["arguments"], json!({ "text": "hello" }));
-}
-
-#[tokio::test]
-async fn a_denied_call_comes_back_to_the_model_as_a_failure() {
-    let call_id = CallId::new();
-    let scripted = Arc::new(
-        ScriptedModel::new(model("test/echo"))
-            .turn_tool_call(call_id, "echo", &json!({ "text": "secret" }))
-            .turn_text("understood, I will not run it"),
-    );
-    let mut tools = ToolRegistry::new();
-    tools.register_declarator(&Echo).expect("register echo");
-    let policies = PolicySet::new(vec![Arc::new(ToolApprovalPolicy::new(
-        "guard",
-        vec![ToolName::new("echo").expect("tool")],
-        "echo touches the world",
-    ))]);
-    let harness = fixture(scripted, tools, policies);
-
-    let session = harness.engine.create().await.expect("create");
-    let outcome = harness
-        .engine
-        .send(session.id, Message::user("go"))
-        .finish()
-        .await
-        .expect("turn");
-    assert_eq!(outcome.session.phase, Phase::AwaitingApproval);
-
-    let pending = harness
-        .engine
-        .pending_approvals(session.id)
-        .await
-        .expect("pending");
-    assert_eq!(pending.len(), 1);
-    harness
-        .engine
-        .deny(pending[0].id, "tester", "not on my watch")
-        .await
-        .expect("deny");
-
-    let outcome = harness
-        .engine
-        .resume(session.id)
-        .finish()
-        .await
-        .expect("resume");
-    assert_eq!(outcome.session.phase, Phase::Idle);
-    assert_eq!(
-        outcome.message.as_ref().map(Message::text).as_deref(),
-        Some("understood, I will not run it"),
-        "the turn carries on and the model answers"
-    );
-
-    let history = harness
-        .store
-        .history(outcome.session.head)
-        .await
-        .expect("history");
-    let result = history[2].tool_results()[0];
-    assert!(
-        result.is_error,
-        "a denial is a failed call, not a dead turn"
-    );
-    assert!(
-        result
-            .parts
-            .iter()
-            .filter_map(Part::as_text)
-            .any(|text| text.contains("not on my watch")),
-        "the reason must reach the model"
-    );
-    assert!(
-        harness
-            .engine
-            .pending_approvals(session.id)
-            .await
-            .expect("pending")
-            .is_empty(),
-        "a denied call is decided, so it is no longer pending"
-    );
-}
-
-#[tokio::test]
-async fn a_tool_scoped_grant_covers_later_calls() {
-    let first = CallId::new();
-    let second = CallId::new();
-    let scripted = Arc::new(
-        ScriptedModel::new(model("test/echo"))
-            .turn_tool_call(first, "echo", &json!({ "text": "one" }))
-            .turn_tool_call(second, "echo", &json!({ "text": "two" }))
-            .turn_text("finished"),
-    );
-    let mut tools = ToolRegistry::new();
-    tools.register_declarator(&Echo).expect("register echo");
-    let policies = PolicySet::new(vec![Arc::new(ToolApprovalPolicy::new(
-        "guard",
-        vec![ToolName::new("echo").expect("tool")],
-        "echo touches the world",
-    ))]);
-    let harness = fixture(scripted, tools, policies);
-
-    let session = harness.engine.create().await.expect("create");
-    let outcome = harness
-        .engine
-        .send(session.id, Message::user("go"))
-        .finish()
-        .await
-        .expect("turn");
-    assert_eq!(outcome.session.phase, Phase::AwaitingApproval);
-
-    let pending = harness
-        .engine
-        .pending_approvals(session.id)
-        .await
-        .expect("pending");
-    assert_eq!(pending.len(), 1);
-    harness
-        .engine
-        .approve(
-            pending[0].id,
-            norte_harness::GrantScope::Tool(ToolName::new("echo").expect("tool")),
-            "tester",
-        )
-        .await
-        .expect("approve");
-
-    let outcome = harness
-        .engine
-        .resume(session.id)
-        .finish()
-        .await
-        .expect("resume");
-    assert_eq!(outcome.session.phase, Phase::Idle);
-    assert_eq!(
-        outcome.message.as_ref().map(Message::text).as_deref(),
-        Some("finished"),
-        "the second call runs under the standing grant without parking"
-    );
-    assert_eq!(harness.model.request_count(), 3);
-
-    let records = harness
-        .store
-        .approvals(session.id)
-        .await
-        .expect("approvals");
-    assert_eq!(
-        records.len(),
-        1,
-        "the second call needed no approval record of its own"
-    );
-
-    let history = harness
-        .store
-        .history(outcome.session.head)
-        .await
-        .expect("history");
-    let results = history
-        .iter()
-        .flat_map(Message::tool_results)
-        .filter(|result| !result.is_error)
-        .count();
-    assert_eq!(results, 2, "both calls ran");
-}
-
-#[tokio::test]
 async fn a_steering_message_lands_before_the_message_that_follows_it() {
     let scripted = Arc::new(ScriptedModel::new(model("test/echo")).turn_text("ok"));
-    let harness = fixture(scripted, ToolRegistry::new(), PolicySet::default());
+    let harness = fixture(scripted, ToolRegistry::new(), HarnessConfig::default());
 
     let session = harness.engine.create().await.expect("create");
     let outcome = harness
@@ -1040,169 +338,6 @@ async fn a_steering_message_lands_before_the_message_that_follows_it() {
 }
 
 #[tokio::test]
-async fn a_revoked_grant_stops_authorizing_the_call() {
-    let call_id = CallId::new();
-    let scripted = Arc::new(
-        ScriptedModel::new(model("test/echo"))
-            .turn_tool_call(call_id, "echo", &json!({ "text": "secret" }))
-            .turn_text("understood"),
-    );
-    let mut tools = ToolRegistry::new();
-    tools.register_declarator(&Echo).expect("register echo");
-    let policies = PolicySet::new(vec![Arc::new(ToolApprovalPolicy::new(
-        "guard",
-        vec![ToolName::new("echo").expect("tool")],
-        "echo touches the world",
-    ))]);
-    let harness = fixture(scripted, tools, policies);
-
-    let session = harness.engine.create().await.expect("create");
-    let outcome = harness
-        .engine
-        .send(session.id, Message::user("go"))
-        .finish()
-        .await
-        .expect("turn");
-    assert_eq!(outcome.session.phase, Phase::AwaitingApproval);
-
-    let pending = harness
-        .engine
-        .pending_approvals(session.id)
-        .await
-        .expect("pending");
-    let approval = pending[0].id;
-    harness
-        .engine
-        .approve(approval, norte_harness::GrantScope::Call(call_id), "tester")
-        .await
-        .expect("approve");
-
-    let granted = harness.store.load(session.id).await.expect("session");
-    let grant = granted.grants[0].id;
-    let record = harness
-        .engine
-        .revoke(session.id, grant, "tester")
-        .await
-        .expect("revoke");
-    assert!(!record.grants[0].is_active());
-
-    let outcome = harness
-        .engine
-        .resume(session.id)
-        .finish()
-        .await
-        .expect("resume");
-    assert_eq!(outcome.session.phase, Phase::Idle);
-    assert_eq!(
-        outcome.message.as_ref().map(Message::text).as_deref(),
-        Some("understood")
-    );
-
-    let history = harness
-        .store
-        .history(outcome.session.head)
-        .await
-        .expect("history");
-    let result = history[2].tool_results()[0];
-    assert!(result.is_error, "a revoked grant must not run the call");
-    assert!(
-        result
-            .parts
-            .iter()
-            .filter_map(Part::as_text)
-            .any(|text| text.contains("no active grant")),
-        "the model must learn why"
-    );
-}
-
-#[tokio::test]
-async fn revoking_a_standing_grant_brings_the_question_back() {
-    let first = CallId::new();
-    let second = CallId::new();
-    let scripted = Arc::new(
-        ScriptedModel::new(model("test/echo"))
-            .turn_tool_call(first, "echo", &json!({ "text": "one" }))
-            .turn_text("finished")
-            .turn_tool_call(second, "echo", &json!({ "text": "two" }))
-            .turn_text("done"),
-    );
-    let mut tools = ToolRegistry::new();
-    tools.register_declarator(&Echo).expect("register echo");
-    let policies = PolicySet::new(vec![Arc::new(ToolApprovalPolicy::new(
-        "guard",
-        vec![ToolName::new("echo").expect("tool")],
-        "echo touches the world",
-    ))]);
-    let harness = fixture(scripted, tools, policies);
-
-    let session = harness.engine.create().await.expect("create");
-    let outcome = harness
-        .engine
-        .send(session.id, Message::user("go"))
-        .finish()
-        .await
-        .expect("turn");
-    assert_eq!(outcome.session.phase, Phase::AwaitingApproval);
-
-    let pending = harness
-        .engine
-        .pending_approvals(session.id)
-        .await
-        .expect("pending");
-    harness
-        .engine
-        .approve(
-            pending[0].id,
-            norte_harness::GrantScope::Tool(ToolName::new("echo").expect("tool")),
-            "tester",
-        )
-        .await
-        .expect("approve");
-
-    let outcome = harness
-        .engine
-        .resume(session.id)
-        .finish()
-        .await
-        .expect("resume");
-    assert_eq!(
-        outcome.message.as_ref().map(Message::text).as_deref(),
-        Some("finished"),
-        "the tool-scoped grant covers the call"
-    );
-
-    let granted = harness.store.load(session.id).await.expect("session");
-    harness
-        .engine
-        .revoke(session.id, granted.grants[0].id, "tester")
-        .await
-        .expect("revoke");
-
-    let outcome = harness
-        .engine
-        .send(session.id, Message::user("again"))
-        .finish()
-        .await
-        .expect("turn");
-    assert_eq!(
-        outcome.session.phase,
-        Phase::AwaitingApproval,
-        "with the grant revoked the next call must be asked about again"
-    );
-    let pending = harness
-        .engine
-        .pending_approvals(session.id)
-        .await
-        .expect("pending");
-    assert_eq!(pending.len(), 1);
-    assert_eq!(pending[0].call_id, second);
-    assert!(
-        outcome.session.grants.iter().all(|held| !held.is_active()),
-        "the standing grant is gone"
-    );
-}
-
-#[tokio::test]
 async fn cancelling_a_turn_leaves_the_session_resumable() {
     let events = vec![
         norte_core::StreamEvent::TextStart { index: 0 },
@@ -1215,7 +350,7 @@ async fn cancelling_a_turn_leaves_the_session_resumable() {
     let scripted = Arc::new(
         ScriptedModel::new(model("test/echo")).turn_delayed(events, Duration::from_millis(50)),
     );
-    let harness = fixture(scripted, ToolRegistry::new(), PolicySet::default());
+    let harness = fixture(scripted, ToolRegistry::new(), HarnessConfig::default());
     let session = harness.engine.create().await.expect("create");
 
     let stream = harness.engine.send(session.id, Message::user("go"));
@@ -1244,7 +379,7 @@ async fn an_unsupported_tool_shape_is_a_capability_error() {
             .turn_text("never"),
     );
 
-    let harness = fixture(scripted, tools, PolicySet::default());
+    let harness = fixture(scripted, tools, HarnessConfig::default());
     let session = harness.engine.create().await.expect("create");
     let error = harness
         .engine
@@ -1370,7 +505,7 @@ async fn tool_context_reaches_the_executor() {
     tools
         .register_declarator(&ContextProbe)
         .expect("register probe");
-    let harness = fixture(scripted, tools, PolicySet::default());
+    let harness = fixture(scripted, tools, HarnessConfig::default());
     let session = harness.engine.create().await.expect("create");
     let outcome = harness
         .engine
@@ -1463,163 +598,10 @@ async fn switching_models_mid_tool_loop_blocks_instead_of_dropping_tokens() {
     assert!(matches!(error, Error::ContinuityBlocked(_)));
 }
 
-/// Denies a call once an earlier call in the same message has already run, so a
-/// test can observe what `PolicyView::results` carries.
-struct ResultGate;
-
-impl Policy for ResultGate {
-    fn name(&self) -> &'static str {
-        "result-gate"
-    }
-
-    fn decide(&self, view: &PolicyView<'_>) -> Decision {
-        if view.results.is_empty() {
-            return Decision::Allow;
-        }
-        Decision::Deny("this request already ran a tool".to_owned())
-    }
-}
-
-#[tokio::test]
-async fn a_policy_sees_the_results_of_earlier_calls_in_the_same_message() {
-    let first = CallId::new();
-    let second = CallId::new();
-    let scripted = Arc::new(
-        ScriptedModel::new(model("test/echo"))
-            .turn(two_call_turn(
-                (first, "echo", "one"),
-                (second, "echo", "two"),
-            ))
-            .turn_text("done"),
-    );
-    let mut tools = ToolRegistry::new();
-    tools.register_declarator(&Echo).expect("register echo");
-    let policies = PolicySet::new(vec![Arc::new(ResultGate)]);
-    let harness = fixture(scripted, tools, policies);
-
-    let session = harness.engine.create().await.expect("create");
-    let outcome = harness
-        .engine
-        .send(session.id, Message::user("go"))
-        .finish()
-        .await
-        .expect("turn");
-    assert_eq!(outcome.session.phase, Phase::Idle);
-
-    let history = harness
-        .store
-        .history(outcome.session.head)
-        .await
-        .expect("history");
-    let tool_message = history
-        .iter()
-        .find(|message| message.role == Role::Tool)
-        .expect("tool message");
-    let results = tool_message.tool_results();
-    assert!(!results[0].is_error, "the first call ran");
-    assert_eq!(results[0].structured, Some(json!({ "echoed": "one" })));
-    assert!(results[1].is_error, "the second call was denied");
-    let reason = results[1]
-        .parts
-        .iter()
-        .find_map(Part::as_text)
-        .expect("denial reason");
-    assert_eq!(reason, "this request already ran a tool");
-}
-
-/// What one policy evaluation saw, recorded so a test can compare paths.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Seen {
-    results: usize,
-    history: usize,
-}
-
-/// Records the view every evaluation received, and allows.
-#[derive(Clone, Default)]
-struct Probe {
-    seen: Arc<Mutex<Vec<Seen>>>,
-}
-
-impl Policy for Probe {
-    fn name(&self) -> &'static str {
-        "probe"
-    }
-
-    fn decide(&self, view: &PolicyView<'_>) -> Decision {
-        self.seen.lock().expect("probe").push(Seen {
-            results: view.results.len(),
-            history: view.history.len(),
-        });
-        Decision::Allow
-    }
-}
-
-async fn probe_seen(config: HarnessConfig) -> Vec<Seen> {
-    let first = CallId::new();
-    let second = CallId::new();
-    let scripted = Arc::new(
-        ScriptedModel::new(model("test/echo"))
-            .turn(two_call_turn(
-                (first, "echo", "one"),
-                (second, "echo", "two"),
-            ))
-            .turn_text("done"),
-    );
-    let mut tools = ToolRegistry::new();
-    tools.register_declarator(&Echo).expect("register echo");
-    let probe = Probe::default();
-    let seen = Arc::clone(&probe.seen);
-    let policies = PolicySet::new(vec![Arc::new(probe)]);
-    let harness = fixture_with_config(scripted, tools, policies, config);
-
-    let session = harness.engine.create().await.expect("create");
-    harness
-        .engine
-        .send(session.id, Message::user("go"))
-        .finish()
-        .await
-        .expect("turn");
-    seen.lock().expect("probe").clone()
-}
-
-#[tokio::test]
-async fn the_results_a_policy_sees_depend_on_the_execution_path() {
-    let sequential = probe_seen(HarnessConfig::default()).await;
-    assert_eq!(sequential.len(), 2);
-    assert_eq!(
-        sequential[0].results, 0,
-        "nothing ran before the first call"
-    );
-    assert_eq!(
-        sequential[1].results, 1,
-        "the second call sees the first one"
-    );
-    assert_eq!(
-        sequential[0].history, 2,
-        "the request history is the input plus the assistant message"
-    );
-    assert_eq!(sequential[1].history, 2);
-
-    let parallel = probe_seen(HarnessConfig {
-        early_tool_execution: true,
-        ..HarnessConfig::default()
-    })
-    .await;
-    assert_eq!(parallel.len(), 2);
-    assert!(
-        parallel.iter().all(|seen| seen.results == 0),
-        "early dispatch starts before anything has run"
-    );
-    assert!(
-        parallel.iter().all(|seen| seen.history == 1),
-        "early dispatch sees the input only; the message is still in flight"
-    );
-}
-
 #[tokio::test]
 async fn logprobs_without_the_capability_fail_before_the_request() {
     let scripted = Arc::new(ScriptedModel::new(model("test/echo")).turn_text("never"));
-    let harness = fixture(scripted, ToolRegistry::new(), PolicySet::default());
+    let harness = fixture(scripted, ToolRegistry::new(), HarnessConfig::default());
     let session = harness.engine.create().await.expect("create");
 
     let error = harness
@@ -1649,7 +631,7 @@ async fn a_logprob_count_above_the_cap_is_a_limit_error() {
             .with_capabilities(capabilities)
             .turn_text("never"),
     );
-    let harness = fixture(scripted, ToolRegistry::new(), PolicySet::default());
+    let harness = fixture(scripted, ToolRegistry::new(), HarnessConfig::default());
     let session = harness.engine.create().await.expect("create");
 
     let error = harness
@@ -1669,7 +651,7 @@ async fn a_logprob_count_above_the_cap_is_a_limit_error() {
 #[tokio::test]
 async fn requested_logprobs_never_change_the_committed_message() {
     let plain = Arc::new(ScriptedModel::new(model("test/echo")).turn_text("hello"));
-    let baseline = fixture(plain, ToolRegistry::new(), PolicySet::default());
+    let baseline = fixture(plain, ToolRegistry::new(), HarnessConfig::default());
     let plain_session = baseline.engine.create().await.expect("create");
     let plain_outcome = baseline
         .engine
@@ -1704,7 +686,7 @@ async fn requested_logprobs_never_change_the_committed_message() {
                 StreamEvent::Finish(FinishReason::Stop),
             ]),
     );
-    let harness = fixture(scripted, ToolRegistry::new(), PolicySet::default());
+    let harness = fixture(scripted, ToolRegistry::new(), HarnessConfig::default());
     let session = harness.engine.create().await.expect("create");
     let outcome = harness
         .engine

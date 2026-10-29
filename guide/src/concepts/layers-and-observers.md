@@ -101,7 +101,7 @@ messages, and the provider decides what it honours.
 
 ## Knobs on the engine
 
-`HarnessConfig` holds the turn-level policy that is not a layer:
+`HarnessConfig` holds the turn-level settings that are not a layer:
 
 | Field | Default | What it does |
 | --- | --- | --- |
@@ -109,9 +109,7 @@ messages, and the provider decides what it honours.
 | `params` | `GenerationParams::default()` | Default generation parameters. |
 | `limits` | `StreamLimits::default()` | Bounds on buffered events and stream size. |
 | `inline_threshold` | 64 KiB | Above this, media goes to the `BlobStore`. |
-| `approval_ttl` | 10 minutes | How long a pending approval lives. |
 | `max_iterations` | 16 | Requests a single turn may spend before it errors. |
-| `auto_execute_tools` | `true` | Run allowed tool calls inside the turn. |
 | `early_tool_execution` | `false` | Start a tool as soon as its call is complete, before the message ends. |
 
 `max_iterations` is a chat turn's 16 by default. A coding agent reads, edits and

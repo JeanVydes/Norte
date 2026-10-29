@@ -30,7 +30,6 @@ fn session_commit(session_id: SessionId) -> Commit {
         head: None,
         phase: Phase::Idle,
         turn: 0,
-        grants: Vec::new(),
         metadata: None,
     }
 }
@@ -354,7 +353,6 @@ async fn concurrent_writers_commit_exactly_one() {
                     head: None,
                     phase: Phase::Idle,
                     turn: 1,
-                    grants: Vec::new(),
                     metadata: None,
                 })
                 .await

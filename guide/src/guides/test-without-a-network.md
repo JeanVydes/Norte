@@ -57,8 +57,8 @@ assert!(last.messages.iter().any(|m| m.text().contains("What does it export?")))
 ```
 
 `ModelRequest` is the fully assembled request — the messages, the tool
-declarations, the parameters. This is how you test a policy by its effect (the
-arguments that reached the wire), a layer, or a prompt change.
+declarations, the parameters. This is how you test a wrapper by its effect (the
+arguments that reached the wire), a layer, an interceptor, or a prompt change.
 
 ## Collect the events
 
@@ -87,7 +87,7 @@ async fn my_store_is_a_store() {
 ```
 
 `model_conformance(&model, &expected)` and `store_conformance(&store)` cover the
-contracts: the events a turn must emit, the commit rules, the approval ledger.
+contracts: the events a turn must emit and the commit rules.
 
 ## Fixtures and the fixtures helper
 

@@ -735,7 +735,6 @@ mod tests {
             kind: ToolKind::Function,
             parameters: serde_json::json!({ "type": "object" }),
             declaration: None,
-            approval: None,
         }];
         let body = build(&model(), &continuity(), &request).expect("build");
         assert_eq!(body["tools"][0]["type"], "function");
@@ -894,7 +893,6 @@ mod tests {
             kind: ToolKind::ProviderExecuted,
             parameters: serde_json::json!({ "type": "object" }),
             declaration: Some(serde_json::json!({ "type": "web_search" })),
-            approval: None,
         }];
         let body = build(&model(), &continuity(), &request).expect("build");
         assert_eq!(
@@ -912,7 +910,6 @@ mod tests {
             kind: ToolKind::ProviderExecuted,
             parameters: serde_json::json!({ "type": "object" }),
             declaration: None,
-            approval: None,
         }];
         let error = build(&model(), &continuity(), &request).expect_err("error");
         assert!(matches!(error, Error::Capability { .. }));

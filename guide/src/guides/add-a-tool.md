@@ -1,7 +1,7 @@
 # Add a tool
 
 You are going to add a tool the model can call, register it, gate it with a
-policy, and test it without a network.
+wrapper, and test it without a network.
 
 ## 1. Declare it
 
@@ -116,39 +116,34 @@ discriminator. This is not hypothetical: the `command` tool uses that shape, and
 model. The report's rejected-call count is the measurement; the guide does not
 promise a fixed number of extra requests.
 
-## 4. Gate it
+## 4. Confine it
 
-A tool that touches the world gets a policy:
+A tool that touches the world is wrapped, or the host checks the call in an
+interceptor. For one tool's own arguments a wrapper is smaller, because the
+arguments are already typed:
 
 ```rust,ignore
-use norte_harness::{Decision, Policy, PolicySet, PolicyView};
+use std::sync::Arc;
+use norte_core::{FnExecutor, Result, ToolDeclaration, ToolOutput};
 
-struct WordCountIsHarmless;
-
-impl Policy for WordCountIsHarmless {
-    fn name(&self) -> &'static str {
-        "word-count-is-harmless"
-    }
-
-    fn decide(&self, view: &PolicyView<'_>) -> Decision {
-        if view.call.name.as_str() == "word_count" && view.call.arguments["text"].as_str().is_none()
-        {
-            return Decision::Deny(
-                "`text` must be a string, for example {\"text\": \"the sky is blue\"}".to_owned(),
-            );
-        }
-        Decision::Allow
-    }
+struct OnlyThisDirectory {
+    inner: Arc<dyn FnExecutor<WordCountArgs, ToolOutput>>,
+    root: std::path::PathBuf,
 }
 
-let engine = HarnessBuilder::new()
-    // ..
-    .policies(PolicySet::new(vec![std::sync::Arc::new(WordCountIsHarmless)]))
-    .build()?;
+#[async_trait::async_trait]
+impl FnExecutor<WordCountArgs, ToolOutput> for OnlyThisDirectory {
+    async fn call(&self, mut args: WordCountArgs) -> Result<ToolOutput> {
+        args.path = self.root.join(&args.path);
+        self.inner.call(args).await
+    }
+}
 ```
 
-A `Deny` message is read by the model. Say what was wrong *and* what shape would
-be accepted, or the model will guess again — and every guess is a billed request.
+A refusal is a tool result the model reads, so say what was wrong *and* what shape
+would be accepted, or the model will guess again — and every guess is a billed
+request. See [Interceptors, and confining a
+tool](../concepts/interceptors.md).
 
 ## 5. Test it without a network
 

@@ -11,8 +11,11 @@ use norte_core::{
     Capabilities, Continuation, FnExecutor, Layer, LayerContext, Message, Modality, ModelId,
     ModelRef, ModelRequest, ModelStream, ProviderId, Result, ToolOutput, ToolRegistry, WireFamily,
 };
-use norte_harness::{Decision, InMemoryBlobStore, InMemoryStore, Policy, PolicySet, PolicyView};
 use norte_harness::{Harness, HarnessBuilder};
+use norte_harness::{
+    InMemoryBlobStore, InMemoryStore, Interception, InterceptionContext, InterceptorSet,
+    TurnInterceptor,
+};
 use norte_http::{AuthScheme, VendorProfile};
 use norte_openai::{OpenAiChat, WIRE_CHAT, presets::openai};
 use schemars::JsonSchema;
@@ -91,19 +94,14 @@ fn register_a_tool() -> Result<ToolRegistry> {
 
 struct WordCountIsHarmless;
 
-impl Policy for WordCountIsHarmless {
+#[async_trait]
+impl TurnInterceptor for WordCountIsHarmless {
     fn name(&self) -> &'static str {
         "word-count-is-harmless"
     }
 
-    fn decide(&self, view: &PolicyView<'_>) -> Decision {
-        if view.call.name.as_str() == "word_count" && view.call.arguments["text"].as_str().is_none()
-        {
-            return Decision::Deny(
-                "`text` must be a string, for example {\"text\": \"the sky is blue\"}".to_owned(),
-            );
-        }
-        Decision::Allow
+    async fn intercept(&self, _context: &InterceptionContext<'_>) -> Result<Interception> {
+        Ok(Interception::Continue)
     }
 }
 
@@ -135,7 +133,7 @@ fn the_guide_wiring_compiles() {
     let _ = getting_started_engine().expect("the quickstart wiring");
     let _ = compatible_endpoint().expect("the profile wiring");
     let _ = register_a_tool().expect("the tool registration");
-    let _ = PolicySet::new(vec![Arc::new(WordCountIsHarmless)]);
+    let _ = InterceptorSet::new(vec![Arc::new(WordCountIsHarmless)]);
     let _ = PinRoute;
     let _ = Message::system("You are a coding agent.");
 }

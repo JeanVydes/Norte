@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
-use crate::id::{ApprovalId, BlobId, GrantId, ModelRef, NodeId, ProviderId, SessionId, ToolName};
+use crate::id::{BlobId, ModelRef, NodeId, ProviderId, SessionId, ToolName};
 
 /// The crate's result type.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -196,22 +196,6 @@ pub enum Error {
         /// Why it is unavailable.
         reason: String,
     },
-
-    /// No approval record with that id.
-    #[error("approval not found: {0}")]
-    ApprovalNotFound(ApprovalId),
-
-    /// The approval's time to live elapsed before a decision was made.
-    #[error("approval expired: {0}")]
-    ApprovalExpired(ApprovalId),
-
-    /// A human denied the call.
-    #[error("approval denied: {0}")]
-    ApprovalDenied(String),
-
-    /// No grant with that id.
-    #[error("grant not found: {0}")]
-    GrantNotFound(GrantId),
 
     /// The model cannot serve something the request needs.
     #[error("capability mismatch: model {model} does not support {feature}")]

@@ -18,9 +18,9 @@ workflow for contributing.
   `Session` and `Commit` are here because a provider serialises them; the
   `BlobStore` port is here because `MediaAdapter` names it.
 - `norte-harness/` — one reference agent loop over those contracts: the `Harness`
-  walks a session forward a turn at a time, with the tool loop, approvals and
-  the session store. It is deliberately *a* harness and not *the* harness; a
-  host that wants a different turn policy depends on `norte-core` alone.
+  walks a session forward a turn at a time, with the tool loop, the interceptors
+  and the session store. It is deliberately *a* harness and not *the* harness; a
+  host that wants a different loop depends on `norte-core` alone.
 - `norte-http/` — shared HTTP transport, `VendorProfile`, auth schemes and
   `HttpMedia`.
 - `norte-openai/`, `norte-anthropic/`, `norte-gemini/` — the wire

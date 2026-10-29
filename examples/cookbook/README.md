@@ -10,7 +10,7 @@ The layout says which layer a recipe needs:
   `tools` never calls a model at all.
 - **`harness/`** holds the recipes that drive `norte-harness`, whose `Engine` walks
   a session forward a turn at a time. They are the ones that look like an agent:
-  a turn, a tool call, an approval, a policy.
+  a turn, a tool call, an interceptor.
 - **`media/`** holds the recipes about media: inline bytes, blobs, URLs and the
   vendor-file lifecycle.
 
@@ -23,7 +23,7 @@ own loop copies from the root and never sees the harness.
 OPENROUTER_API_KEY=sk-or-... \
 COOKBOOK_MODEL=deepseek/deepseek-v4.1-flash-1017 \
 COOKBOOK_ENDPOINT=https://openrouter.ai/api/v1 \
-cargo run -p norte-cookbook --example approval
+cargo run -p norte-cookbook --example agent
 ```
 
 The key comes from the environment; a local `.env` works with
@@ -56,9 +56,6 @@ no store.
 | `events` | Reading a turn's event stream |
 | `streaming` | Streaming live vs collecting with `finish()` |
 | `observer` | Observers and transforms: the side channel that cannot stall a turn |
-| `approval` | Human approval: park the turn, decide, resume |
-| `policy` | Denying and rewriting tool calls before they run |
-| `policy_context` | A policy that decides on what the request already did |
 | `agent` | An agent turn: the model edits a file through the host tools |
 | `export_import` | A byte-identical restore: the same request before and after a round trip |
 | `branching` | Rewind to an ancestor and branch: the shared prefix stays cached |

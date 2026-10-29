@@ -85,7 +85,6 @@ async fn a_branch_from_an_ancestor_reproduces_the_shared_prefix_byte_for_byte() 
             head: Some(branch_head),
             phase: Phase::Idle,
             turn: after_second.turn,
-            grants: after_second.grants.clone(),
             metadata: None,
         })
         .await

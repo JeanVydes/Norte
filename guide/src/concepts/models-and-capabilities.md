@@ -58,8 +58,7 @@ assert_eq!(reference.to_string(), "openrouter/deepseek/deepseek-v4.1-flash-1017"
 - `ModelRef` is the pair, `Display`ed as `provider/model`, and parses back from
   that form splitting on the first `/`.
 
-`ModelRef` appears in requests, in the `PolicyView` a policy sees, and in the
-history — but it is not a lookup key. Nothing in the engine resolves it to a
+`ModelRef` appears in requests and in the history — but it is not a lookup key. Nothing in the engine resolves it to a
 price, a context window or an endpoint. That is the wire adapter's business, and
 the host's declaration.
 
@@ -68,7 +67,7 @@ the host's declaration.
 `Arc<dyn Model>` is the only way the engine talks to a provider. A `Model` takes
 a `ModelRequest` and returns a `ModelStream` of `StreamEvent`s; the engine's
 accumulator turns that into `Part`s. Everything above this line — sessions,
-policies, durability, cost — is provider-independent.
+interceptors, durability, cost — is provider-independent.
 
 Two consequences worth knowing:
 

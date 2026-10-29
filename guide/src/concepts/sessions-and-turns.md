@@ -11,7 +11,6 @@ A `Session` is the durable unit. It carries:
 | `phase` | `Phase` — where the session currently is. |
 | `version` | `u64` — bumped by every commit; the optimistic-concurrency token. |
 | `turn` | `u64` — how many turns have run. |
-| `grants` | `Vec<Grant>` — live tool approvals. |
 | `metadata` | Free-form `BTreeMap<String, Value>` for the host (observer names land here, for instance). |
 | `created_at` / `updated_at` | `DateTime<Utc>`. |
 
@@ -24,11 +23,10 @@ holds it:
 | --- | --- |
 | `Idle` | Nothing in flight. The only phase in which `append_history` is allowed. |
 | `Streaming` | A turn is being produced right now. |
-| `AwaitingTool` | The model asked for a tool and a grant authorises it; the engine is about to run it. |
-| `AwaitingApproval` | The model asked for a tool and a policy said a human has to say yes. The turn is parked here and the process may end. |
+| `AwaitingTool` | The model asked for a tool the engine is about to run. |
 
-`Phase::is_blocked()` is true for the two waiting phases, which is how a worker
-knows a session it picked up needs a decision rather than a new turn.
+`Phase::is_blocked()` is true for `AwaitingTool`, which is how a worker knows a
+session it picked up has calls to run rather than a new turn to start.
 
 ## A turn
 
@@ -48,7 +46,7 @@ let mut stream = engine
 `engine.send(session, message)` is the shorthand for
 `turn(session).input(message).start()`, and `engine.resume(session)` is
 `turn(session).start()` with no input — used to continue a session that was
-parked at `AwaitingApproval` or interrupted mid-loop.
+interrupted mid-loop or that still owes its tool calls.
 
 ### The turn builder
 
@@ -89,8 +87,7 @@ What a commit writes:
 
 - a new `NodeId` whose parent is the current `head`;
 - the messages produced in the turn (assistant text, tool calls, tool results);
-- the new phase, version and turn counter;
-- any `ApprovalRecord` the turn created.
+- the new phase, version and turn counter.
 
 `InMemoryStore` implements all of this. `CommitSucceeded { session, version }` and
 `CommitConflict { session, expected, actual }` are the events to watch.
@@ -100,8 +97,7 @@ What a commit writes:
 A host that wants to correct an agent mid-loop registers a **turn
 interceptor**. The engine consults it before the turn's input, before every
 model request and before the turn ends, and commits what it returns, so the
-message lands in the history, in the request digest and in what the policies
-read.
+message lands in the history and in the request digest.
 
 ```rust
 #[async_trait::async_trait]
@@ -121,10 +117,7 @@ impl TurnInterceptor for Steer {
 }
 ```
 
-The engine consults it before the turn's input, before every model request and
-before the turn ends, and commits what it returns, so the message lands in the
-history, in the request digest and in what the policies read. The consultation
-points are safe ones: the message arrives before the turn's input or after the
+The consultation points are safe ones: the message arrives before the turn's input or after the
 tool results of the previous step, never between a tool call and its result.
 
 Because the turn asks the host before it ends, a message the host was holding
@@ -135,8 +128,7 @@ conversation itself: the call the model asked for, the tool that answered it,
 the instruction the human gave.
 
 A layer is not a substitute. A layer wraps the model call and sees the request
-after it was built, so what it adds is neither durable nor visible to the
-policies.
+after it was built, so what it adds is neither durable nor part of the history.
 
 ## Nothing here is provider-specific
 

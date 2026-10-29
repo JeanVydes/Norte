@@ -5,7 +5,7 @@ first-class provider SDKs, and a streaming, durable engine.
 
 Nothing in your application names a vendor, and no model catalogue is baked in:
 you declare what your models can do, and the engine does the rest — every call
-under a policy you write, every turn in a history you can audit.
+under rules you write, every turn in a history you can audit.
 
 ## The mental model
 
@@ -23,9 +23,9 @@ Five ideas hold the whole library together.
   neutral model has no field for, token counters, cache markers — kept verbatim
   and replayed unchanged, so a session can be exported and re-imported
   byte-for-byte and its provider cache prefix survives.
-- **The host decides what a tool may do.** Policies see every tool call before it
-  runs and can allow it, deny it, transform its arguments or require a human.
-  The engine never executes a call a policy refused.
+- **The host decides what a tool may do.** A tool's declaration is the host's, so
+  a wrapper around it decides what a call may attempt, and an interceptor decides
+  what the conversation may do next. The engine runs the calls the host gave it.
 - **The engine never prices anything.** `Usage` carries the counters a provider
   reported and, verbatim, whatever else its payload carried — including a price,
   if it reported one. A rate table is not something this library maintains.
@@ -36,8 +36,8 @@ Five ideas hold the whole library together.
   prices in the repository: capabilities are declared by the host, and anything a
   wire reports that the neutral model has no field for is kept, not interpreted.
 - Not an agent framework. There is no built-in ReAct loop, no planner and no
-  prompt library. What the engine gives you is a durable, streaming, policied
-  turn; the loop around it is your code.
+  prompt library. What the engine gives you is a durable, streaming turn with
+  tools, steering and cost visibility; the loop around it is your code.
 - Not tied to a cloud. Persistence is two traits — `Store` and `BlobStore` — with
   in-memory implementations that are ready to use and nothing else.
 
@@ -50,9 +50,9 @@ Five ideas hold the whole library together.
   `BlobStore` you implement, so workers share a session with optimistic
   concurrency instead of a coordinator, and one that dies mid-turn leaves the
   session at its last commit.
-- **Governed and auditable.** Every tool call passes a policy, every approval is a
-  record bound to its arguments, and every turn is one commit carrying the model,
-  the token counters and the cost the provider reported.
+- **Auditable.** Every turn is one commit carrying the model that answered, the
+  token counters and the cost the provider reported, and every tool call is an
+  event a host can observe.
 - **Data stays where you put it.** No telemetry and no call home: the only network
   traffic is to the endpoint you configure, and secrets are redacted from tool
   output before it is stored or replayed.

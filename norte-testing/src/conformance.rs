@@ -1,11 +1,8 @@
-use chrono::Duration;
-
 use norte_core::{
-    CallId, ContinuityFragment, ContinuityScope, ContinuitySemantics, Error, Message, Model,
-    ModelRef, NodeId, ReplayDecision, SessionId, ToolName,
+    ContinuityFragment, ContinuityScope, ContinuitySemantics, Error, Message, Model, ModelRef,
+    NodeId, ReplayDecision, SessionId,
 };
-use norte_harness::{ApprovalRecord, Store};
-use norte_harness::{Commit, Node, Phase};
+use norte_harness::{Commit, Node, Phase, Store};
 
 /// Runs the [`Model`] contract every adapter must satisfy (FR-TEST-1).
 ///
@@ -102,7 +99,6 @@ pub async fn store_conformance(store: &dyn Store) {
             head: Some(assistant.id),
             phase: Phase::Idle,
             turn: 1,
-            grants: Vec::new(),
             metadata: None,
         })
         .await
@@ -132,7 +128,6 @@ pub async fn store_conformance(store: &dyn Store) {
             head: None,
             phase: Phase::Idle,
             turn: 1,
-            grants: Vec::new(),
             metadata: None,
         })
         .await
@@ -149,27 +144,6 @@ pub async fn store_conformance(store: &dyn Store) {
         Err(Error::NodeNotFound(_)) => {}
         other => panic!("missing node must be a typed error, got {other:?}"),
     }
-
-    let record = ApprovalRecord::new(
-        session_id,
-        CallId::new(),
-        ToolName::new("read_file").expect("tool name"),
-        &serde_json::json!({ "path": "/tmp/a" }),
-        Duration::minutes(5),
-    );
-    store
-        .save_approval(record.clone())
-        .await
-        .expect("save approval");
-    let fetched = store
-        .approval(record.id)
-        .await
-        .expect("load approval")
-        .expect("approval exists");
-    assert_eq!(fetched, record);
-    let pending = store.approvals(session_id).await.expect("approvals");
-    assert_eq!(pending.len(), 1);
-    assert_eq!(pending[0].id, record.id);
 }
 
 fn create_commit(session_id: SessionId) -> Commit {
@@ -180,7 +154,6 @@ fn create_commit(session_id: SessionId) -> Commit {
         head: None,
         phase: Phase::Idle,
         turn: 0,
-        grants: Vec::new(),
         metadata: None,
     }
 }

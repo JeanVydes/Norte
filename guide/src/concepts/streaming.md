@@ -84,8 +84,6 @@ subscribes to:
 | `PartCompleted { session, turn, part }` | A part the wire closed explicitly. |
 | `ToolCallStarted { session, turn, call_id, tool }` | A tool call is about to run. |
 | `ToolCallFinished { session, turn, call_id, tool, is_error, duration_ms }` | It ran. |
-| `ApprovalRequested { session, approval, call_id, tool }` | A policy asked for a human. |
-| `ApprovalGranted { session, approval }` / `ApprovalRevoked { session, approval, grant }` | A decision was recorded. |
 | `HistoryAppended { session, messages }` | Messages were appended. |
 | `CommitSucceeded { session, version }` | The turn committed. |
 | `CommitConflict { session, expected, actual }` | Someone else committed first. |

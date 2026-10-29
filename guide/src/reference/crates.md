@@ -7,7 +7,7 @@ outside the published set — an examples crate, benchmarks and a facade check.
 | --- | --- | --- |
 | `norte` | every crate below | The entrypoint. Re-exports `norte-core` at the root (`norte::Harness` lives in `norte::harness`) and every other crate as a module of its own name, each behind a feature, plus the merged `presets` and a `prelude`. It adds no behaviour of its own. |
 | `norte-core` | nothing internal | What a provider sees: `Message`, `Part`, `Role`, `Usage`, the `ModelRequest` and its `StreamEvent`s, and the contracts an adapter implements (`Model`, `BlobStore`, `MediaAdapter`, `Layer`, `Observer`, `ContinuityAdapter`). **It knows a list of messages; it does not know a graph.** |
-| `norte-harness` | core | The runtime: `Harness` walks a session forward a turn at a time — the tool loop, approvals, policies, the store it commits through, and the branch graph (`Session`, `Commit`, `Node`, `Conversation`) that only exists because something walks it. |
+| `norte-harness` | core | The runtime: `Harness` walks a session forward a turn at a time — the tool loop, the interceptors, the store it commits through, and the branch graph (`Session`, `Commit`, `Node`, `Conversation`) that only exists because something walks it. |
 | `norte-http` | core | Shared HTTP transport, `VendorProfile`, auth schemes, secrets, quirks, SSE decoding, `HttpMedia`. |
 | `norte-openai` | core, http | The `Responses` and `Chat Completions` wires, `OpenAiMedia`, presets. |
 | `norte-anthropic` | core, http | The `Messages` wire, media, presets. |

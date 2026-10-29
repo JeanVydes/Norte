@@ -83,8 +83,8 @@ library on purpose.
 
 ## Is there a built-in agent loop / planner?
 
-No. The engine gives you a durable, streaming, policied turn with tools,
-approval, cache awareness and cost visibility. The loop around it — when to call
+No. The engine gives you a durable, streaming turn with tools, steering, cache
+awareness and cost visibility. The loop around it — when to call
 the model again, what to tell it, when to stop — is application code. The `agent`
 recipe in `examples/cookbook` and `benchmarks/agent-cost` are two small loops built
 on top of it.

@@ -228,8 +228,7 @@ impl Debug for ToolContext {
 /// The fields are the call the executor is about to receive: the session and
 /// turn it belongs to, the call id, the tool and the arguments after any policy
 /// transform. The provider is consulted immediately before execution, so a call
-/// that resumes after an approval park is filled exactly like one that ran
-/// inline (FR-TOOL-7).
+/// inline.
 #[derive(Clone, Debug)]
 pub struct ToolCallInfo {
     /// The session the call belongs to.
@@ -544,9 +543,6 @@ pub struct ToolSpec {
     /// 12). [`Option::None`] for a host-executed function tool.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub declaration: Option<Value>,
-    /// The approval prompt the host attaches to the call, where it attaches one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub approval: Option<String>,
 }
 
 impl ToolSpec {
@@ -600,8 +596,6 @@ where
     pub parameters: Schema,
     /// The code that runs.
     pub executor: Arc<dyn FnExecutor<A, R>>,
-    /// The approval prompt the host attaches to a call, where it attaches one.
-    pub approval: Option<String>,
 }
 
 impl<A, R> FunctionDeclaration<A, R>
@@ -622,15 +616,7 @@ where
             description,
             parameters: schemars::schema_for!(A),
             executor,
-            approval: None,
         }
-    }
-
-    /// Attaches an approval prompt to the tool.
-    #[must_use]
-    pub fn with_approval(mut self, approval: impl Into<String>) -> Self {
-        self.approval = Some(approval.into());
-        self
     }
 }
 
@@ -643,7 +629,6 @@ where
         f.debug_struct("FunctionDeclaration")
             .field("name", &self.name)
             .field("description", &self.description)
-            .field("approval", &self.approval)
             .finish_non_exhaustive()
     }
 }
@@ -666,8 +651,6 @@ where
     pub parameters: Schema,
     /// The code that runs.
     pub executor: Arc<dyn FnExecutor<A, ToolOutput>>,
-    /// The approval prompt the host attaches to a call, where it attaches one.
-    pub approval: Option<String>,
 }
 
 impl<A> ToolDeclaration<A>
@@ -687,15 +670,7 @@ where
             description,
             parameters: schemars::schema_for!(A),
             executor,
-            approval: None,
         }
-    }
-
-    /// Attaches an approval prompt to the tool.
-    #[must_use]
-    pub fn with_approval(mut self, approval: impl Into<String>) -> Self {
-        self.approval = Some(approval.into());
-        self
     }
 }
 
@@ -707,7 +682,6 @@ where
         f.debug_struct("ToolDeclaration")
             .field("name", &self.name)
             .field("description", &self.description)
-            .field("approval", &self.approval)
             .finish_non_exhaustive()
     }
 }
@@ -728,11 +702,6 @@ pub trait AnyFunction: Send + Sync + Debug {
     /// How the tool reaches the model.
     fn kind(&self) -> ToolKind {
         ToolKind::Function
-    }
-
-    /// The approval prompt the host attaches to a call, where it attaches one.
-    fn approval(&self) -> Option<&str> {
-        None
     }
 
     /// The provider-side declaration of a tool this host does not execute (a
@@ -763,7 +732,6 @@ pub trait AnyFunction: Send + Sync + Debug {
             kind: self.kind(),
             parameters: inline_schema(self.parameters_schema())?,
             declaration: self.declaration(),
-            approval: self.approval().map(str::to_owned),
         })
     }
 }
@@ -784,10 +752,6 @@ where
 
     fn parameters_schema(&self) -> &Schema {
         &self.parameters
-    }
-
-    fn approval(&self) -> Option<&str> {
-        self.approval.as_deref()
     }
 
     async fn execute(&self, context: &ToolContext, arguments: &Value) -> Result<ToolOutput> {
@@ -828,10 +792,6 @@ where
 
     fn parameters_schema(&self) -> &Schema {
         &self.parameters
-    }
-
-    fn approval(&self) -> Option<&str> {
-        self.approval.as_deref()
     }
 
     async fn execute(&self, context: &ToolContext, arguments: &Value) -> Result<ToolOutput> {

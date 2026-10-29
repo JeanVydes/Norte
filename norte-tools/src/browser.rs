@@ -1639,7 +1639,7 @@ mod tests {
         // Zero is how a call that only wants the page's URL and title avoids
         // paying for the DOM at all. It is not "no limit": that is the default.
         let (none, hidden) = bound_elements(page, Some(0), None, &limits);
-        assert!(none.is_empty());
+        assert_eq!(none.len(), 0);
         assert_eq!(hidden, 10);
     }
 
@@ -1825,7 +1825,7 @@ mod tests {
 
         // And for none gets none, which is the one thing it may do below the cap.
         let (kept, hidden) = bound_elements(page, Some(0), None, &limits);
-        assert!(kept.is_empty());
+        assert_eq!(kept.len(), 0);
         assert_eq!(hidden, 1200);
     }
 

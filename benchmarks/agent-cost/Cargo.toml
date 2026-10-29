@@ -12,7 +12,9 @@ norte-core = { workspace = true }
 norte-harness = { workspace = true }
 norte-bench-support = { workspace = true }
 norte-tools = { workspace = true }
+async-trait = { workspace = true }
 chrono = { workspace = true }
+serde = { workspace = true }
 futures-util = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }

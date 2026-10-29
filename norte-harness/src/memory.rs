@@ -14,19 +14,17 @@ use std::collections::HashMap;
 
 use tokio::sync::RwLock;
 
-use crate::approval::ApprovalRecord;
 use crate::domain::commit::Commit;
 use crate::domain::node::Node;
 use crate::domain::session::Session;
 use crate::store::Store;
-use norte_core::{ApprovalId, Error, NodeId, Result, SessionId};
+use norte_core::{Error, NodeId, Result, SessionId};
 
 #[derive(Default)]
 struct Tables {
     sessions: HashMap<SessionId, Session>,
     nodes: HashMap<NodeId, Node>,
     children: HashMap<NodeId, Vec<NodeId>>,
-    approvals: HashMap<ApprovalId, ApprovalRecord>,
 }
 
 /// A complete in-memory [`Store`].
@@ -152,33 +150,6 @@ impl Store for InMemoryStore {
             .cloned()
             .unwrap_or_default())
     }
-
-    async fn save_approval(&self, record: ApprovalRecord) -> Result<()> {
-        self.tables
-            .write()
-            .await
-            .approvals
-            .insert(record.id, record);
-        Ok(())
-    }
-
-    async fn approval(&self, id: ApprovalId) -> Result<Option<ApprovalRecord>> {
-        Ok(self.tables.read().await.approvals.get(&id).cloned())
-    }
-
-    async fn approvals(&self, session: SessionId) -> Result<Vec<ApprovalRecord>> {
-        let mut records: Vec<ApprovalRecord> = self
-            .tables
-            .read()
-            .await
-            .approvals
-            .values()
-            .filter(|record| record.session == session)
-            .cloned()
-            .collect();
-        records.sort_by_key(|record| record.requested_at);
-        Ok(records)
-    }
 }
 
 #[cfg(test)]
@@ -194,7 +165,6 @@ mod tests {
             head: None,
             phase: Phase::Idle,
             turn: 0,
-            grants: Vec::new(),
             metadata: None,
         }
     }

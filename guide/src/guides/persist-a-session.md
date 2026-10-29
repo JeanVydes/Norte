@@ -13,9 +13,6 @@ impl Store for MyStore {
     async fn node(&self, node: NodeId) -> Result<Node> { /* .. */ }
     async fn ancestors(&self, node: NodeId) -> Result<Vec<NodeId>> { /* .. */ }
     async fn children(&self, node: NodeId) -> Result<Vec<NodeId>> { /* .. */ }
-    async fn save_approval(&self, record: ApprovalRecord) -> Result<()> { /* .. */ }
-    async fn approval(&self, id: ApprovalId) -> Result<Option<ApprovalRecord>> { /* .. */ }
-    async fn approvals(&self, session: SessionId) -> Result<Vec<ApprovalRecord>> { /* .. */ }
 }
 ```
 
@@ -28,9 +25,8 @@ it unless you have a better index.
 was built from. If the stored session is at a different version, fail — do not
 merge, do not overwrite. That single rule is what makes concurrent workers safe.
 
-**One commit, one transaction.** The commit's messages, phase, version, head and
-any new `ApprovalRecord` land together or not at all. A half-applied turn is a
-corrupted session.
+**One commit, one transaction.** The commit's messages, phase, version and head
+land together or not at all. A half-applied turn is a corrupted session.
 
 **A node has a parent.** The tree is what makes branching possible: a commit
 names the `NodeId` it continues from. Rewinding is a new commit whose parent is an
@@ -44,7 +40,6 @@ binary data belongs and keep the id in the part.
 | Piece | Fits |
 | --- | --- |
 | Sessions, nodes, messages | A relational table per column, or one JSON document per node. |
-| Approvals | The same database: they are read together with the session. |
 | Media, large tool output | `BlobStore`: a filesystem, S3, or a `BYTEA` table. |
 
 Two indexes earn their keep immediately: `(session, version)` for the CAS check
@@ -78,11 +73,9 @@ flight. To continue where it stopped:
 let session = engine.session(session_id).await?;
 match session.phase {
     Phase::Idle => { /* start a new turn */ }
-    Phase::AwaitingApproval => { /* show the pending approvals, decide, resume */ }
     Phase::Streaming | Phase::AwaitingTool => { /* resumable: engine.resume(id) */ }
 }
 ```
 
-`engine.pending_approvals(id)` returns the live ones; `engine.resume(id)` continues
-the turn. A parked approval survives the process that created it, because the
-record lives in the `Store`.
+`engine.resume(id)` continues the turn. The session is durable at every commit, so
+what a restart interrupted is exactly what the phase says it is.

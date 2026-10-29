@@ -1,13 +1,12 @@
 //! Property tests for the invariants the requirements ledger pins (FR-TEST-3): continuity merge,
-//! graph commits, policy evaluation, reconstruction determinism / prefix
-//! stability (FR-RECON-1, FR-RECON-2, FR-RECON-11) and lossless, byte-stable
-//! conversation export/import (FR-EXP-2).
+//! graph commits, reconstruction determinism / prefix stability (FR-RECON-1,
+//! FR-RECON-2, FR-RECON-11) and lossless, byte-stable conversation
+//! export/import (FR-EXP-2).
 //!
 //! The generator is a small deterministic LCG so failures reproduce exactly and
 //! the suite needs no extra dependency.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use norte_anthropic::{AnthropicContinuity, WIRE_MESSAGES};
 use norte_core::{
@@ -16,7 +15,7 @@ use norte_core::{
 };
 use norte_gemini::{GeminiContinuity, WIRE_GENERATE};
 use norte_harness::Conversation;
-use norte_harness::{Decision, PolicyDecision, PolicyOutcome, Store, combine};
+use norte_harness::Store;
 use norte_harness::{Harness, HarnessBuilder};
 use norte_openai::{OpenAiContinuity, WIRE_RESPONSES};
 use norte_testing::{InMemoryBlobStore, InMemoryStore, ScriptedModel, model, model_conformance};
@@ -177,40 +176,6 @@ fn a_foreign_fragment_is_a_typed_error() {
         adapter.merge(None, foreign),
         Err(norte_core::Error::Codec(_))
     ));
-}
-
-#[test]
-fn policy_combine_is_deterministic_and_deny_dominant() {
-    let mut rng = Rng::new(3);
-    for _ in 0..128 {
-        let decisions: Vec<PolicyDecision> = (0..=rng.bounded(6))
-            .map(|index| PolicyDecision {
-                policy: format!("p{index}"),
-                decision: match rng.next() % 5 {
-                    0 => Decision::Allow,
-                    1 => Decision::Deny("no".to_owned()),
-                    2 => Decision::RequireApproval("ask".to_owned()),
-                    3 => Decision::Transform(serde_json::json!({ "n": rng.next() })),
-                    _ => Decision::RateLimit(Duration::from_millis(rng.next() % 1000)),
-                },
-            })
-            .collect();
-
-        let outcome = combine(&decisions);
-        assert_eq!(outcome, combine(&decisions));
-
-        let denied = decisions
-            .iter()
-            .any(|decision| matches!(decision.decision, Decision::Deny(_)));
-        assert_eq!(matches!(outcome, PolicyOutcome::Deny { .. }), denied);
-
-        let mut with_trailing_allow = decisions.clone();
-        with_trailing_allow.push(PolicyDecision {
-            policy: "tail".to_owned(),
-            decision: Decision::Allow,
-        });
-        assert_eq!(combine(&with_trailing_allow), outcome);
-    }
 }
 
 fn digest_of(request: &ModelRequest) -> Digest {

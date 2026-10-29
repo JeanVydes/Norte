@@ -71,11 +71,10 @@ use norte_bench_support::{
 };
 use norte_core::{
     Capabilities, Digest, FnExecutor, Message, Modality, Role, SessionId, StreamingGranularity,
-    ToolKind, ToolName, ToolRegistry, TurnOptions, Usage,
+    ToolKind, ToolRegistry, TurnOptions, Usage,
 };
-use norte_harness::GrantScope;
+use norte_harness::InMemoryStore;
 use norte_harness::{Harness, HarnessBuilder, InMemoryBlobStore};
-use norte_harness::{InMemoryStore, PolicySet, ToolApprovalPolicy};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -304,12 +303,6 @@ async fn after_approval(
         .collect(engine, session, seen, "3. approval", "the turn that parks")
         .await?;
     println!("phase: {:?}", outcome.session.phase);
-    for record in engine.pending_approvals(session).await? {
-        println!("waiting on {} (approval {})", record.tool, record.id);
-        engine
-            .approve(record.id, GrantScope::Call(record.call_id), "operator")
-            .await?;
-    }
 
     let started = Instant::now();
     let _ = engine.resume(session).finish().await?;
@@ -975,11 +968,6 @@ fn new_engine(route: &Route) -> Result<(Harness, Captured), Box<dyn Error>> {
     let mut tools = ToolRegistry::new();
     tools.register_declarator(&WordCount)?;
     tools.register_declarator(&Deploy)?;
-    let policies = PolicySet::new(vec![Arc::new(ToolApprovalPolicy::new(
-        "human",
-        vec![ToolName::new("deploy")?],
-        "deploying touches production",
-    ))]);
     let captured = new_capture();
     let model = RecordingOpenAi::new(
         route.openai(tool_capabilities())?,
@@ -991,7 +979,6 @@ fn new_engine(route: &Route) -> Result<(Harness, Captured), Box<dyn Error>> {
         .blobs(Arc::new(InMemoryBlobStore::new()))
         .model(Arc::new(model))
         .tools(tools)
-        .policies(policies)
         .build()?;
     Ok((engine, captured))
 }

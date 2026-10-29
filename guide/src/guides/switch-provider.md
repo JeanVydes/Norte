@@ -73,7 +73,7 @@ Its schema tracks the neutral model and is versioned with it.
 
 | Changes | Does not change |
 | --- | --- |
-| The `Arc<dyn Model>` the builder is given. | Your session code, your store, your policies, your tools. |
+| The `Arc<dyn Model>` the builder is given. | Your session code, your store, your interceptors, your tools. |
 | `ModelRef` recorded in new commits. | The history already committed: it replays as history. |
 | The wire's quirks, handled by the adapter. | `Part`s, `Usage`, `EngineEvent`s — the neutral vocabulary. |
 | The route a router picks, if you use one. | Anything above `Model`. |

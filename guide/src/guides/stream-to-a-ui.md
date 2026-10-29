@@ -28,7 +28,6 @@ while let Some(event) = stream.next().await {
         EngineEvent::ToolCallFinished { tool, is_error, duration_ms, .. } => {
             ui.tool_finished(&tool, is_error, duration_ms);
         }
-        EngineEvent::ApprovalRequested { approval, tool, .. } => ui.ask_human(approval, &tool),
         EngineEvent::RequestReconstructed { digest, tools, cache_boundaries, .. } => {
             ui.new_iteration(digest, tools.len(), cache_boundaries.len());
             // Everything settled is in history now — this is the moment to read it.

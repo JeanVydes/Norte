@@ -2,8 +2,8 @@
 
 A tool is a name, a description, a JSON Schema and something that runs when the
 model calls it. The engine does not know what a tool *means*: it shows the
-declaration to the model, and when the model calls it, it asks the policies, runs
-the executor, and commits the result as a `ToolResultPart`.
+declaration to the model, and when the model calls it, it runs the executor and
+commits the result as a `ToolResultPart`.
 
 ## The registry
 
@@ -75,8 +75,7 @@ let declaration = ToolDeclaration::new(
 );
 ```
 
-`FunctionDeclaration::new(..)` is the same for a typed return, and both have
-`.with_approval(reason)` to mark the tool as one a human must approve by default.
+`FunctionDeclaration::new(..)` is the same for a typed return.
 
 **`declare_function!` / `declare_tool!`** are the macro forms over an existing
 `async fn`, when the function signature already describes the schema.
@@ -130,8 +129,9 @@ of them — a test in this repository fails if one reaches the wire.
   `allow_indefinite`, which is what grants a `timeout_ms` of zero.
 
 A `shell` request runs any script. **Authorizing it is the host's job.** The
-executor will run what it is given; the policy is what decides whether `cargo`
-yes and `rm` no. See [Policies and approval](policies-and-approval.md).
+executor will run what it is given; what decides whether `cargo` is yes and `rm`
+no is the host, by wrapping the declaration or checking the call in an
+interceptor. See [Interceptors, and confining a tool](interceptors.md).
 
 A detached call is reported as `ShellCode::Detached` and the process keeps
 running; the host is what holds it from then on. It is not unbounded because it
@@ -183,14 +183,11 @@ let engine = HarnessBuilder::new()
     .build()?;
 ```
 
-The provider is consulted immediately before each execution — the first attempt
-and one that resumes a call parked on an approval alike — and receives
-`ToolCallInfo`: the session, turn, call id, the tool and the arguments after any
-policy transform. Because the value is derived per call, nothing about it is
-persisted: it never enters the graph, the wire or an export, so a conversation
-resumed on another host runs its tools against *that* host's data instead of a
-stale copy — and a parked call gets the context that was true when it finally
-ran, not when it was queued.
+The provider is consulted immediately before each execution and receives
+`ToolCallInfo`: the session, turn, call id, the tool and the arguments the call
+carries. Because the value is derived per call, nothing about it is persisted: it
+never enters the graph, the wire or an export, so a conversation resumed on
+another host runs its tools against *that* host's data instead of a stale copy.
 
 An executor reads it as `context.metadata`; with no provider configured the
 engine supplies an empty map, so a tool that reads context works unchanged where

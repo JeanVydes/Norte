@@ -4,14 +4,14 @@
 //! to the registry's executor, the result is committed as a tool message, and
 //! the model is asked again — until it answers without calling anything. The
 //! host here only wires the pieces: the three file executors from
-//! `norte-tools`, a policy that decides where a path may land, and the
-//! model.
+//! `norte-tools`, wrapped so a path may only land in the scratch directory, and
+//! the model.
 //!
-//! The policy re-roots the relative paths the prompt names into a scratch
+//! The wrapper re-roots the relative paths the prompt names into a scratch
 //! directory and refuses anything that tries to leave it. That is a *host*
 //! decision about what may be attempted — the executors write where they are
-//! told and confine nothing (FR-POL-1) — which is why the directory is printed
-//! afterwards: the file on disk is the evidence, not the model's word.
+//! told and confine nothing — which is why the directory is printed afterwards:
+//! the file on disk is the evidence, not the model's word.
 //!
 //! ```sh
 //! OPENROUTER_API_KEY=sk-or-... cargo run -p norte-cookbook --example agent
@@ -24,18 +24,16 @@ use std::error::Error;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use norte_core::{
-    Capabilities, Message, Modality, ModelRef, StreamingGranularity, ToolKind, ToolRegistry,
+    Capabilities, FnExecutor, Message, Modality, ModelRef, Result as NorteResult,
+    StreamingGranularity, ToolArgs, ToolDeclaration, ToolKind, ToolOutput, ToolRegistry,
     ToolResultPart, WireFamily,
 };
-use norte_harness::{
-    Decision, Harness, HarnessBuilder, InMemoryBlobStore, InMemoryStore, Policy, PolicySet,
-    PolicyView,
-};
+use norte_harness::{Harness, HarnessBuilder, InMemoryBlobStore, InMemoryStore};
 use norte_http::{AuthScheme, VendorProfile};
 use norte_openai::{OpenAiChat, WIRE_CHAT};
-use norte_tools::{EditTool, ReadTool, WriteTool};
-use serde_json::Value;
+use norte_tools::{EditRequest, EditTool, ReadRequest, ReadTool, WriteRequest, WriteTool};
 
 const SYSTEM: &str = "\
 You are a coding agent working in a scratch directory. Use the tools, do not \
@@ -116,68 +114,79 @@ fn answer(message: Option<&Message>) -> String {
     message.map(Message::text).unwrap_or_default()
 }
 
-/// Re-roots a relative path the model names into `root`, leaving everything
-/// else in the call alone: a `Transform` replaces the arguments object, so the
-/// fields the tool needs are copied over rather than rebuilt (FR-POL-2).
-struct IntoSandbox {
+/// A file request with a path the host may re-root.
+trait Pathed {
+    /// The path the call names.
+    fn path_mut(&mut self) -> &mut PathBuf;
+}
+
+impl Pathed for ReadRequest {
+    fn path_mut(&mut self) -> &mut PathBuf {
+        &mut self.path
+    }
+}
+
+impl Pathed for WriteRequest {
+    fn path_mut(&mut self) -> &mut PathBuf {
+        &mut self.path
+    }
+}
+
+impl Pathed for EditRequest {
+    fn path_mut(&mut self) -> &mut PathBuf {
+        &mut self.path
+    }
+}
+
+/// A file executor that lands every path it is given under `root`.
+///
+/// The host confines a path where the path is read, not in a rule the engine
+/// evaluates before the call: the argument is typed here, which is where a
+/// rejection can say which field it was about, and what comes back is a tool
+/// result the model reads like any other. The engine's own seam for a host
+/// decision — the interceptor — sees the conversation, not one tool's
+/// arguments, so a per-call rule belongs to the call.
+struct Sandboxed<A> {
+    inner: Arc<dyn FnExecutor<A, ToolOutput>>,
     root: PathBuf,
 }
 
-impl Policy for IntoSandbox {
-    fn name(&self) -> &'static str {
-        "into-sandbox"
-    }
-
-    fn decide(&self, view: &PolicyView<'_>) -> Decision {
-        let Some(path) = path_of(view) else {
-            return Decision::Allow;
-        };
+#[async_trait]
+impl<A> FnExecutor<A, ToolOutput> for Sandboxed<A>
+where
+    A: Pathed + ToolArgs,
+{
+    async fn call(&self, mut args: A) -> NorteResult<ToolOutput> {
+        let path = args.path_mut();
         if escapes(path) {
-            // The next policy refuses it; re-rooting an absolute path would
-            // silently accept an escape by rewriting it into a different file.
-            return Decision::Allow;
-        }
-        let mut arguments = view.call.arguments.clone();
-        let Some(object) = arguments.as_object_mut() else {
-            return Decision::Allow;
-        };
-        let landed = self.root.join(path);
-        object.insert(
-            "path".to_owned(),
-            Value::String(landed.to_string_lossy().into_owned()),
-        );
-        Decision::Transform(arguments)
-    }
-}
-
-/// Refuses a path that tries to leave the scratch directory.
-struct StayInside {
-    root: PathBuf,
-}
-
-impl Policy for StayInside {
-    fn name(&self) -> &'static str {
-        "stay-inside"
-    }
-
-    fn decide(&self, view: &PolicyView<'_>) -> Decision {
-        match path_of(view) {
-            Some(path) if escapes(path) => Decision::Deny(format!(
-                "{path} is outside {}; every path is relative and lands in the scratch directory",
+            return Err(norte_core::Error::InvalidInput(format!(
+                "{} is outside {}; every path is relative and lands in the scratch directory",
+                path.display(),
                 self.root.display()
-            )),
-            _ => Decision::Allow,
+            )));
         }
+        *path = self.root.join(&*path);
+        self.inner.call(args).await
     }
 }
 
-/// The `path` argument of every file call, whatever else the call carries.
-fn path_of<'b>(view: &PolicyView<'b>) -> Option<&'b str> {
-    view.call.arguments.get("path").and_then(Value::as_str)
+/// The same declaration, with its paths confined to `root`.
+fn sandbox<A>(declaration: ToolDeclaration<A>, root: &Path) -> ToolDeclaration<A>
+where
+    A: Pathed + ToolArgs + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+{
+    ToolDeclaration {
+        name: declaration.name,
+        description: declaration.description,
+        parameters: declaration.parameters,
+        executor: Arc::new(Sandboxed {
+            inner: declaration.executor,
+            root: root.to_path_buf(),
+        }),
+    }
 }
 
-fn escapes(path: &str) -> bool {
-    let path = Path::new(path);
+fn escapes(path: &Path) -> bool {
     path.is_absolute()
         || path
             .components()
@@ -192,22 +201,12 @@ fn scratch() -> Result<PathBuf, Box<dyn Error>> {
     Ok(root)
 }
 
-/// The wiring: the three file executors, the policy that decides their paths,
-/// and the model.
+/// The wiring: the three file executors, confined to `root`, and the model.
 fn engine(root: &Path) -> Result<Harness, Box<dyn Error>> {
     let mut tools = ToolRegistry::new();
-    tools.register_tool_declaration(ReadTool::new().into_declaration())?;
-    tools.register_tool_declaration(WriteTool::new().into_declaration())?;
-    tools.register_tool_declaration(EditTool::new().into_declaration())?;
-
-    let policies = PolicySet::new(vec![
-        Arc::new(IntoSandbox {
-            root: root.to_path_buf(),
-        }),
-        Arc::new(StayInside {
-            root: root.to_path_buf(),
-        }),
-    ]);
+    tools.register_tool_declaration(sandbox(ReadTool::new().into_declaration(), root))?;
+    tools.register_tool_declaration(sandbox(WriteTool::new().into_declaration(), root))?;
+    tools.register_tool_declaration(sandbox(EditTool::new().into_declaration(), root))?;
 
     let capabilities = Capabilities::builder()
         .input(Modality::Text)
@@ -221,7 +220,6 @@ fn engine(root: &Path) -> Result<Harness, Box<dyn Error>> {
         .blobs(Arc::new(InMemoryBlobStore::new()))
         .model(Arc::new(model))
         .tools(tools)
-        .policies(policies)
         .build()?)
 }
 

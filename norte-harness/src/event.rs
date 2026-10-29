@@ -6,7 +6,7 @@ use norte_core::capability::ReasoningRequest;
 use norte_core::domain::logprob::TokenLogprob;
 use norte_core::domain::moderation::SafetyRating;
 use norte_core::domain::part::Part;
-use norte_core::id::{ApprovalId, CallId, Digest, GrantId, SessionId, ToolName};
+use norte_core::id::{CallId, Digest, SessionId, ToolName};
 use norte_core::model::GenerationParams;
 use norte_core::tool::ToolStream;
 
@@ -165,34 +165,6 @@ pub enum EngineEvent {
         /// How long the tool ran, in milliseconds.
         duration_ms: u64,
     },
-    /// A tool call was parked for a decision.
-    ApprovalRequested {
-        /// The session.
-        session: SessionId,
-        /// The approval record.
-        approval: ApprovalId,
-        /// The call awaiting a decision.
-        call_id: CallId,
-        /// The tool that wants to run.
-        tool: ToolName,
-    },
-    /// A parked call was approved.
-    ApprovalGranted {
-        /// The session.
-        session: SessionId,
-        /// The approval record.
-        approval: ApprovalId,
-    },
-    /// A grant was revoked; it stops authorizing calls the moment the session
-    /// is committed (FR-APPR-3).
-    ApprovalRevoked {
-        /// The session.
-        session: SessionId,
-        /// The approval record.
-        approval: ApprovalId,
-        /// The grant that was revoked.
-        grant: GrantId,
-    },
     /// A host ended the turn on purpose (FR-ENG-10).
     TurnStopped {
         /// The session.
@@ -297,9 +269,6 @@ impl EngineEvent {
             | EngineEvent::ToolCallStarted { session, .. }
             | EngineEvent::ToolOutput { session, .. }
             | EngineEvent::ToolCallFinished { session, .. }
-            | EngineEvent::ApprovalRequested { session, .. }
-            | EngineEvent::ApprovalGranted { session, .. }
-            | EngineEvent::ApprovalRevoked { session, .. }
             | EngineEvent::HistoryAppended { session, .. }
             | EngineEvent::TurnStopped { session, .. }
             | EngineEvent::InterceptionApplied { session, .. }

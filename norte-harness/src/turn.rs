@@ -13,7 +13,7 @@ use crate::domain::commit::Commit;
 use crate::domain::node::Node;
 use crate::domain::session::{Phase, Session};
 use crate::event::EngineEvent;
-use crate::interceptor::{Interception, InterceptionContext};
+use crate::interceptor::{ConsultationPoint, Interception, InterceptionContext};
 use norte_core::domain::message::Message;
 use norte_core::domain::part::ToolResultPart;
 use norte_core::domain::role::Role;
@@ -46,7 +46,14 @@ impl Harness {
             // not come between the call and it.
             if session.phase == Phase::Idle {
                 let history = self.store.history(session.head).await?;
-                let consultation = self.consult(&session, &sender, Some(&history)).await?;
+                let consultation = self
+                    .consult(
+                        &session,
+                        &sender,
+                        Some(&history),
+                        ConsultationPoint::PreInput,
+                    )
+                    .await?;
                 session = consultation.session;
                 if consultation.stop.is_some() {
                     return Ok(TurnOutcome {
@@ -218,7 +225,14 @@ impl Harness {
         head_message: &Message,
     ) -> Result<Option<TurnOutcome>> {
         let history = self.store.history(session.head).await?;
-        let consultation = self.consult(session, sender, Some(&history)).await?;
+        let consultation = self
+            .consult(
+                session,
+                sender,
+                Some(&history),
+                ConsultationPoint::EndOfTurn,
+            )
+            .await?;
         *session = consultation.session;
         if consultation.added {
             return Ok(None);
@@ -245,7 +259,14 @@ impl Harness {
         } else {
             Some(self.store.history(before).await?)
         };
-        let consultation = self.consult(session, sender, history.as_deref()).await?;
+        let consultation = self
+            .consult(
+                session,
+                sender,
+                history.as_deref(),
+                ConsultationPoint::PreflightRequest,
+            )
+            .await?;
         let session = consultation.session;
         if consultation.stop.is_some() {
             return Ok(None);
@@ -272,6 +293,7 @@ impl Harness {
         session: &Session,
         sender: &mpsc::Sender<EngineEvent>,
         history: Option<&[Message]>,
+        point: ConsultationPoint,
     ) -> Result<Consultation> {
         if self.interceptors.is_empty() {
             return Ok(Consultation::unchanged(session.clone()));
@@ -280,10 +302,10 @@ impl Harness {
             sender: sender.clone(),
         };
         let context = InterceptionContext {
+            point,
             session: session.id,
             turn: session.turn,
             head: session.head,
-            phase: session.phase,
             messages: history.unwrap_or_default(),
             events: &sink,
         };
@@ -291,7 +313,10 @@ impl Harness {
         let mut stop = None;
         for interceptor in self.interceptors.interceptors() {
             match interceptor.intercept(&context).await? {
-                Interception::Continue => {}
+                // A refusal is a decision about one call, and `consult` is not
+                // asked about one: the engine refuses a call through
+                // `Harness::refuse_call`, where the call is in the context.
+                Interception::Continue | Interception::RefuseCall { .. } => {}
                 Interception::Inject(added) => messages.extend(added),
                 // `Interception` is `#[non_exhaustive]`: a decision this build
                 // does not know is not a licence to run the turn as if the host

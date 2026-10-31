@@ -51,7 +51,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context as TaskContext, Poll};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use futures_core::Stream;
 use serde_json::Value;
@@ -64,7 +64,9 @@ pub use crate::domain::conversation::{CONVERSATION_SCHEMA_VERSION, Conversation}
 pub use crate::domain::node::{Node, NodeKind};
 pub use crate::domain::session::{Phase, Session};
 pub use crate::event::{EngineEvent, EventSink, StreamDelta};
-pub use crate::interceptor::{Interception, InterceptionContext, InterceptorSet, TurnInterceptor};
+pub use crate::interceptor::{
+    ConsultationPoint, Interception, InterceptionContext, InterceptorSet, TurnInterceptor,
+};
 pub use crate::observer::{Observer, ObserverSet, StreamTransform};
 pub use crate::store::Store;
 use norte_core::BlobStore;
@@ -114,12 +116,6 @@ pub struct HarnessConfig {
     /// Media above this many bytes is moved to the blob store instead of
     /// travelling inline in the history. 64 KiB by default.
     pub inline_threshold: usize,
-    /// How long a parked approval stays decidable before
-    /// [`Error::ApprovalExpired`] is the answer.
-    ///
-    /// Ten minutes by default. The record itself is durable: the clock is what
-    /// expires, not the store.
-    pub approval_ttl: Duration,
     /// How many requests one turn may spend before it fails with
     /// [`Error::InvalidInput`].
     ///
@@ -153,7 +149,6 @@ impl Default for HarnessConfig {
             params: GenerationParams::default(),
             limits: StreamLimits::default(),
             inline_threshold: 64 * 1024,
-            approval_ttl: Duration::from_secs(10 * 60),
             max_iterations: 16,
             early_tool_execution: false,
             tool_metadata: None,

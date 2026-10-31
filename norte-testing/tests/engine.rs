@@ -5,12 +5,14 @@ use std::time::Duration;
 
 use norte_core::{
     CallId, ContinuityFragment, ContinuityScope, ContinuitySemantics, Error, Feature, FinishReason,
-    FnExecutor, LogprobValue, Message, MessageStatus, Result, Role, StreamEvent, TokenLogprob,
-    ToolContext, ToolRegistry, WireFamily,
+    FnExecutor, LogprobValue, Message, MessageStatus, Part, Result, Role, StreamEvent,
+    TokenLogprob, ToolContext, ToolRegistry, WireFamily,
 };
 use norte_harness::Store;
-use norte_harness::{EngineEvent, Phase};
-use norte_harness::{Harness, HarnessBuilder, HarnessConfig};
+use norte_harness::{
+    ConsultationPoint, EngineEvent, Harness, HarnessBuilder, HarnessConfig, Interception,
+    InterceptionContext, Phase, TurnInterceptor,
+};
 use norte_testing::{
     InMemoryBlobStore, InMemoryStore, ScriptedModel, StrictContinuity, model, text_capabilities,
 };
@@ -716,4 +718,69 @@ async fn requested_logprobs_never_change_the_committed_message() {
             .and_then(|origin| origin.request_digest.as_ref()),
         "the digest hashes the request, so it does record that the turn asked"
     );
+}
+
+#[tokio::test]
+async fn an_interceptor_can_refuse_a_tool_call() {
+    struct RefuseEcho;
+
+    #[async_trait::async_trait]
+    impl TurnInterceptor for RefuseEcho {
+        fn name(&self) -> &'static str {
+            "refuse_echo"
+        }
+
+        async fn intercept(&self, context: &InterceptionContext<'_>) -> Result<Interception> {
+            if let ConsultationPoint::ToolCall { call } = &context.point {
+                if call.name == "echo" {
+                    return Ok(Interception::RefuseCall {
+                        reason: "echo is refused by policy".to_owned(),
+                    });
+                }
+            }
+            Ok(Interception::Continue)
+        }
+    }
+
+    let call_id = CallId::new();
+    let scripted = Arc::new(
+        ScriptedModel::new(model("test/echo"))
+            .turn_tool_call(call_id, "echo", &json!({ "text": "hello" }))
+            .turn_text("understood"),
+    );
+    let mut tools = ToolRegistry::new();
+    tools.register_declarator(&Echo).expect("register echo");
+    let store = Arc::new(InMemoryStore::new());
+    let blobs = Arc::new(InMemoryBlobStore::new());
+    let engine = HarnessBuilder::new()
+        .store(store.clone())
+        .blobs(blobs)
+        .model(scripted.clone())
+        .tools(tools)
+        .interceptors(vec![Arc::new(RefuseEcho)])
+        .build()
+        .expect("build engine");
+
+    let session = engine.create().await.expect("create");
+    let outcome = engine
+        .send(session.id, Message::user("go"))
+        .finish()
+        .await
+        .expect("turn");
+
+    assert_eq!(outcome.session.phase, Phase::Idle);
+    let history = store.history(outcome.session.head).await.expect("history");
+    let tool_msg = history
+        .iter()
+        .find(|m| m.role == Role::Tool)
+        .expect("tool message");
+    let results = tool_msg.tool_results();
+    assert_eq!(results.len(), 1);
+    assert!(results[0].is_error);
+    let error_text = results[0]
+        .parts
+        .iter()
+        .find_map(Part::as_text)
+        .expect("error text");
+    assert_eq!(error_text, "echo is refused by policy");
 }

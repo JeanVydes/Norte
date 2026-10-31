@@ -1,12 +1,102 @@
 //! Host hooks the engine consults at the safe points of a running turn.
+//!
+//! One seam, not several. Everything a host decides while a turn runs — what
+//! the conversation gets, whether the turn goes on, whether one tool call may
+//! run — is decided here, on a context that names the point being decided at.
 
 use std::sync::Arc;
 
-use crate::domain::session::Phase;
-use crate::event::EventSink;
 use norte_core::domain::message::Message;
+use norte_core::domain::part::ToolCallPart;
 use norte_core::error::Result;
-use norte_core::id::{NodeId, SessionId};
+use norte_core::id::{CallId, SessionId};
+use serde_json::Value;
+
+use crate::event::EventSink;
+
+/// Where in a turn the engine is asking the host.
+///
+/// A host that decides at one point only ignores the others, and the engine
+/// names the point rather than making the host infer it from the shape of the
+/// history: the same conversation looks different at the end of a turn and
+/// just before a request, and a rule that had to tell them apart from the last
+/// message's role is a rule that breaks as soon as the loop grows a step.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ConsultationPoint {
+    /// Before the turn's own input joins the session.
+    PreInput,
+    /// Before a model request is built.
+    PreflightRequest,
+    /// Before one tool call the model asked for runs.
+    ToolCall {
+        /// The call being decided about.
+        call: ToolCallPart,
+    },
+    /// At the end of a turn, before the engine lets it finish.
+    EndOfTurn,
+}
+
+impl ConsultationPoint {
+    /// The call being decided about, when this is a tool call.
+    ///
+    /// `None` at every other point, so a host that decides at one place writes
+    /// one `let` instead of a match over the point and a rebuilt question.
+    #[must_use]
+    pub fn call(&self) -> Option<&ToolCallPart> {
+        match self {
+            ConsultationPoint::ToolCall { call } => Some(call),
+            ConsultationPoint::PreInput
+            | ConsultationPoint::PreflightRequest
+            | ConsultationPoint::EndOfTurn => None,
+        }
+    }
+}
+
+/// What an interceptor may rely on while a turn runs.
+pub struct InterceptionContext<'a> {
+    /// Where in the turn the engine is asking.
+    pub point: ConsultationPoint,
+    /// The session the turn belongs to.
+    pub session: SessionId,
+    /// The turn number.
+    pub turn: u64,
+    /// The head the next request is built from.
+    pub head: Option<norte_core::id::NodeId>,
+    /// The history the next request carries, oldest first.
+    ///
+    /// This is what the model will see, so an interceptor can decide on the
+    /// conversation itself: the call the model just asked for, the tool that
+    /// answered it, the instruction the human gave.
+    pub messages: &'a [Message],
+    /// The sink an interceptor uses to emit engine events.
+    pub events: &'a dyn EventSink,
+}
+
+impl InterceptionContext<'_> {
+    /// The call being decided about, when there is one.
+    #[must_use]
+    pub fn call(&self) -> Option<&ToolCallPart> {
+        self.point.call()
+    }
+
+    /// The name of the tool being decided about.
+    #[must_use]
+    pub fn tool_name(&self) -> Option<&str> {
+        self.call().map(|call| call.name.as_str())
+    }
+
+    /// The id of the call being decided about.
+    #[must_use]
+    pub fn call_id(&self) -> Option<CallId> {
+        self.call().map(|call| call.call_id)
+    }
+
+    /// The arguments the call would run with.
+    #[must_use]
+    pub fn arguments(&self) -> Option<&Value> {
+        self.call().map(|call| &call.arguments)
+    }
+}
 
 /// What an interceptor decided about the turn.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -22,29 +112,26 @@ pub enum Interception {
         /// Why the turn ends. The host reports it under its own namespace.
         reason: String,
     },
-}
-
-/// What an interceptor may rely on while a turn runs.
-pub struct InterceptionContext<'a> {
-    /// The session the turn belongs to.
-    pub session: SessionId,
-    /// The turn number.
-    pub turn: u64,
-    /// The head the next request is built from.
-    pub head: Option<NodeId>,
-    /// The phase the turn is in.
-    pub phase: Phase,
-    /// The history the next request carries, oldest first.
+    /// The call being decided about does not run; the model is told why.
     ///
-    /// This is what the model will see, so an interceptor can decide on the
-    /// conversation itself: the call the model just asked for, the tool that
-    /// answered it, the instruction the human gave.
-    pub messages: &'a [Message],
-    /// The sink an interceptor uses to emit engine events.
-    pub events: &'a dyn EventSink,
+    /// This is the answer at [`ConsultationPoint::ToolCall`], where the engine
+    /// has not run anything yet and a refusal is a message to the model: the
+    /// call the model asked for is answered with an error result it reads like
+    /// any other failed call, and it can adapt. Elsewhere it is a mistake —
+    /// there is no call to refuse — and the engine treats it as a stop.
+    RefuseCall {
+        /// Why the call does not run. The model reads this.
+        reason: String,
+    },
 }
 
-/// A host hook the engine consults before every model request of a turn.
+/// A host hook the engine consults at the safe points of a running turn.
+///
+/// There are four: before the turn's input, before every model request, before
+/// every tool call, and at the end of the turn.
+/// [`InterceptionContext::point`](ConsultationPoint) says which, and
+/// [`Interception::Continue`] is the right answer at three of them for a host
+/// that decides at one.
 ///
 /// An interceptor may return messages to append to the session's history. The
 /// engine appends them itself, so they are durable, part of the request
@@ -61,10 +148,6 @@ pub trait TurnInterceptor: Send + Sync {
     fn name(&self) -> &str;
 
     /// Decides what the turn does next.
-    ///
-    /// The engine consults the interceptor before the turn's input and before
-    /// every model request, so a message the interceptor returns reaches the
-    /// request that is about to be built.
     ///
     /// # Errors
     ///

@@ -99,7 +99,7 @@ impl Harness {
             model: &*self.model,
             digest: &wire_digest,
         };
-        let mut stream = self
+        let stream = self
             .layered_call(&context, request, &continuation, session.id, sender)
             .await?;
         let request_digest = wire_digest
@@ -121,7 +121,7 @@ impl Harness {
         )
         .await;
         let (accumulated, interrupted, early_results) = self
-            .drain_stream(session, sender, cancellation, &mut stream)
+            .drain_stream(session, sender, cancellation, stream)
             .await?;
 
         let message = self
@@ -170,7 +170,7 @@ impl Harness {
         session: &Session,
         sender: &mpsc::Sender<EngineEvent>,
         cancellation: &CancellationToken,
-        stream: &mut ModelStream,
+        mut stream: ModelStream,
     ) -> Result<(Accumulated, bool, Vec<ToolResultPart>)> {
         let mut accumulator = StreamAccumulator::new(self.config.limits);
         let mut continuity: BTreeMap<u32, ContinuityToken> = BTreeMap::new();

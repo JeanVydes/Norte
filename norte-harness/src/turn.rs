@@ -137,6 +137,14 @@ impl Harness {
                     .await?;
                     last = Some(message);
                     if interrupted {
+                        // Tool calls in the message still need results: give
+                        // them the cancellation reason so nothing is left
+                        // without an answer.
+                        if last.as_ref().is_some_and(|m| !m.tool_calls().is_empty()) {
+                            session = self
+                                .run_tools(&session, &sender, &cancellation, &[])
+                                .await?;
+                        }
                         return Ok(TurnOutcome {
                             session,
                             message: last,

@@ -202,12 +202,13 @@ Draft. Not published.
   What is left is one seam and one rule. A decision about the conversation — this
   session has spent too much, do not start that — is a `TurnInterceptor`,
   consulted at the safe points of a running turn, which may inject messages,
-  stop the turn, or step aside. A decision about one tool call belongs to that
-  tool's own declaration, where the arguments are typed: wrap the executor to
-  re-root a path or refuse an argument, and the refusal reaches the model as a
-  tool result it reads exactly like a failure. `norte-tools` still ships the
-  executors and no policy, so confining them remains the host's job, and a
-  host that wants a hook the engine consults before a call has the interceptor.
+  stop the turn, or step aside. A decision about one tool call is asked at the
+  same seam, once the call's name and arguments are known: an interceptor
+  returns `Interception::RefuseCall`, and the engine answers that call with an
+  error result the model reads exactly like a failure and adapts to. A tool's
+  own declaration can still refuse an argument where the types are known;
+  `norte-tools` ships the executors and no policy, so confining them remains the
+  host's job.
 
   Reaching it: `HarnessBuilder::policies` and `HarnessConfig::approval_ttl` and
   `auto_execute_tools` are gone with it. `auto_execute_tools` defaulted to
@@ -227,13 +228,17 @@ Draft. Not published.
 
 - Turn interceptors. A host may register an interceptor the engine consults at
   the safe points of a running turn: before the turn's input, before every
-  model request, and before the turn ends. The interceptor decides whether the
-  turn goes on, adds messages to the session's history, or stops with a reason;
-  the messages it adds are chained onto the session's head and committed by the
-  engine, so they are durable, part of the request digest, visible to the
-  policies and free of a version race. The steering queue cannot do this: it is
-  a session field, so a message written to it while a turn runs cannot be
-  committed without racing that turn (FR-ENG-3, FR-ENG-10).
+  model request, before a tool call runs, and before the turn ends. The
+  interceptor decides whether the turn goes on, adds messages to the session's
+  history, or stops with a reason; the messages it adds are chained onto the
+  session's head and committed by the engine, so they are durable, part of the
+  request digest, visible to the policies and free of a version race. The
+  steering queue cannot do this: it is a session field, so a message written to
+  it while a turn runs cannot be committed without racing that turn
+  (FR-ENG-3, FR-ENG-10). At the tool-call point it can also refuse the call:
+  the model is answered with an error result carrying the reason, so it adapts
+  instead of guessing again, and the call is reported started and finished as a
+  failure so a host's live view shows what never ran.
 - Reasoning efforts `XHigh` and `Max`, matching the levels OpenAI and Anthropic
   now document. The OpenAI Responses and Chat adapters serialize them as
   `xhigh` and `max`, and the Anthropic adapter sends `output_config.effort`.

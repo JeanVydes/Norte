@@ -1,9 +1,9 @@
 # Interceptors, and confining a tool
 
 The engine has one seam where the host speaks while a turn runs: the
-interceptor. It is consulted before the turn's input and before every model
-request, it sees the conversation, and it can inject messages, stop the turn, or
-step aside.
+interceptor. It is consulted before the turn's input, before every model
+request, before a tool call, and before the turn ends; it sees the conversation,
+and it can inject messages, stop the turn, refuse one call, or step aside.
 
 ```rust,ignore
 use norte_core::{Message, Result};
@@ -31,6 +31,7 @@ impl TurnInterceptor for BudgetGuard {
 | `Continue` | The turn goes on as it would. |
 | `Inject(Vec<Message>)` | These messages join the session before the next request. |
 | `Stop { reason }` | The turn ends here, with the host's reason on it. |
+| `RefuseCall { reason }` | The call being decided at `ToolCall` does not run; the model reads why. |
 
 An injected message is durable: the engine commits it itself, so it is part of
 the request digest, part of the history a replay sees, and free of a version
@@ -40,21 +41,27 @@ the request already in flight — a [layer](layers-and-observers.md) sees the
 request after it was built, so what it adds is neither durable nor visible to
 anything but that one call.
 
-`InterceptionContext` carries `session`, `turn`, `head`, `phase`, `messages`
-(the history the next request will carry) and `events` (the sink, for a host
-that wants to say something).
+`InterceptionContext` carries `point` (which question is being asked), `session`,
+`turn`, `head`, `messages` (the history the next request will carry) and `events`
+(the sink, for a host that wants to say something), plus `call()`, `tool_name()`,
+`call_id()` and `arguments()` for the call at `ConsultationPoint::ToolCall`.
 
 ## Deciding about one tool call
 
-There is deliberately no second hook for "may this call run". A per-call
-decision belongs to the tool's own executor, where the arguments are typed and
-a refusal is a tool result the model reads like any other: the model asked for
-something, it gets an answer that says why not, and it can adapt. That is the
-whole of the feedback loop, and it works the same for a call that is refused as
-for one that failed.
+The engine asks the interceptors at `ConsultationPoint::ToolCall` immediately
+before a call runs, when its name and arguments are known and nothing has
+happened yet. `Interception::RefuseCall { reason }` answers that question: the
+call does not run, the model is handed an error result carrying the reason, and
+it reads that exactly like a failed call — the model asked for something, it
+gets an answer that says why not, and it can adapt. That is the whole of the
+feedback loop, and it works the same for a call that is refused as for one that
+failed. The refusal is not silent: the call is reported started and finished as
+a failure, so a host that renders the engine's events shows the call it will
+never run instead of a gap.
 
-Wrapping a declaration is how a host re-roots paths, pins a working directory,
-or refuses an argument it will not accept:
+A rule that is about one tool's arguments belongs in that tool's declaration,
+where the arguments are typed. Wrapping a declaration is how a host re-roots
+paths, pins a working directory, or refuses an argument it will not accept:
 
 ```rust,ignore
 use std::sync::Arc;
@@ -87,8 +94,9 @@ where
 
 The wrapper owns the rule because the rule is about *that* tool's arguments. A
 host that needs the conversation to decide — "this session may not spend more
-than this", "not while a background job is running" — writes an interceptor
-instead, because that is the seam that sees the conversation.
+than this", "no tool named in the deny list runs", "not while a background job
+is running" — writes an interceptor instead, because that is the seam that sees
+the conversation and every call.
 
 `norte-tools` ships the executors, not the policy: `read`, `write` and `edit`
 write where they are told, and `shell` runs the script it is given. Confining

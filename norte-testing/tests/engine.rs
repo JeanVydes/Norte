@@ -216,8 +216,6 @@ async fn two_calls_in_one_message_each_get_a_result() {
 
 /// Runs one echo turn and reports how many commits had succeeded when the tool
 /// finished, so early and sequential execution can be compared.
-/// Runs one echo turn and reports how many commits had succeeded when the tool
-/// finished, so early and sequential execution can be compared.
 async fn tool_finish_commit_offset(config: HarnessConfig) -> usize {
     use futures_util::StreamExt;
 
@@ -722,6 +720,8 @@ async fn requested_logprobs_never_change_the_committed_message() {
 
 #[tokio::test]
 async fn an_interceptor_can_refuse_a_tool_call() {
+    use futures_util::StreamExt;
+
     struct RefuseEcho;
 
     #[async_trait::async_trait]
@@ -762,12 +762,36 @@ async fn an_interceptor_can_refuse_a_tool_call() {
         .expect("build engine");
 
     let session = engine.create().await.expect("create");
-    let outcome = engine
-        .send(session.id, Message::user("go"))
-        .finish()
-        .await
-        .expect("turn");
+    let mut stream = engine.send(session.id, Message::user("go"));
+    let mut started = false;
+    let mut finished = None;
+    while let Some(event) = stream.next().await {
+        match event.expect("event") {
+            EngineEvent::ToolCallStarted {
+                call_id: id, tool, ..
+            } if id == call_id => {
+                started = true;
+                assert_eq!(tool.as_str(), "echo");
+            }
+            EngineEvent::ToolCallFinished {
+                call_id: id,
+                is_error,
+                ..
+            } if id == call_id => finished = Some(is_error),
+            _ => {}
+        }
+    }
+    let outcome = stream.finish().await.expect("turn");
 
+    // A host watching the events must see the call it will never run: an
+    // assistant message that announces a call and an event stream that says
+    // nothing about it leaves a hole in the live view.
+    assert!(started, "the refused call is reported started");
+    assert_eq!(
+        finished,
+        Some(true),
+        "the refused call is reported finished as a failure"
+    );
     assert_eq!(outcome.session.phase, Phase::Idle);
     let history = store.history(outcome.session.head).await.expect("history");
     let tool_msg = history

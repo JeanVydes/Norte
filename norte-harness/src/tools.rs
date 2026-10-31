@@ -76,7 +76,7 @@ impl Harness {
                 .refuse_call(session, sender, history.as_deref(), call)
                 .await?
             {
-                results.push(ToolResultPart::error(call.call_id, reason));
+                results.push(self.refused_call(session, sender, call, reason).await);
                 continue;
             }
             self.run_one_tool(&turn, call, &mut results, cancellation)
@@ -114,6 +114,45 @@ impl Harness {
             sender,
         )
         .await
+    }
+
+    /// Answers a call the host refused, reported the way a call that ran is.
+    ///
+    /// The refusal is a tool result the model reads, so the turn carries on.
+    /// A host watching only the events, though, would see the assistant
+    /// announce a call and never hear of it again: no row opened, nothing to
+    /// rewrite into the failure it is. The two events keep that view whole,
+    /// with no duration because nothing ran.
+    async fn refused_call(
+        &self,
+        session: &Session,
+        sender: &mpsc::Sender<EngineEvent>,
+        call: &ToolCallPart,
+        reason: String,
+    ) -> ToolResultPart {
+        // A name the registry would reject never ran either, and there is no
+        // tool name to report: the result is all the model gets.
+        if let Ok(tool) = ToolName::new(call.name.clone()) {
+            let started = EngineEvent::ToolCallStarted {
+                session: session.id,
+                turn: session.turn,
+                call_id: call.call_id,
+                tool: tool.clone(),
+            };
+            self.observers.emit(&started);
+            let _ = sender.send(started).await;
+            let finished = EngineEvent::ToolCallFinished {
+                session: session.id,
+                turn: session.turn,
+                call_id: call.call_id,
+                tool,
+                is_error: true,
+                duration_ms: 0,
+            };
+            self.observers.emit(&finished);
+            let _ = sender.send(finished).await;
+        }
+        ToolResultPart::error(call.call_id, reason)
     }
 
     /// The host metadata for one execution, consulted immediately before the

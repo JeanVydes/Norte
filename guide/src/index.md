@@ -24,8 +24,9 @@ Five ideas hold the whole library together.
   and replayed unchanged, so a session can be exported and re-imported
   byte-for-byte and its provider cache prefix survives.
 - **The host decides what a tool may do.** A tool's declaration is the host's, so
-  a wrapper around it decides what a call may attempt, and an interceptor decides
-  what the conversation may do next. The engine runs the calls the host gave it.
+  a wrapper around it decides what a call may attempt, and an interceptor
+  decides what the conversation may do next and whether a call may run at all.
+  The engine runs the calls the host gave it.
 - **The engine never prices anything.** `Usage` carries the counters a provider
   reported and, verbatim, whatever else its payload carried — including a price,
   if it reported one. A rate table is not something this library maintains.

@@ -119,37 +119,31 @@ impl LayerStack {
         request: ModelRequest,
         terminal: &'a dyn Continuation,
     ) -> Result<ModelStream> {
-        let mut next: Box<dyn Continuation + 'a> = Box::new(Terminal { inner: terminal });
+        let mut next: Box<dyn Continuation + 'a> = Box::new(Next::Terminal(terminal));
         for layer in self.layers.iter().rev() {
-            next = Box::new(Step {
-                layer: Arc::clone(layer),
-                next,
-            });
+            next = Box::new(Next::Step(Arc::clone(layer), next));
         }
         next.call(context, request).await
     }
 }
 
-struct Terminal<'a> {
-    inner: &'a dyn Continuation,
+/// One step in the boxed continuation chain: either the terminal call the stack
+/// wraps, or a layer wrapping the next step. A single type keeps the two cases
+/// in one match instead of two parallel structs (DRY).
+enum Next<'a> {
+    /// The innermost continuation: the adapter call the stack wraps.
+    Terminal(&'a dyn Continuation),
+    /// A layer wrapping the rest of the chain.
+    Step(Arc<dyn Layer>, Box<dyn Continuation + 'a>),
 }
 
 #[async_trait::async_trait]
-impl Continuation for Terminal<'_> {
+impl Continuation for Next<'_> {
     async fn call(&self, context: &LayerContext, request: ModelRequest) -> Result<ModelStream> {
-        self.inner.call(context, request).await
-    }
-}
-
-struct Step<'a> {
-    layer: Arc<dyn Layer>,
-    next: Box<dyn Continuation + 'a>,
-}
-
-#[async_trait::async_trait]
-impl Continuation for Step<'_> {
-    async fn call(&self, context: &LayerContext, request: ModelRequest) -> Result<ModelStream> {
-        self.layer.wrap(context, request, self.next.as_ref()).await
+        match self {
+            Next::Terminal(inner) => inner.call(context, request).await,
+            Next::Step(layer, next) => layer.wrap(context, request, next.as_ref()).await,
+        }
     }
 }
 

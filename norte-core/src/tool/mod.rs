@@ -73,6 +73,37 @@ impl ProgressSink for mpsc::Sender<ToolProgress> {
     }
 }
 
+/// The two independent control signals a host may raise against a call.
+///
+/// `cancellation` kills what the call runs; `detach` asks it to stop waiting
+/// while leaving the process alive. They are kept together so the context
+/// carries one signals value instead of two loose tokens, but they remain
+/// distinct signals with opposite semantics.
+#[derive(Clone)]
+pub struct ToolSignals {
+    /// The cancellation token the turn shares with the tool.
+    pub cancellation: Cancellation,
+    /// The token a host signals to detach the call.
+    pub detach: Cancellation,
+}
+
+impl ToolSignals {
+    /// A signals value with both tokens uncancelled.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            cancellation: Cancellation::new(),
+            detach: Cancellation::new(),
+        }
+    }
+}
+
+impl Default for ToolSignals {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Ambient data available to a tool while it runs: identity, cancellation and a
 /// bounded progress channel.
 ///
@@ -87,14 +118,12 @@ pub struct ToolContext {
     pub call_id: Option<CallId>,
     /// Free-form data the host attached to the call.
     pub metadata: BTreeMap<String, Value>,
-    cancellation: Cancellation,
-    /// Asked to stop waiting without killing what it runs.
+    /// The two independent control signals a host may raise against a call.
     ///
-    /// It is not `cancellation`: a host that detaches a call wants the process
-    /// alive and its output still coming, which is the opposite of what
-    /// cancelling asks for. A tool that can honour it returns early; one that
-    /// cannot keeps running until its own bound, and the host is told so.
-    detach: Cancellation,
+    /// `cancellation` kills what the call runs; `detach` asks it to stop
+    /// waiting while leaving the process alive. They are kept together so the
+    /// context carries one signals value instead of two loose tokens.
+    signals: ToolSignals,
     progress: Option<Arc<dyn ProgressSink>>,
 }
 
@@ -106,8 +135,7 @@ impl ToolContext {
             session: None,
             call_id: None,
             metadata: BTreeMap::new(),
-            cancellation: Cancellation::new(),
-            detach: Cancellation::new(),
+            signals: ToolSignals::new(),
             progress: None,
         }
     }
@@ -129,7 +157,7 @@ impl ToolContext {
     /// Binds the context to a cancellation token.
     #[must_use]
     pub fn with_cancellation(mut self, cancellation: impl Into<Cancellation>) -> Self {
-        self.cancellation = cancellation.into();
+        self.signals.cancellation = cancellation.into();
         self
     }
 
@@ -150,42 +178,42 @@ impl ToolContext {
     /// The cancellation token the turn shares with the tool.
     #[must_use]
     pub fn cancellation(&self) -> Cancellation {
-        self.cancellation.clone()
+        self.signals.cancellation.clone()
     }
 
     /// Resolves when the turn cancels (or immediately if it already did).
     pub async fn cancelled(&self) {
-        self.cancellation.cancelled().await;
+        self.signals.cancellation.cancelled().await;
     }
 
     /// Whether the turn was cancelled.
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
-        self.cancellation.is_cancelled()
+        self.signals.cancellation.is_cancelled()
     }
 
     /// Sets the token a host signals to detach the call.
     #[must_use]
     pub fn with_detach(mut self, detach: Cancellation) -> Self {
-        self.detach = detach;
+        self.signals.detach = detach;
         self
     }
 
     /// The detach token, so a host can signal it from outside the call.
     #[must_use]
     pub fn detach(&self) -> Cancellation {
-        self.detach.clone()
+        self.signals.detach.clone()
     }
 
     /// Resolves when the call is asked to stop waiting (or at once if it was).
     pub async fn detached(&self) {
-        self.detach.cancelled().await;
+        self.signals.detach.cancelled().await;
     }
 
     /// Whether the call was asked to stop waiting.
     #[must_use]
     pub fn is_detached(&self) -> bool {
-        self.detach.is_cancelled()
+        self.signals.detach.is_cancelled()
     }
 
     /// The sink progress goes to, so a wrapper can pass it on.

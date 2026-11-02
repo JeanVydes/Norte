@@ -67,7 +67,6 @@ async fn cancellation_interrupts_and_leaves_the_session_resumable() {
     let session = engine.create().await.expect("create");
 
     let mut stream = engine.send(session.id, Message::user("go"));
-    let _ = stream.step().await;
     stream.cancel();
     let outcome = stream.finish().await.expect("turn");
 

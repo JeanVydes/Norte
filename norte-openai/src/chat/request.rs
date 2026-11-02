@@ -27,6 +27,7 @@ type CallIndex = BTreeMap<CallId, String>;
 /// [`Quirk::NoStructuredOutput`].
 ///
 /// [`MediaAdapter`]: norte_core::MediaAdapter
+#[allow(clippy::too_many_lines)]
 pub(crate) fn build(
     model: &ModelRef,
     continuity: &OpenAiContinuity,
@@ -80,6 +81,30 @@ pub(crate) fn build(
     }
     if let Some(top_p) = request.params.top_p {
         body.insert("top_p".to_owned(), json!(top_p));
+    }
+    // The sampling knobs below are vendor-specific: a host sets one only on a
+    // model it knows accepts it (the catalogue's `supported_params` says so),
+    // and the adapter puts the value on the wire when it is set.
+    if let Some(top_k) = request.params.top_k {
+        body.insert("top_k".to_owned(), json!(top_k));
+    }
+    if let Some(min_p) = request.params.min_p {
+        body.insert("min_p".to_owned(), json!(min_p));
+    }
+    if let Some(top_a) = request.params.top_a {
+        body.insert("top_a".to_owned(), json!(top_a));
+    }
+    if let Some(penalty) = request.params.frequency_penalty {
+        body.insert("frequency_penalty".to_owned(), json!(penalty));
+    }
+    if let Some(penalty) = request.params.presence_penalty {
+        body.insert("presence_penalty".to_owned(), json!(penalty));
+    }
+    if let Some(penalty) = request.params.repetition_penalty {
+        body.insert("repetition_penalty".to_owned(), json!(penalty));
+    }
+    if let Some(bias) = &request.params.logit_bias {
+        body.insert("logit_bias".to_owned(), json!(bias));
     }
     if let Some(top) = request.params.logprobs {
         body.insert("logprobs".to_owned(), Value::Bool(true));

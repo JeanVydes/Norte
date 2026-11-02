@@ -848,6 +848,57 @@ impl<'a> TurnBuilder<'a> {
         self
     }
 
+    /// Discards the tail of the distribution by its mass (`min-p`).
+    ///
+    /// A vendor knob: the model must accept it, and native `OpenAI` does not.
+    #[must_use]
+    pub fn min_p(mut self, value: f32) -> Self {
+        self.options.params.min_p = Some(value);
+        self
+    }
+
+    /// Truncates by the ratio to the most likely token (`top-a`).
+    ///
+    /// `OpenRouter` and compatible gateways; native `OpenAI` rejects it.
+    #[must_use]
+    pub fn top_a(mut self, value: f32) -> Self {
+        self.options.params.top_a = Some(value);
+        self
+    }
+
+    /// Penalises tokens already produced, by how often they appeared.
+    #[must_use]
+    pub fn frequency_penalty(mut self, value: f32) -> Self {
+        self.options.params.frequency_penalty = Some(value);
+        self
+    }
+
+    /// Penalises tokens that already appeared in the prompt or answer.
+    #[must_use]
+    pub fn presence_penalty(mut self, value: f32) -> Self {
+        self.options.params.presence_penalty = Some(value);
+        self
+    }
+
+    /// Penalises repeated tokens across both streams (`repetition_penalty`).
+    ///
+    /// A vendor knob; native `OpenAI` uses the frequency/presence penalties.
+    #[must_use]
+    pub fn repetition_penalty(mut self, value: f32) -> Self {
+        self.options.params.repetition_penalty = Some(value);
+        self
+    }
+
+    /// Biases the probability of specific tokens before sampling.
+    ///
+    /// Keyed by the vendor's token id as a string, in the `OpenAI` shape
+    /// (`{"50256": -100}`).
+    #[must_use]
+    pub fn logit_bias(mut self, bias: BTreeMap<String, f32>) -> Self {
+        self.options.params.logit_bias = Some(bias);
+        self
+    }
+
     /// Caps how many tokens the model may produce in this turn.
     #[must_use]
     pub fn max_output_tokens(mut self, value: u64) -> Self {

@@ -46,6 +46,35 @@ pub struct GenerationParams {
     /// Keeps only the `n` most probable tokens at each step.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub top_k: Option<u32>,
+    /// Discards the least likely tokens before sampling, as a mass in `(0, 1]`.
+    ///
+    /// A vendor knob (`OpenAI`-compatible gateways) with no native `OpenAI`
+    /// equivalent; the adapter emits it only because a host that sets it has
+    /// chosen a vendor that accepts it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_p: Option<f32>,
+    /// Truncates the tail by its ratio to the most likely token (`top-a`).
+    ///
+    /// `OpenRouter`-flavoured: native `OpenAI` rejects it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_a: Option<f32>,
+    /// Penalises tokens already present in the answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frequency_penalty: Option<f32>,
+    /// Penalises tokens already present in the prompt or answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presence_penalty: Option<f32>,
+    /// Penalises repeated tokens, across both streams.
+    ///
+    /// A vendor knob (`OpenRouter` and compatible gateways); native `OpenAI` has
+    /// `frequency_penalty`/`presence_penalty` instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repetition_penalty: Option<f32>,
+    /// Per-token bias applied before sampling, keyed by token id as a string.
+    ///
+    /// The `OpenAI` shape (`{"50256": -100}`); `BTreeMap` so the wire is stable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logit_bias: Option<BTreeMap<String, f32>>,
     /// Cap on the tokens one answer may produce.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u64>,
@@ -87,6 +116,12 @@ impl GenerationParams {
             temperature: self.temperature.or(base.temperature),
             top_p: self.top_p.or(base.top_p),
             top_k: self.top_k.or(base.top_k),
+            min_p: self.min_p.or(base.min_p),
+            top_a: self.top_a.or(base.top_a),
+            frequency_penalty: self.frequency_penalty.or(base.frequency_penalty),
+            presence_penalty: self.presence_penalty.or(base.presence_penalty),
+            repetition_penalty: self.repetition_penalty.or(base.repetition_penalty),
+            logit_bias: self.logit_bias.clone().or_else(|| base.logit_bias.clone()),
             max_output_tokens: self.max_output_tokens.or(base.max_output_tokens),
             stop_sequences: if self.stop_sequences.is_empty() {
                 base.stop_sequences.clone()

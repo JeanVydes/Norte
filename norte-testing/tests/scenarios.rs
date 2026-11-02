@@ -67,7 +67,7 @@ async fn cancellation_interrupts_and_leaves_the_session_resumable() {
     let session = engine.create().await.expect("create");
 
     let mut stream = engine.send(session.id, Message::user("go"));
-    let _ = stream.next().await;
+    let _ = stream.step().await;
     stream.cancel();
     let outcome = stream.finish().await.expect("turn");
 
@@ -163,9 +163,20 @@ async fn cancelling_a_turn_reaches_the_running_tool() {
 
     let mut stream = engine.send(session.id, Message::user("go"));
     loop {
-        if let EngineEvent::ToolCallStarted { .. } =
-            stream.next().await.expect("event").expect("ok")
-        {
+        if let Some(sr) = stream.step().await.expect("step") {
+            let mut found = false;
+            for ev in sr.events {
+                if let EngineEvent::ToolCallStarted { .. } = ev {
+                    found = true;
+                }
+            }
+            if found {
+                break;
+            }
+            if matches!(sr.step, norte_harness::Step::Done(_)) {
+                break;
+            }
+        } else {
             break;
         }
     }
@@ -241,9 +252,20 @@ async fn cancelling_a_turn_reaches_an_early_tool() {
 
     let mut stream = engine.send(session.id, Message::user("go"));
     loop {
-        if let EngineEvent::ToolCallStarted { .. } =
-            stream.next().await.expect("event").expect("ok")
-        {
+        if let Some(sr) = stream.step().await.expect("step") {
+            let mut found = false;
+            for ev in sr.events {
+                if let EngineEvent::ToolCallStarted { .. } = ev {
+                    found = true;
+                }
+            }
+            if found {
+                break;
+            }
+            if matches!(sr.step, norte_harness::Step::Done(_)) {
+                break;
+            }
+        } else {
             break;
         }
     }
@@ -301,12 +323,27 @@ async fn cancelling_mid_stream_answers_the_tool_call_it_committed() {
     // Cancel the moment the call is complete, before the stream finishes and
     // before any tool runs.
     loop {
-        match stream.next().await.expect("event").expect("ok") {
-            EngineEvent::PartCompleted { .. } => break,
-            EngineEvent::ToolCallStarted { .. } => {
-                panic!("no tool must run before the cancel");
+        if let Some(sr) = stream.step().await.expect("step") {
+            let mut done = false;
+            for ev in sr.events {
+                match ev {
+                    EngineEvent::PartCompleted { .. } => {
+                        done = true;
+                    }
+                    EngineEvent::ToolCallStarted { .. } => {
+                        panic!("no tool must run before the cancel");
+                    }
+                    _ => {}
+                }
             }
-            _ => {}
+            if done {
+                break;
+            }
+            if matches!(sr.step, norte_harness::Step::Done(_)) {
+                break;
+            }
+        } else {
+            break;
         }
     }
     stream.cancel();

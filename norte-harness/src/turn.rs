@@ -61,6 +61,15 @@ enum EndOfTurn {
     None,
 }
 
+/// The outcome of one `Turn::step`: the step plus the events it produced.
+#[derive(Debug)]
+pub struct StepResult {
+    /// The step that was taken.
+    pub step: Step,
+    /// The engine events produced during the step, in order.
+    pub events: Vec<EngineEvent>,
+}
+
 /// A host-driven turn: one iteration per `step()` call.
 pub struct Turn {
     engine: Harness,
@@ -135,9 +144,12 @@ impl Turn {
     ///
     /// Panics if called before `init` has run (internal invariant; `step`
     /// initialises on first call).
-    pub async fn step(&mut self) -> Result<Option<Step>> {
+    pub async fn step(&mut self) -> Result<Option<StepResult>> {
         if let Some(outcome) = &self.finished {
-            return Ok(Some(Step::Done(Box::new(outcome.clone()))));
+            return Ok(Some(StepResult {
+                step: Step::Done(Box::new(outcome.clone())),
+                events: Vec::new(),
+            }));
         }
         self.init().await?;
 
@@ -151,7 +163,11 @@ impl Turn {
             {
                 self.finished = Some(outcome.clone());
                 self.session = Some(session.clone());
-                return Ok(Some(Step::Done(Box::new(outcome))));
+                let events = self.drain_events();
+                return Ok(Some(StepResult {
+                    step: Step::Done(Box::new(outcome)),
+                    events,
+                }));
             }
             self.input_consumed = true;
         }
@@ -178,7 +194,11 @@ impl Turn {
                 EndOfTurn::Finish(outcome) => {
                     self.finished = Some(outcome.clone());
                     self.session = Some(session_mut.clone());
-                    return Ok(Some(Step::Done(Box::new(outcome))));
+                    let events = self.drain_events();
+                    return Ok(Some(StepResult {
+                        step: Step::Done(Box::new(outcome)),
+                        events,
+                    }));
                 }
                 EndOfTurn::None => {}
             }
@@ -199,12 +219,21 @@ impl Turn {
             // Persist the (possibly updated) session back.
             self.session = Some(session_mut.clone());
 
+            let events = self.drain_events();
             match step {
                 Step::Done(outcome) => {
                     self.finished = Some((*outcome).clone());
-                    return Ok(Some(Step::Done(outcome)));
+                    return Ok(Some(StepResult {
+                        step: Step::Done(outcome),
+                        events,
+                    }));
                 }
-                other => return Ok(Some(other)),
+                other => {
+                    return Ok(Some(StepResult {
+                        step: other,
+                        events,
+                    }));
+                }
             }
         }
     }
@@ -225,7 +254,11 @@ impl Turn {
     /// Returns an error when a step fails.
     pub async fn finish(&mut self) -> Result<TurnOutcome> {
         loop {
-            if let Some(Step::Done(outcome)) = self.step().await? {
+            if let Some(StepResult {
+                step: Step::Done(outcome),
+                ..
+            }) = self.step().await?
+            {
                 return Ok(*outcome);
             }
         }
@@ -264,28 +297,6 @@ impl Stream for Turn {
 }
 
 impl Harness {
-    /// Walks the session forward until the turn ends (spawned-task entry point).
-    pub(super) async fn run(
-        self,
-        session_id: SessionId,
-        input: Option<Message>,
-        options: TurnOptions,
-        sender: mpsc::Sender<EngineEvent>,
-        cancellation: CancellationToken,
-    ) -> Result<TurnOutcome> {
-        let mut turn = Turn::new(self, session_id, input, options, cancellation);
-        turn.events_tx = sender;
-        loop {
-            match turn.step().await? {
-                Some(Step::Done(outcome)) => return Ok(*outcome),
-                Some(_) => {}
-                None => break,
-            }
-        }
-        Err(Error::Other("turn ended without an outcome".to_owned()))
-    }
-
-
     /// Chains the turn's input onto the head, asking the host first.
     ///
     /// The host may add messages before the input, so they come first. A parked

@@ -48,15 +48,11 @@ pub mod tools;
 pub mod turn;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::task::{Context as TaskContext, Poll};
 use std::time::Instant;
 
 use serde_json::Value;
 use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
-use futures_core::Stream;
 use tokio_util::sync::CancellationToken;
 
 pub use crate::domain::commit::Commit;
@@ -69,7 +65,7 @@ pub use crate::interceptor::{
 };
 pub use crate::observer::{Observer, ObserverSet, StreamTransform};
 pub use crate::store::Store;
-pub use crate::turn::{Step, Turn};
+pub use crate::turn::{Step, StepResult, Turn};
 use norte_core::BlobStore;
 use norte_core::capability::ReasoningRequest;
 use norte_core::domain::message::{Message, Usage};
@@ -344,34 +340,14 @@ impl Harness {
 
     /// Starts a turn with a new user message, using the inherited options.
     #[must_use]
-    pub fn send(&self, session: SessionId, message: Message) -> HarnessStream {
-        self.turn(session).input(message).start()
+    pub fn send(&self, session: SessionId, message: Message) -> turn::Turn {
+        self.turn(session).input(message).start_stepped()
     }
 
     /// Continues a session from its durable phase, using the inherited options.
     #[must_use]
-    pub fn resume(&self, session: SessionId) -> HarnessStream {
-        self.turn(session).start()
-    }
-
-
-    pub(crate) fn spawn_with(
-        &self,
-        session: SessionId,
-        input: Option<Message>,
-        options: TurnOptions,
-    ) -> HarnessStream {
-        let (sender, receiver) = mpsc::channel(self.config.limits.max_buffered_events);
-        let cancellation = CancellationToken::new();
-        let engine = self.clone();
-        let token = cancellation.clone();
-        let task =
-            tokio::spawn(async move { engine.run(session, input, options, sender, token).await });
-        HarnessStream {
-            receiver,
-            task: Some(task),
-            cancellation,
-        }
+    pub fn resume(&self, session: SessionId) -> turn::Turn {
+        self.turn(session).start_stepped()
     }
 
     /// Opens the fluent builder for one turn (FR-ENG-7, FR-ENG-8).
@@ -725,52 +701,6 @@ impl Continuation for Digesting<'_> {
 /// The agent-facing handle on a running turn: a typed event stream plus the
 /// final outcome. Dropping it cancels the turn at the next event and commits
 /// A running turn driven by a spawned task, with a streaming event channel.
-pub struct HarnessStream {
-    receiver: mpsc::Receiver<EngineEvent>,
-    task: Option<JoinHandle<Result<TurnOutcome>>>,
-    cancellation: CancellationToken,
-}
-
-impl HarnessStream {
-    /// Asks the turn to stop.
-    pub fn cancel(&self) {
-        self.cancellation.cancel();
-    }
-
-    /// Drains the remaining events and returns the outcome.
-    ///
-    /// # Errors
-    ///
-    /// Returns the turn error, or [`Error::Other`] if the task panicked.
-    pub async fn finish(mut self) -> Result<TurnOutcome> {
-        while self.receiver.recv().await.is_some() {}
-        let task = self
-            .task
-            .take()
-            .ok_or_else(|| Error::Other("turn already finished".to_owned()))?;
-        task.await
-            .map_err(|error| Error::Other(format!("engine task failed: {error}")))?
-    }
-}
-
-impl Stream for HarnessStream {
-    type Item = Result<EngineEvent>;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Option<Self::Item>> {
-        match self.receiver.poll_recv(cx) {
-            Poll::Ready(Some(event)) => Poll::Ready(Some(Ok(event))),
-            Poll::Ready(None) => Poll::Ready(None),
-            Poll::Pending => Poll::Pending,
-        }
-    }
-}
-
-impl Drop for HarnessStream {
-    fn drop(&mut self) {
-        self.cancellation.cancel();
-    }
-}
-
 /// Fluent builder for an engine.
 ///
 /// Three ports are required — a [`Store`], a [`BlobStore`] and a [`Model`] — and
@@ -835,7 +765,7 @@ pub struct HarnessBuilder {
 /// Fluent builder for a single turn (FR-ENG-7, FR-ENG-8).
 ///
 /// It borrows the engine; [`start`](TurnBuilder::start) hands back an
-/// [`HarnessStream`] and the borrow ends there. Every knob is optional and
+/// The borrow ends there. Every knob is optional and
 /// overlays the inherited defaults per field: what a turn sets replaces that one
 /// field of the effective [`GenerationParams`] and nothing else, so a turn that
 /// only changes the temperature keeps the engine's other parameters.
@@ -986,9 +916,8 @@ impl<'a> TurnBuilder<'a> {
 
     /// Spawns the turn and returns its event stream.
     #[must_use]
-    pub fn start(self) -> HarnessStream {
-        self.engine
-            .spawn_with(self.session, self.input, self.options)
+    pub fn start(self) -> turn::Turn {
+        self.start_stepped()
     }
 
     /// Opens a host-driven turn: one iteration per `Turn::step` call.

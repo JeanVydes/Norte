@@ -828,8 +828,8 @@ async fn a_stepped_turn_matches_send_finish() {
         .start_stepped();
     let mut stepped_session = None;
     let mut stepped_message = None;
-    while let Some(step) = turn.step().await.expect("step") {
-        match step {
+    while let Some(sr) = turn.step().await.expect("step") {
+        match sr.step {
             Step::Done(outcome) => {
                 stepped_session = Some(outcome.session);
                 stepped_message = outcome.message;

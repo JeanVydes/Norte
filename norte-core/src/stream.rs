@@ -715,7 +715,11 @@ pub async fn collect(model: &dyn crate::model::Model, request: ModelRequest) -> 
     let status = match finish_reason {
         FinishReason::Length => MessageStatus::Truncated,
         FinishReason::Cancelled => MessageStatus::Interrupted,
-        _ => MessageStatus::Complete,
+        FinishReason::Stop
+        | FinishReason::ToolCalls
+        | FinishReason::ContentFilter
+        | FinishReason::Refusal
+        | FinishReason::Other(_) => MessageStatus::Complete,
     };
     Ok(
         Message::new(crate::domain::role::Role::Assistant, accumulated.parts).with_origin(

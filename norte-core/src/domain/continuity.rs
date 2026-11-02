@@ -174,7 +174,9 @@ impl ReplayDecision {
         match &token.scope {
             ContinuityScope::Exact(model) if model == target => Self::Replay,
             ContinuityScope::Any => Self::Replay,
-            _ => Self::Drop,
+            ContinuityScope::Exact(_)
+            | ContinuityScope::ModelFamily { .. }
+            | ContinuityScope::Provider(_) => Self::Drop,
         }
     }
 }

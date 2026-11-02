@@ -249,7 +249,12 @@ impl Part {
             Part::Text(text) => Some(&text.text),
             Part::Reasoning(reasoning) => Some(&reasoning.text),
             Part::Refusal(refusal) => Some(&refusal.text),
-            _ => None,
+            Part::ToolCall(_)
+            | Part::ToolResult(_)
+            | Part::Media(_)
+            | Part::ProviderToolCall(_)
+            | Part::ProviderToolResult(_)
+            | Part::Extension(_) => None,
         }
     }
 
@@ -258,7 +263,14 @@ impl Part {
     pub fn as_tool_call(&self) -> Option<&ToolCallPart> {
         match self {
             Part::ToolCall(call) => Some(call),
-            _ => None,
+            Part::Text(_)
+            | Part::Reasoning(_)
+            | Part::Refusal(_)
+            | Part::ToolResult(_)
+            | Part::Media(_)
+            | Part::ProviderToolCall(_)
+            | Part::ProviderToolResult(_)
+            | Part::Extension(_) => None,
         }
     }
 
@@ -267,7 +279,14 @@ impl Part {
     pub fn as_tool_result(&self) -> Option<&ToolResultPart> {
         match self {
             Part::ToolResult(result) => Some(result),
-            _ => None,
+            Part::Text(_)
+            | Part::Reasoning(_)
+            | Part::Refusal(_)
+            | Part::ToolCall(_)
+            | Part::Media(_)
+            | Part::ProviderToolCall(_)
+            | Part::ProviderToolResult(_)
+            | Part::Extension(_) => None,
         }
     }
 
@@ -276,7 +295,14 @@ impl Part {
     pub fn as_media(&self) -> Option<&MediaPart> {
         match self {
             Part::Media(media) => Some(media),
-            _ => None,
+            Part::Text(_)
+            | Part::Reasoning(_)
+            | Part::Refusal(_)
+            | Part::ToolCall(_)
+            | Part::ToolResult(_)
+            | Part::ProviderToolCall(_)
+            | Part::ProviderToolResult(_)
+            | Part::Extension(_) => None,
         }
     }
 
@@ -299,7 +325,14 @@ impl Part {
     pub fn inline_media_len(&self) -> usize {
         match self {
             Part::Media(media) => media.inline_len(),
-            _ => 0,
+            Part::Text(_)
+            | Part::Reasoning(_)
+            | Part::Refusal(_)
+            | Part::ToolCall(_)
+            | Part::ToolResult(_)
+            | Part::ProviderToolCall(_)
+            | Part::ProviderToolResult(_)
+            | Part::Extension(_) => 0,
         }
     }
 
@@ -328,7 +361,10 @@ impl Part {
                 part.continuity = None;
                 Part::ProviderToolResult(part)
             }
-            other => other,
+            Part::Refusal(part) => Part::Refusal(part),
+            Part::ToolResult(part) => Part::ToolResult(part),
+            Part::Media(part) => Part::Media(part),
+            Part::Extension(part) => Part::Extension(part),
         }
     }
 

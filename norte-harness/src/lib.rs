@@ -53,23 +53,23 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context as TaskContext, Poll};
 use std::time::Instant;
 
-use futures_core::Stream;
 use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use futures_core::Stream;
 use tokio_util::sync::CancellationToken;
 
 pub use crate::domain::commit::Commit;
 pub use crate::domain::conversation::{CONVERSATION_SCHEMA_VERSION, Conversation};
 pub use crate::domain::node::{Node, NodeKind};
 pub use crate::domain::session::{Phase, Session};
-pub use crate::turn::{Step, Turn};
 pub use crate::event::{EngineEvent, EventSink, StreamDelta};
 pub use crate::interceptor::{
     ConsultationPoint, Interception, InterceptionContext, InterceptorSet, TurnInterceptor,
 };
 pub use crate::observer::{Observer, ObserverSet, StreamTransform};
 pub use crate::store::Store;
+pub use crate::turn::{Step, Turn};
 use norte_core::BlobStore;
 use norte_core::capability::ReasoningRequest;
 use norte_core::domain::message::{Message, Usage};
@@ -354,23 +354,6 @@ impl Harness {
         self.turn(session).start()
     }
 
-    /// Starts a stepped turn with a new user message.
-    #[must_use]
-    pub fn send_stepped(&self, session: SessionId, message: Message) -> turn::Turn {
-        self.turn(session).input(message).start_stepped()
-    }
-
-    /// Continues a session from its durable phase, stepped.
-    #[must_use]
-    pub fn resume_stepped(&self, session: SessionId) -> turn::Turn {
-        self.turn(session).start_stepped()
-    }
-
-    /// Opens the fluent builder for one turn (FR-ENG-7, FR-ENG-8).
-    #[must_use]
-    pub fn turn(&self, session: SessionId) -> TurnBuilder<'_> {
-        TurnBuilder::new(self, session)
-    }
 
     pub(crate) fn spawn_with(
         &self,
@@ -389,6 +372,12 @@ impl Harness {
             task: Some(task),
             cancellation,
         }
+    }
+
+    /// Opens the fluent builder for one turn (FR-ENG-7, FR-ENG-8).
+    #[must_use]
+    pub fn turn(&self, session: SessionId) -> TurnBuilder<'_> {
+        TurnBuilder::new(self, session)
     }
 
     /// The engine-level defaults a turn inherits (FR-ENG-7).
@@ -735,7 +724,7 @@ impl Continuation for Digesting<'_> {
 
 /// The agent-facing handle on a running turn: a typed event stream plus the
 /// final outcome. Dropping it cancels the turn at the next event and commits
-/// whatever completed, leaving the session resumable.
+/// A running turn driven by a spawned task, with a streaming event channel.
 pub struct HarnessStream {
     receiver: mpsc::Receiver<EngineEvent>,
     task: Option<JoinHandle<Result<TurnOutcome>>>,
@@ -796,7 +785,6 @@ impl Drop for HarnessStream {
 /// # Example
 ///
 /// ```ignore
-/// use std::sync::Arc;
 ///
 /// use norte_core::{Capabilities, Message, Modality, ToolRegistry};
 /// use norte_harness::{HarnessBuilder, InMemoryBlobStore, InMemoryStore};

@@ -6,6 +6,9 @@
 //! turn ends. The host gets the last word: a message it was holding keeps the
 //! turn alive, and it may stop the turn with a reason.
 
+use futures_core::Stream;
+use std::pin::Pin;
+use std::task::{Context as TaskContext, Poll};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -32,19 +35,19 @@ pub enum Step {
     /// `AwaitingTool` phase: the tool calls ran.
     Tools {
         /// The session after the tools ran.
-        session: Session,
+        session: Box<Session>,
     },
     /// Idle/Streaming phase: an answer was generated and committed.
     Generated {
         /// The session after the commit.
-        session: Session,
+        session: Box<Session>,
         /// The assistant message that was committed.
-        message: Message,
+        message: Box<Message>,
         /// Whether the generation was interrupted.
         interrupted: bool,
     },
     /// The turn finished (final answer or host stop).
-    Done(TurnOutcome),
+    Done(Box<TurnOutcome>),
 }
 
 /// Internal result of the end-of-turn check.
@@ -134,7 +137,7 @@ impl Turn {
     /// initialises on first call).
     pub async fn step(&mut self) -> Result<Option<Step>> {
         if let Some(outcome) = &self.finished {
-            return Ok(Some(Step::Done(outcome.clone())));
+            return Ok(Some(Step::Done(Box::new(outcome.clone()))));
         }
         self.init().await?;
 
@@ -148,7 +151,7 @@ impl Turn {
             {
                 self.finished = Some(outcome.clone());
                 self.session = Some(session.clone());
-                return Ok(Some(Step::Done(outcome)));
+                return Ok(Some(Step::Done(Box::new(outcome))));
             }
             self.input_consumed = true;
         }
@@ -175,7 +178,7 @@ impl Turn {
                 EndOfTurn::Finish(outcome) => {
                     self.finished = Some(outcome.clone());
                     self.session = Some(session_mut.clone());
-                    return Ok(Some(Step::Done(outcome)));
+                    return Ok(Some(Step::Done(Box::new(outcome))));
                 }
                 EndOfTurn::None => {}
             }
@@ -198,10 +201,32 @@ impl Turn {
 
             match step {
                 Step::Done(outcome) => {
-                    self.finished = Some(outcome.clone());
+                    self.finished = Some((*outcome).clone());
                     return Ok(Some(Step::Done(outcome)));
                 }
                 other => return Ok(Some(other)),
+            }
+        }
+    }
+
+    /// Drains all buffered engine events produced so far.
+    pub fn drain_events(&mut self) -> Vec<EngineEvent> {
+        let mut out = Vec::new();
+        while let Ok(ev) = self.events_rx.try_recv() {
+            out.push(ev);
+        }
+        out
+    }
+
+    /// Drives the turn to completion and returns its outcome.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a step fails.
+    pub async fn finish(&mut self) -> Result<TurnOutcome> {
+        loop {
+            if let Some(Step::Done(outcome)) = self.step().await? {
+                return Ok(*outcome);
             }
         }
     }
@@ -226,9 +251,20 @@ impl Turn {
     }
 }
 
+impl Stream for Turn {
+    type Item = Result<EngineEvent>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Option<Self::Item>> {
+        match self.events_rx.poll_recv(cx) {
+            Poll::Ready(Some(event)) => Poll::Ready(Some(Ok(event))),
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
 impl Harness {
-    /// Walks the session forward until the turn ends.
-    #[allow(clippy::too_many_lines)] // the loop and its exit conditions read as one.
+    /// Walks the session forward until the turn ends (spawned-task entry point).
     pub(super) async fn run(
         self,
         session_id: SessionId,
@@ -238,22 +274,17 @@ impl Harness {
         cancellation: CancellationToken,
     ) -> Result<TurnOutcome> {
         let mut turn = Turn::new(self, session_id, input, options, cancellation);
-        // Route events through the provided sender instead of the turn's own
-        // receiver, so the HarnessStream keeps working unchanged.
-        // (Turn::step uses turn.events_tx; re-point it at `sender`.)
         turn.events_tx = sender;
         loop {
             match turn.step().await? {
-                Some(Step::Done(outcome)) => return Ok(outcome),
+                Some(Step::Done(outcome)) => return Ok(*outcome),
                 Some(_) => {}
-                None => {
-                    // Should not happen; step() returns Done on completion.
-                    break;
-                }
+                None => break,
             }
         }
         Err(Error::Other("turn ended without an outcome".to_owned()))
     }
+
 
     /// Chains the turn's input onto the head, asking the host first.
     ///
@@ -275,12 +306,7 @@ impl Harness {
         if session.phase == Phase::Idle {
             let history = self.store.history(session.head).await?;
             let consultation = self
-                .consult(
-                    session,
-                    sender,
-                    Some(&history),
-                    ConsultationPoint::PreInput,
-                )
+                .consult(session, sender, Some(&history), ConsultationPoint::PreInput)
                 .await?;
             *session = consultation.session;
             if consultation.stop.is_some() {
@@ -339,23 +365,24 @@ impl Harness {
                     .await?;
                 early_results.clear();
                 if cancellation.is_cancelled() {
-                    return Ok(Step::Done(TurnOutcome {
+                    return Ok(Step::Done(Box::new(TurnOutcome {
                         session: session.clone(),
                         message: last.clone(),
-                    }));
+                    })));
                 }
                 Ok(Step::Tools {
-                    session: session.clone(),
+                    session: Box::new(session.clone()),
                 })
             }
             Phase::Idle | Phase::Streaming => {
                 // The host may add messages before this request is built.
                 // The history is read once and the request reuses it.
-                let Some((next, head, history)) = self.prepare_request(session, sender).await? else {
-                    return Ok(Step::Done(TurnOutcome {
+                let Some((next, head, history)) = self.prepare_request(session, sender).await?
+                else {
+                    return Ok(Step::Done(Box::new(TurnOutcome {
                         session: session.clone(),
                         message: last.clone(),
-                    }));
+                    })));
                 };
                 *session = next;
                 let (message, interrupted, pending) = self
@@ -372,14 +399,14 @@ impl Harness {
                     if last.as_ref().is_some_and(|m| !m.tool_calls().is_empty()) {
                         *session = self.run_tools(session, sender, cancellation, &[]).await?;
                     }
-                    return Ok(Step::Done(TurnOutcome {
+                    return Ok(Step::Done(Box::new(TurnOutcome {
                         session: session.clone(),
                         message: last.clone(),
-                    }));
+                    })));
                 }
                 Ok(Step::Generated {
-                    session: session.clone(),
-                    message,
+                    session: Box::new(session.clone()),
+                    message: Box::new(message),
                     interrupted,
                 })
             }

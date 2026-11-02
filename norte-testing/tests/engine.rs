@@ -246,19 +246,19 @@ async fn tool_finish_commit_offset(config: HarnessConfig) -> usize {
     let harness = fixture(scripted, tools, config);
     let session = harness.engine.create().await.expect("create");
 
-    let mut stream = harness
+    let mut turn = harness
         .engine
         .send(session.id, Message::user("please echo"));
     let mut commits = 0usize;
     let mut offset = None;
-    while let Some(event) = stream.next().await {
+    while let Some(event) = turn.next().await {
         match event.expect("event") {
             EngineEvent::CommitSucceeded { .. } => commits += 1,
             EngineEvent::ToolCallFinished { .. } if offset.is_none() => offset = Some(commits),
             _ => {}
         }
     }
-    stream.finish().await.expect("turn");
+    turn.finish().await.expect("turn");
     offset.expect("the tool finished")
 }
 
@@ -353,7 +353,7 @@ async fn cancelling_a_turn_leaves_the_session_resumable() {
     let harness = fixture(scripted, ToolRegistry::new(), HarnessConfig::default());
     let session = harness.engine.create().await.expect("create");
 
-    let stream = harness.engine.send(session.id, Message::user("go"));
+    let mut stream = harness.engine.send(session.id, Message::user("go"));
     stream.cancel();
     let outcome = stream.finish().await.expect("turn");
 
@@ -762,10 +762,10 @@ async fn an_interceptor_can_refuse_a_tool_call() {
         .expect("build engine");
 
     let session = engine.create().await.expect("create");
-    let mut stream = engine.send(session.id, Message::user("go"));
+    let mut turn = engine.send(session.id, Message::user("go"));
     let mut started = false;
     let mut finished = None;
-    while let Some(event) = stream.next().await {
+    while let Some(event) = turn.next().await {
         match event.expect("event") {
             EngineEvent::ToolCallStarted {
                 call_id: id, tool, ..
@@ -781,7 +781,7 @@ async fn an_interceptor_can_refuse_a_tool_call() {
             _ => {}
         }
     }
-    let outcome = stream.finish().await.expect("turn");
+    let outcome = turn.finish().await.expect("turn");
 
     // A host watching the events must see the call it will never run: an
     // assistant message that announces a call and an event stream that says
@@ -812,12 +812,20 @@ async fn an_interceptor_can_refuse_a_tool_call() {
 #[tokio::test]
 async fn a_stepped_turn_matches_send_finish() {
     let scripted = Arc::new(ScriptedModel::new(model("test/echo")).turn_text("hello world"));
-    let harness = fixture(scripted.clone(), ToolRegistry::new(), HarnessConfig::default());
+    let harness = fixture(
+        scripted.clone(),
+        ToolRegistry::new(),
+        HarnessConfig::default(),
+    );
 
     let session = harness.engine.create().await.expect("create");
 
     // Stepped path.
-    let mut turn = harness.engine.send_stepped(session.id, Message::user("ping"));
+    let mut turn = harness
+        .engine
+        .turn(session.id)
+        .input(Message::user("ping"))
+        .start_stepped();
     let mut stepped_session = None;
     let mut stepped_message = None;
     while let Some(step) = turn.step().await.expect("step") {
@@ -845,5 +853,8 @@ async fn a_stepped_turn_matches_send_finish() {
 
     assert_eq!(stepped_session.phase, outcome2.session.phase);
     assert_eq!(stepped_session.turn, outcome2.session.turn);
-    assert_eq!(stepped_message.map(|m| m.text()), outcome2.message.map(|m| m.text()));
+    assert_eq!(
+        stepped_message.map(|m| m.text()),
+        outcome2.message.map(|m| m.text())
+    );
 }

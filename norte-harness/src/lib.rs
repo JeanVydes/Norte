@@ -63,6 +63,7 @@ pub use crate::domain::commit::Commit;
 pub use crate::domain::conversation::{CONVERSATION_SCHEMA_VERSION, Conversation};
 pub use crate::domain::node::{Node, NodeKind};
 pub use crate::domain::session::{Phase, Session};
+pub use crate::turn::{Step, Turn};
 pub use crate::event::{EngineEvent, EventSink, StreamDelta};
 pub use crate::interceptor::{
     ConsultationPoint, Interception, InterceptionContext, InterceptorSet, TurnInterceptor,
@@ -351,6 +352,18 @@ impl Harness {
     #[must_use]
     pub fn resume(&self, session: SessionId) -> HarnessStream {
         self.turn(session).start()
+    }
+
+    /// Starts a stepped turn with a new user message.
+    #[must_use]
+    pub fn send_stepped(&self, session: SessionId, message: Message) -> turn::Turn {
+        self.turn(session).input(message).start_stepped()
+    }
+
+    /// Continues a session from its durable phase, stepped.
+    #[must_use]
+    pub fn resume_stepped(&self, session: SessionId) -> turn::Turn {
+        self.turn(session).start_stepped()
     }
 
     /// Opens the fluent builder for one turn (FR-ENG-7, FR-ENG-8).
@@ -988,6 +1001,23 @@ impl<'a> TurnBuilder<'a> {
     pub fn start(self) -> HarnessStream {
         self.engine
             .spawn_with(self.session, self.input, self.options)
+    }
+
+    /// Opens a host-driven turn: one iteration per `Turn::step` call.
+    ///
+    /// Unlike `start`, no task is spawned; the host drives the loop and may
+    /// inspect or intervene between steps. Events are pushed to the turn's own
+    /// channel and drained through `Turn::events`.
+    #[must_use]
+    pub fn start_stepped(self) -> turn::Turn {
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        turn::Turn::new(
+            self.engine.clone(),
+            self.session,
+            self.input,
+            self.options,
+            cancellation,
+        )
     }
 }
 

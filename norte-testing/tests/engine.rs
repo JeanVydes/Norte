@@ -11,7 +11,7 @@ use norte_core::{
 use norte_harness::Store;
 use norte_harness::{
     ConsultationPoint, EngineEvent, Harness, HarnessBuilder, HarnessConfig, Interception,
-    InterceptionContext, Phase, TurnInterceptor,
+    InterceptionContext, Phase, Step, TurnInterceptor,
 };
 use norte_testing::{
     InMemoryBlobStore, InMemoryStore, ScriptedModel, StrictContinuity, model, text_capabilities,
@@ -807,4 +807,43 @@ async fn an_interceptor_can_refuse_a_tool_call() {
         .find_map(Part::as_text)
         .expect("error text");
     assert_eq!(error_text, "echo is refused by policy");
+}
+
+#[tokio::test]
+async fn a_stepped_turn_matches_send_finish() {
+    let scripted = Arc::new(ScriptedModel::new(model("test/echo")).turn_text("hello world"));
+    let harness = fixture(scripted.clone(), ToolRegistry::new(), HarnessConfig::default());
+
+    let session = harness.engine.create().await.expect("create");
+
+    // Stepped path.
+    let mut turn = harness.engine.send_stepped(session.id, Message::user("ping"));
+    let mut stepped_session = None;
+    let mut stepped_message = None;
+    while let Some(step) = turn.step().await.expect("step") {
+        match step {
+            Step::Done(outcome) => {
+                stepped_session = Some(outcome.session);
+                stepped_message = outcome.message;
+                break;
+            }
+            Step::Tools { .. } | Step::Generated { .. } => {}
+        }
+    }
+    let stepped_session = stepped_session.expect("done");
+
+    // Streamed path on a fresh session.
+    let scripted2 = Arc::new(ScriptedModel::new(model("test/echo")).turn_text("hello world"));
+    let harness2 = fixture(scripted2, ToolRegistry::new(), HarnessConfig::default());
+    let session2 = harness2.engine.create().await.expect("create");
+    let outcome2 = harness2
+        .engine
+        .send(session2.id, Message::user("ping"))
+        .finish()
+        .await
+        .expect("turn");
+
+    assert_eq!(stepped_session.phase, outcome2.session.phase);
+    assert_eq!(stepped_session.turn, outcome2.session.turn);
+    assert_eq!(stepped_message.map(|m| m.text()), outcome2.message.map(|m| m.text()));
 }

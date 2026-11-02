@@ -26,6 +26,206 @@ use super::{
     unanswered_call_errors,
 };
 
+/// One step of a host-driven turn.
+#[derive(Clone, Debug)]
+pub enum Step {
+    /// `AwaitingTool` phase: the tool calls ran.
+    Tools {
+        /// The session after the tools ran.
+        session: Session,
+    },
+    /// Idle/Streaming phase: an answer was generated and committed.
+    Generated {
+        /// The session after the commit.
+        session: Session,
+        /// The assistant message that was committed.
+        message: Message,
+        /// Whether the generation was interrupted.
+        interrupted: bool,
+    },
+    /// The turn finished (final answer or host stop).
+    Done(TurnOutcome),
+}
+
+/// Internal result of the end-of-turn check.
+#[allow(clippy::large_enum_variant)]
+enum EndOfTurn {
+    /// The host added messages; re-evaluate.
+    Continue,
+    /// The turn finished.
+    Finish(TurnOutcome),
+    /// Not an end-of-turn situation; proceed to an iteration.
+    None,
+}
+
+/// A host-driven turn: one iteration per `step()` call.
+pub struct Turn {
+    engine: Harness,
+    session_id: SessionId,
+    input: Option<Message>,
+    options: TurnOptions,
+    // Runtime state, lazily initialised on the first step.
+    session: Option<Session>,
+    effective: Option<TurnOptions>,
+    last: Option<Message>,
+    early_results: Vec<ToolResultPart>,
+    iterations: usize,
+    input_consumed: bool,
+    cancellation: CancellationToken,
+    events_tx: mpsc::Sender<EngineEvent>,
+    events_rx: mpsc::Receiver<EngineEvent>,
+    finished: Option<TurnOutcome>,
+}
+
+impl Turn {
+    /// Creates a turn that has not yet loaded its session.
+    pub(crate) fn new(
+        engine: Harness,
+        session_id: SessionId,
+        input: Option<Message>,
+        options: TurnOptions,
+        cancellation: CancellationToken,
+    ) -> Self {
+        let (tx, rx) = mpsc::channel(engine.config.limits.max_buffered_events);
+        Self {
+            engine,
+            session_id,
+            input,
+            options,
+            session: None,
+            effective: None,
+            last: None,
+            early_results: Vec::new(),
+            iterations: 0,
+            input_consumed: false,
+            cancellation,
+            events_tx: tx,
+            events_rx: rx,
+            finished: None,
+        }
+    }
+
+    /// Ensures the session is loaded and the effective options computed.
+    async fn init(&mut self) -> Result<()> {
+        if self.session.is_some() {
+            return Ok(());
+        }
+        let session = self.engine.store.load(self.session_id).await?;
+        let effective = self
+            .options
+            .clone()
+            .over(&session_turn_options(&session).over(&self.engine.default_turn_options()));
+        self.session = Some(session);
+        self.effective = Some(effective);
+        Ok(())
+    }
+
+    /// Advances the turn by one iteration.
+    ///
+    /// Returns `Ok(None)` once the turn has finished.
+    /// # Errors
+    ///
+    /// Returns an error when the iteration limit is exceeded or a store,
+    /// model or tool call fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called before `init` has run (internal invariant; `step`
+    /// initialises on first call).
+    pub async fn step(&mut self) -> Result<Option<Step>> {
+        if let Some(outcome) = &self.finished {
+            return Ok(Some(Step::Done(outcome.clone())));
+        }
+        self.init().await?;
+
+        // Consume the input on the first step.
+        if !self.input_consumed {
+            let session = self.session.as_mut().expect("initialised");
+            if let Some(outcome) = self
+                .engine
+                .append_input(session, self.input.take(), &self.events_tx)
+                .await?
+            {
+                self.finished = Some(outcome.clone());
+                self.session = Some(session.clone());
+                return Ok(Some(Step::Done(outcome)));
+            }
+            self.input_consumed = true;
+        }
+
+        let events_tx = self.events_tx.clone();
+        let cancellation = self.cancellation.clone();
+
+        loop {
+            self.iterations += 1;
+            if self.iterations > self.engine.config.max_iterations {
+                return Err(Error::InvalidInput(format!(
+                    "agent exceeded {} iterations",
+                    self.engine.config.max_iterations
+                )));
+            }
+
+            let session_mut = self.session.as_mut().expect("initialised");
+            match self
+                .engine
+                .end_of_turn_check(session_mut, &events_tx, &mut self.last)
+                .await?
+            {
+                EndOfTurn::Continue => continue,
+                EndOfTurn::Finish(outcome) => {
+                    self.finished = Some(outcome.clone());
+                    self.session = Some(session_mut.clone());
+                    return Ok(Some(Step::Done(outcome)));
+                }
+                EndOfTurn::None => {}
+            }
+
+            let session_mut = self.session.as_mut().expect("initialised");
+            let effective = self.effective.clone().expect("initialised");
+            let step = self
+                .engine
+                .run_one_iteration(
+                    session_mut,
+                    &mut self.last,
+                    &mut self.early_results,
+                    &effective,
+                    &events_tx,
+                    &cancellation,
+                )
+                .await?;
+            // Persist the (possibly updated) session back.
+            self.session = Some(session_mut.clone());
+
+            match step {
+                Step::Done(outcome) => {
+                    self.finished = Some(outcome.clone());
+                    return Ok(Some(Step::Done(outcome)));
+                }
+                other => return Ok(Some(other)),
+            }
+        }
+    }
+
+    /// Cancels the turn at the next await point.
+    pub fn cancel(&self) {
+        self.cancellation.cancel();
+    }
+
+    /// The session as last committed.
+    #[must_use]
+    /// # Panics
+    ///
+    /// Panics if `step` has never been called.
+    pub fn session(&self) -> &Session {
+        self.session.as_ref().expect("step() not yet called")
+    }
+
+    /// The receiver for engine events produced by this turn.
+    pub fn events(&mut self) -> &mut mpsc::Receiver<EngineEvent> {
+        &mut self.events_rx
+    }
+}
+
 impl Harness {
     /// Walks the session forward until the turn ends.
     #[allow(clippy::too_many_lines)] // the loop and its exit conditions read as one.
@@ -37,104 +237,22 @@ impl Harness {
         sender: mpsc::Sender<EngineEvent>,
         cancellation: CancellationToken,
     ) -> Result<TurnOutcome> {
-        let mut session = self.store.load(session_id).await?;
-        let effective =
-            options.over(&session_turn_options(&session).over(&self.default_turn_options()));
-        if let Some(outcome) = self
-            .append_input(&mut session, input, &sender)
-            .await?
-        {
-            return Ok(outcome);
-        }
-
-        let mut last = None;
-        let mut early_results: Vec<ToolResultPart> = Vec::new();
-        let mut iterations = 0usize;
+        let mut turn = Turn::new(self, session_id, input, options, cancellation);
+        // Route events through the provided sender instead of the turn's own
+        // receiver, so the HarnessStream keeps working unchanged.
+        // (Turn::step uses turn.events_tx; re-point it at `sender`.)
+        turn.events_tx = sender;
         loop {
-            iterations += 1;
-            if iterations > self.config.max_iterations {
-                return Err(Error::InvalidInput(format!(
-                    "agent exceeded {} iterations",
-                    self.config.max_iterations
-                )));
-            }
-
-            // A turn ends at the first assistant message that is not waiting on
-            // tools; a parked session carries on as soon as the host has nothing
-            // left to decide. The host gets the last word: a message it was
-            // holding keeps the turn alive.
-            let head_message = match session.head {
-                Some(head) => Some(self.store.node(head).await?.message),
-                None => None,
-            };
-            if let Some(message) = &head_message {
-                if message.role == Role::Assistant && !Self::continues_turn(&session, message) {
-                    let Some(outcome) = self
-                        .end_of_turn(&mut session, &sender, last.clone(), message)
-                        .await?
-                    else {
-                        continue;
-                    };
-                    return Ok(outcome);
-                }
-            }
-
-            match session.phase {
-                Phase::AwaitingTool => {
-                    session = self
-                        .run_tools(&session, &sender, &cancellation, &early_results)
-                        .await?;
-                    early_results.clear();
-                    if cancellation.is_cancelled() {
-                        return Ok(TurnOutcome {
-                            session,
-                            message: last,
-                        });
-                    }
-                }
-                Phase::Idle | Phase::Streaming => {
-                    // The host may add messages before this request is built.
-                    // The history is read once and the request reuses it.
-                    let Some((next, head, history)) =
-                        self.prepare_request(&session, &sender).await?
-                    else {
-                        return Ok(TurnOutcome {
-                            session,
-                            message: last,
-                        });
-                    };
-                    session = next;
-                    let (message, interrupted, pending) = self
-                        .generate(&session, history, &effective, &sender, &cancellation)
-                        .await?;
-                    early_results = pending;
-                    self.commit_answer(
-                        &mut session,
-                        &message,
-                        head,
-                        interrupted,
-                        &effective,
-                        &sender,
-                    )
-                    .await?;
-                    last = Some(message);
-                    if interrupted {
-                        // Tool calls in the message still need results: give
-                        // them the cancellation reason so nothing is left
-                        // without an answer.
-                        if last.as_ref().is_some_and(|m| !m.tool_calls().is_empty()) {
-                            session = self
-                                .run_tools(&session, &sender, &cancellation, &[])
-                                .await?;
-                        }
-                        return Ok(TurnOutcome {
-                            session,
-                            message: last,
-                        });
-                    }
+            match turn.step().await? {
+                Some(Step::Done(outcome)) => return Ok(outcome),
+                Some(_) => {}
+                None => {
+                    // Should not happen; step() returns Done on completion.
+                    break;
                 }
             }
         }
+        Err(Error::Other("turn ended without an outcome".to_owned()))
     }
 
     /// Chains the turn's input onto the head, asking the host first.
@@ -174,6 +292,98 @@ impl Harness {
         }
         *session = self.append_turn(session, message, sender).await?;
         Ok(None)
+    }
+
+    /// End-of-turn check: if the head is a final assistant message, consult the
+    /// host. Returns `Continue` when the host added messages (re-evaluate),
+    /// `Finish` when the turn ends, or `None` when this is not an end-of-turn
+    /// situation.
+    async fn end_of_turn_check(
+        &self,
+        session: &mut Session,
+        sender: &mpsc::Sender<EngineEvent>,
+        last: &mut Option<Message>,
+    ) -> Result<EndOfTurn> {
+        let head_message = match session.head {
+            Some(head) => Some(self.store.node(head).await?.message),
+            None => None,
+        };
+        if let Some(message) = &head_message {
+            if message.role == Role::Assistant && !Self::continues_turn(session, message) {
+                let Some(outcome) = self
+                    .end_of_turn(session, sender, last.clone(), message)
+                    .await?
+                else {
+                    return Ok(EndOfTurn::Continue);
+                };
+                return Ok(EndOfTurn::Finish(outcome));
+            }
+        }
+        Ok(EndOfTurn::None)
+    }
+
+    /// Runs one iteration: either the tool calls or a generate+commit.
+    async fn run_one_iteration(
+        &self,
+        session: &mut Session,
+        last: &mut Option<Message>,
+        early_results: &mut Vec<ToolResultPart>,
+        effective: &TurnOptions,
+        sender: &mpsc::Sender<EngineEvent>,
+        cancellation: &CancellationToken,
+    ) -> Result<Step> {
+        match session.phase {
+            Phase::AwaitingTool => {
+                *session = self
+                    .run_tools(session, sender, cancellation, early_results)
+                    .await?;
+                early_results.clear();
+                if cancellation.is_cancelled() {
+                    return Ok(Step::Done(TurnOutcome {
+                        session: session.clone(),
+                        message: last.clone(),
+                    }));
+                }
+                Ok(Step::Tools {
+                    session: session.clone(),
+                })
+            }
+            Phase::Idle | Phase::Streaming => {
+                // The host may add messages before this request is built.
+                // The history is read once and the request reuses it.
+                let Some((next, head, history)) = self.prepare_request(session, sender).await? else {
+                    return Ok(Step::Done(TurnOutcome {
+                        session: session.clone(),
+                        message: last.clone(),
+                    }));
+                };
+                *session = next;
+                let (message, interrupted, pending) = self
+                    .generate(session, history, effective, sender, cancellation)
+                    .await?;
+                *early_results = pending;
+                self.commit_answer(session, &message, head, interrupted, effective, sender)
+                    .await?;
+                *last = Some(message.clone());
+                if interrupted {
+                    // Tool calls in the message still need results: give
+                    // them the cancellation reason so nothing is left
+                    // without an answer.
+                    if last.as_ref().is_some_and(|m| !m.tool_calls().is_empty()) {
+                        *session = self.run_tools(session, sender, cancellation, &[]).await?;
+                    }
+                    return Ok(Step::Done(TurnOutcome {
+                        session: session.clone(),
+                        message: last.clone(),
+                    }));
+                }
+                Ok(Step::Generated {
+                    session: session.clone(),
+                    message,
+                    interrupted,
+                })
+            }
+        }
     }
 
     /// Whether the loop keeps working from the current head.

@@ -40,29 +40,11 @@ impl Harness {
         let mut session = self.store.load(session_id).await?;
         let effective =
             options.over(&session_turn_options(&session).over(&self.default_turn_options()));
-        if let Some(message) = input {
-            // The host may add messages before the input, so they come first.
-            // A parked session still owes a tool result, and the messages must
-            // not come between the call and it.
-            if session.phase == Phase::Idle {
-                let history = self.store.history(session.head).await?;
-                let consultation = self
-                    .consult(
-                        &session,
-                        &sender,
-                        Some(&history),
-                        ConsultationPoint::PreInput,
-                    )
-                    .await?;
-                session = consultation.session;
-                if consultation.stop.is_some() {
-                    return Ok(TurnOutcome {
-                        session,
-                        message: None,
-                    });
-                }
-            }
-            session = self.append_turn(&session, message, &sender).await?;
+        if let Some(outcome) = self
+            .append_input(&mut session, input, &sender)
+            .await?
+        {
+            return Ok(outcome);
         }
 
         let mut last = None;
@@ -153,6 +135,45 @@ impl Harness {
                 }
             }
         }
+    }
+
+    /// Chains the turn's input onto the head, asking the host first.
+    ///
+    /// The host may add messages before the input, so they come first. A parked
+    /// session still owes a tool result, and the messages must not come between
+    /// the call and it. Returns the turn outcome when the host stopped the turn.
+    async fn append_input(
+        &self,
+        session: &mut Session,
+        input: Option<Message>,
+        sender: &mpsc::Sender<EngineEvent>,
+    ) -> Result<Option<TurnOutcome>> {
+        let Some(message) = input else {
+            return Ok(None);
+        };
+        // The host may add messages before the input, so they come first.
+        // A parked session still owes a tool result, and the messages must
+        // not come between the call and it.
+        if session.phase == Phase::Idle {
+            let history = self.store.history(session.head).await?;
+            let consultation = self
+                .consult(
+                    session,
+                    sender,
+                    Some(&history),
+                    ConsultationPoint::PreInput,
+                )
+                .await?;
+            *session = consultation.session;
+            if consultation.stop.is_some() {
+                return Ok(Some(TurnOutcome {
+                    session: session.clone(),
+                    message: None,
+                }));
+            }
+        }
+        *session = self.append_turn(session, message, sender).await?;
+        Ok(None)
     }
 
     /// Whether the loop keeps working from the current head.

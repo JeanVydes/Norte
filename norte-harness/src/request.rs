@@ -33,6 +33,7 @@ use super::{
 };
 
 impl Harness {
+    #[allow(clippy::too_many_lines)]
     pub(super) async fn generate(
         &self,
         session: &Session,
@@ -126,7 +127,17 @@ impl Harness {
             .unwrap_or_else(PoisonError::into_inner)
             .take()
             .unwrap_or_else(|| digest_of(&reconstructed));
-        self.emit(
+        // A cancel can land in the window between the provider answering and
+        // drain_stream starting, where nothing was watching the token: catch it
+        // here, drop the stream (closing the connection) and commit the
+        // interrupted, empty assistant message instead of reporting a request.
+        if cancellation.is_cancelled() {
+            let message = self
+                .finalize_message(Accumulated::default(), true, model_ref, request_digest)
+                .await?;
+            return Ok((message, true, Vec::new()));
+        }
+        let emit_future = self.emit(
             sender,
             EngineEvent::RequestReconstructed {
                 session: session.id,
@@ -137,8 +148,22 @@ impl Harness {
                 reasoning,
                 tools: tool_names,
             },
-        )
-        .await;
+        );
+        tokio::select! {
+            biased;
+            () = cancellation.cancelled() => {
+                let message = self
+                    .finalize_message(
+                        Accumulated::default(),
+                        true,
+                        model_ref,
+                        request_digest,
+                    )
+                    .await?;
+                return Ok((message, true, Vec::new()));
+            }
+            _ = emit_future => {}
+        }
         let (accumulated, interrupted, early_results) = self
             .drain_stream(session, sender, cancellation, stream)
             .await?;

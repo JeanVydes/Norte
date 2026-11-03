@@ -233,6 +233,7 @@ async fn every_parameter_vector_is_reflected() {
             seed: Some(42),
             output_schema: Some(json!(true)),
             logprobs: Some(5),
+            ..GenerationParams::default()
         },
     ];
 

@@ -65,7 +65,7 @@ pub use crate::interceptor::{
 };
 pub use crate::observer::{Observer, ObserverSet, StreamTransform};
 pub use crate::store::Store;
-pub use crate::turn::{Step, StepResult, Turn};
+pub use crate::turn::{Step, StepResult, Turn, TurnPhase};
 use norte_core::BlobStore;
 use norte_core::capability::ReasoningRequest;
 use norte_core::domain::message::{Message, Usage};

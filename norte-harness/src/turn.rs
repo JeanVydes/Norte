@@ -139,6 +139,7 @@ impl Turn {
             .over(&session_turn_options(&session).over(&self.engine.default_turn_options()));
         self.state.session = Some(session);
         self.state.effective = Some(effective);
+        self.phase = TurnPhase::Input;
         Ok(())
     }
 
@@ -173,6 +174,7 @@ impl Turn {
                 .await?
             {
                 self.state.finished = Some(outcome.clone());
+                self.phase = TurnPhase::Done;
                 self.state.session = Some(session.clone());
                 let events = self.drain_events();
                 return Ok(Some(StepResult {
@@ -205,6 +207,7 @@ impl Turn {
                 Some(EndOfTurn::Finish(outcome)) => {
                     let outcome = *outcome;
                     self.state.finished = Some(outcome.clone());
+                self.phase = TurnPhase::Done;
                     self.state.session = Some(session_mut.clone());
                     let events = self.drain_events();
                     return Ok(Some(StepResult {
@@ -237,6 +240,7 @@ impl Turn {
                     match step {
                         Step::Done(outcome) => {
                             self.state.finished = Some((*outcome).clone());
+                            self.phase = TurnPhase::Done;
                             return Ok(Some(StepResult {
                                 step: Step::Done(outcome),
                                 events,
@@ -279,6 +283,11 @@ impl Turn {
         out
     }
 
+    /// Drives the turn to completion and returns its outcome.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a step fails.
     /// Drives the turn to completion and returns its outcome.
     ///
     /// # Errors

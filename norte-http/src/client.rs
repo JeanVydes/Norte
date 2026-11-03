@@ -277,7 +277,7 @@ impl HttpClient {
                     path,
                     Some(body),
                     "text/event-stream",
-                    None,
+                    self.policy.request_timeout,
                 )
                 .await;
             match sent {

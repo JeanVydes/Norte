@@ -46,12 +46,11 @@ pub enum Step {
 }
 
 /// Internal result of the end-of-turn check.
-#[allow(clippy::large_enum_variant)]
 enum EndOfTurn {
     /// The host added messages; re-evaluate.
     Continue,
     /// The turn finished.
-    Finish(TurnOutcome),
+    Finish(Box<TurnOutcome>),
 }
 
 /// The outcome of one `Turn::step`: the step plus the events it produced.
@@ -184,6 +183,7 @@ impl Turn {
             {
                 Some(EndOfTurn::Continue) => continue,
                 Some(EndOfTurn::Finish(outcome)) => {
+                    let outcome = *outcome;
                     self.state.finished = Some(outcome.clone());
                     self.state.session = Some(session_mut.clone());
                     let events = self.drain_events();
@@ -345,7 +345,7 @@ impl Harness {
                 else {
                     return Ok(Some(EndOfTurn::Continue));
                 };
-                return Ok(Some(EndOfTurn::Finish(outcome)));
+                return Ok(Some(EndOfTurn::Finish(Box::new(outcome))));
             }
         }
         Ok(None)

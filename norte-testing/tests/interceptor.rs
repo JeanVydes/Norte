@@ -6,7 +6,8 @@ use std::sync::Mutex;
 use norte_core::{CallId, FnExecutor, Message, Result, Role, ToolRegistry};
 use norte_harness::EngineEvent;
 use norte_harness::{
-    Harness, HarnessBuilder, Interception, InterceptionContext, Store, TurnInterceptor,
+    Harness, HarnessBuilder, Interception, InterceptionContext, Step, StepResult, Store,
+    TurnInterceptor,
 };
 use norte_testing::{InMemoryBlobStore, InMemoryStore, ScriptedModel, model};
 use schemars::JsonSchema;
@@ -385,11 +386,19 @@ async fn a_turn_the_host_stopped_is_reported_as_such() {
 
     let session = engine.create().await.expect("create");
     let mut stopped = false;
-    let mut events = engine.turn(session.id).start();
-    while let Some(event) = futures_util::StreamExt::next(&mut events).await {
-        if let Ok(EngineEvent::TurnStopped { reason, .. }) = event {
-            assert_eq!(reason, "the host said no");
-            stopped = true;
+    let mut turn = engine.turn(session.id).start();
+    loop {
+        let Some(StepResult { step, events }) = turn.step().await.expect("step") else {
+            break;
+        };
+        for event in events {
+            if let EngineEvent::TurnStopped { reason, .. } = event {
+                assert_eq!(reason, "the host said no");
+                stopped = true;
+            }
+        }
+        if matches!(step, Step::Done(_)) {
+            break;
         }
     }
     assert!(stopped, "the engine reported the stop");

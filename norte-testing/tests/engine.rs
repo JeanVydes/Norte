@@ -11,7 +11,7 @@ use norte_core::{
 use norte_harness::Store;
 use norte_harness::{
     ConsultationPoint, EngineEvent, Harness, HarnessBuilder, HarnessConfig, Interception,
-    InterceptionContext, Phase, Step, TurnInterceptor,
+    InterceptionContext, Phase, Step, StepResult, TurnInterceptor, TurnOutcome,
 };
 use norte_testing::{
     InMemoryBlobStore, InMemoryStore, ScriptedModel, StrictContinuity, model, text_capabilities,
@@ -62,6 +62,24 @@ fn fixture(model: Arc<ScriptedModel>, tools: ToolRegistry, config: HarnessConfig
         engine,
         store,
         model,
+    }
+}
+
+/// Drives a host-stepped turn to its end, observing every event a step yields.
+async fn drive(
+    turn: &mut norte_harness::Turn,
+    mut observe: impl FnMut(&EngineEvent),
+) -> TurnOutcome {
+    loop {
+        let Some(StepResult { step, events }) = turn.step().await.expect("step") else {
+            panic!("the turn ended without a step");
+        };
+        for event in &events {
+            observe(event);
+        }
+        if let Step::Done(outcome) = step {
+            return *outcome;
+        }
     }
 }
 
@@ -217,8 +235,6 @@ async fn two_calls_in_one_message_each_get_a_result() {
 /// Runs one echo turn and reports how many commits had succeeded when the tool
 /// finished, so early and sequential execution can be compared.
 async fn tool_finish_commit_offset(config: HarnessConfig) -> usize {
-    use futures_util::StreamExt;
-
     let call_id = CallId::new();
     let events = vec![
         StreamEvent::ToolCallStart {
@@ -251,14 +267,12 @@ async fn tool_finish_commit_offset(config: HarnessConfig) -> usize {
         .send(session.id, Message::user("please echo"));
     let mut commits = 0usize;
     let mut offset = None;
-    while let Some(event) = turn.next().await {
-        match event.expect("event") {
-            EngineEvent::CommitSucceeded { .. } => commits += 1,
-            EngineEvent::ToolCallFinished { .. } if offset.is_none() => offset = Some(commits),
-            _ => {}
-        }
-    }
-    turn.finish().await.expect("turn");
+    let _ = drive(&mut turn, |event| match event {
+        EngineEvent::CommitSucceeded { .. } => commits += 1,
+        EngineEvent::ToolCallFinished { .. } if offset.is_none() => offset = Some(commits),
+        _ => {}
+    })
+    .await;
     offset.expect("the tool finished")
 }
 
@@ -720,8 +734,6 @@ async fn requested_logprobs_never_change_the_committed_message() {
 
 #[tokio::test]
 async fn an_interceptor_can_refuse_a_tool_call() {
-    use futures_util::StreamExt;
-
     struct RefuseEcho;
 
     #[async_trait::async_trait]
@@ -765,23 +777,21 @@ async fn an_interceptor_can_refuse_a_tool_call() {
     let mut turn = engine.send(session.id, Message::user("go"));
     let mut started = false;
     let mut finished = None;
-    while let Some(event) = turn.next().await {
-        match event.expect("event") {
-            EngineEvent::ToolCallStarted {
-                call_id: id, tool, ..
-            } if id == call_id => {
-                started = true;
-                assert_eq!(tool.as_str(), "echo");
-            }
-            EngineEvent::ToolCallFinished {
-                call_id: id,
-                is_error,
-                ..
-            } if id == call_id => finished = Some(is_error),
-            _ => {}
+    let outcome = drive(&mut turn, |event| match event {
+        EngineEvent::ToolCallStarted {
+            call_id: id, tool, ..
+        } if *id == call_id => {
+            started = true;
+            assert_eq!(tool.as_str(), "echo");
         }
-    }
-    let outcome = turn.finish().await.expect("turn");
+        EngineEvent::ToolCallFinished {
+            call_id: id,
+            is_error,
+            ..
+        } if *id == call_id => finished = Some(*is_error),
+        _ => {}
+    })
+    .await;
 
     // A host watching the events must see the call it will never run: an
     // assistant message that announces a call and an event stream that says

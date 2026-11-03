@@ -81,6 +81,8 @@ async fn the_digest_describes_the_request_the_model_received() {
         .await
         .expect("turn");
 
+    // Observers run on their own task; let it drain the events the turn sent.
+    tokio::task::yield_now().await;
     let reported = digests
         .lock()
         .unwrap_or_else(PoisonError::into_inner)

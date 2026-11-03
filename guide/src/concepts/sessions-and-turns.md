@@ -53,6 +53,7 @@ interrupted mid-loop or that still owes its tool calls.
 | Method | Effect |
 | --- | --- |
 | `input(Message)` | The message that starts the turn. Omitted when resuming. |
+| `cancellation(CancellationToken)` | The token that cancels this turn, for a host that signals it from another task. Defaults to a fresh token. |
 | `options(TurnOptions)` | Params, reasoning, tool subset and vendor extensions at once. |
 | `params(GenerationParams)` | The generation parameters for this turn. |
 | `temperature`, `top_p`, `top_k`, `max_output_tokens`, `stop_sequences`, `seed` | Shorthands for the fields above. |
@@ -62,6 +63,11 @@ interrupted mid-loop or that still owes its tool calls.
 | `tools(impl IntoIterator<Item = ToolName>)` | Restrict the request to a subset of the registered tools. |
 | `extension(key, value)` | A vendor-specific knob, passed through to the wire. |
 | `start()` | Produce the `HarnessStream`. |
+
+A host that hears a cancel on another task supplies its own token with
+`cancellation(token)`. Cancelling it stops the turn at its next await point —
+including the provider request before the first token, whose future is dropped
+and whose turn is committed with an interrupted, empty assistant message.
 
 ### The outcome
 

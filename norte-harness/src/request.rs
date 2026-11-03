@@ -99,9 +99,28 @@ impl Harness {
             model: &*self.model,
             digest: &wire_digest,
         };
-        let stream = self
-            .layered_call(&context, request, &continuation, session.id, sender)
-            .await?;
+        let stream = tokio::select! {
+            biased;
+            () = cancellation.cancelled() => {
+                // The person stopped the turn before the provider was asked.
+                // Commit the same interrupted message the stream path commits
+                // when it is cancelled before its first part; there is no
+                // request to report and no stream to drain. Dropping the other
+                // future closes the HTTP connection.
+                let message = self
+                    .finalize_message(
+                        Accumulated::default(),
+                        true,
+                        model_ref,
+                        digest_of(&reconstructed),
+                    )
+                    .await?;
+                return Ok((message, true, Vec::new()));
+            }
+            stream = self.layered_call(&context, request, &continuation, session.id, sender) => {
+                stream?
+            }
+        };
         let request_digest = wire_digest
             .lock()
             .unwrap_or_else(PoisonError::into_inner)

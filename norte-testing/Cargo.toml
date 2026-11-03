@@ -24,6 +24,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tokio-util = { workspace = true }
 async-trait = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true }

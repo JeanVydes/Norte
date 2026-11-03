@@ -5,7 +5,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use futures_util::StreamExt;
 use norte_core::{
     CallId, Error, FinishReason, FnExecutor, Message, MessageStatus, Result, Role, SessionId,
     StreamEvent, ToolContext, ToolRegistry,
@@ -37,31 +36,11 @@ fn session_commit(session_id: SessionId) -> Commit {
 #[tokio::test]
 async fn cancellation_interrupts_and_leaves_the_session_resumable() {
     let reference = model("test/echo");
-    let events = vec![
-        StreamEvent::TextStart { index: 0 },
-        StreamEvent::TextDelta {
-            index: 0,
-            text: "a".to_owned(),
-        },
-        StreamEvent::TextDelta {
-            index: 0,
-            text: "b".to_owned(),
-        },
-        StreamEvent::TextDelta {
-            index: 0,
-            text: "c".to_owned(),
-        },
-        StreamEvent::Finish(FinishReason::Stop),
-    ];
-    let scripted = Arc::new(
-        ScriptedModel::new(reference)
-            .turn_delayed(events, Duration::from_millis(30))
-            .turn_text("resumed"),
-    );
+    let scripted = Arc::new(ScriptedModel::new(reference).turn_text("resumed"));
     let engine = HarnessBuilder::new()
         .store(connection())
         .blobs(Arc::new(InMemoryBlobStore::new()))
-        .model(scripted)
+        .model(scripted.clone())
         .build()
         .expect("engine");
     let session = engine.create().await.expect("create");
@@ -77,6 +56,11 @@ async fn cancellation_interrupts_and_leaves_the_session_resumable() {
         .map(|origin| origin.status);
     assert_eq!(status, Some(MessageStatus::Interrupted));
     assert_eq!(outcome.session.phase, Phase::Idle);
+    assert_eq!(
+        scripted.request_count(),
+        0,
+        "a cancel before the request sends nothing"
+    );
 
     let resumed = engine
         .send(session.id, Message::user("again"))
@@ -160,28 +144,19 @@ async fn cancelling_a_turn_reaches_the_running_tool() {
         .expect("engine");
     let session = engine.create().await.expect("create");
 
-    let mut stream = engine.send(session.id, Message::user("go"));
-    loop {
-        if let Some(sr) = stream.step().await.expect("step") {
-            let mut found = false;
-            for ev in sr.events {
-                if let EngineEvent::ToolCallStarted { .. } = ev {
-                    found = true;
-                }
-            }
-            if found {
-                break;
-            }
-            if matches!(sr.step, norte_harness::Step::Done(_)) {
-                break;
-            }
-        } else {
-            break;
-        }
-    }
-    started.notified().await;
-    stream.cancel();
+    let token = tokio_util::sync::CancellationToken::new();
+    let mut stream = engine
+        .turn(session.id)
+        .input(Message::user("go"))
+        .cancellation(token.clone())
+        .start_stepped();
+    let tool_started = Arc::clone(&started);
+    let canceller = tokio::spawn(async move {
+        tool_started.notified().await;
+        token.cancel();
+    });
     let outcome = stream.finish().await.expect("turn");
+    canceller.await.expect("canceller");
 
     assert!(
         observed.load(Ordering::SeqCst),
@@ -249,28 +224,19 @@ async fn cancelling_a_turn_reaches_an_early_tool() {
         .expect("engine");
     let session = engine.create().await.expect("create");
 
-    let mut stream = engine.send(session.id, Message::user("go"));
-    loop {
-        if let Some(sr) = stream.step().await.expect("step") {
-            let mut found = false;
-            for ev in sr.events {
-                if let EngineEvent::ToolCallStarted { .. } = ev {
-                    found = true;
-                }
-            }
-            if found {
-                break;
-            }
-            if matches!(sr.step, norte_harness::Step::Done(_)) {
-                break;
-            }
-        } else {
-            break;
-        }
-    }
-    started.notified().await;
-    stream.cancel();
+    let token = tokio_util::sync::CancellationToken::new();
+    let mut stream = engine
+        .turn(session.id)
+        .input(Message::user("go"))
+        .cancellation(token.clone())
+        .start_stepped();
+    let tool_started = Arc::clone(&started);
+    let canceller = tokio::spawn(async move {
+        tool_started.notified().await;
+        token.cancel();
+    });
     let _ = stream.finish().await.expect("turn");
+    canceller.await.expect("canceller");
 
     assert!(
         observed.load(Ordering::SeqCst),
@@ -321,27 +287,20 @@ async fn cancelling_mid_stream_answers_the_tool_call_it_committed() {
     let mut stream = engine.send(session.id, Message::user("go"));
     // Cancel the moment the call is complete, before the stream finishes and
     // before any tool runs.
-    loop {
-        if let Some(sr) = stream.step().await.expect("step") {
-            let mut done = false;
-            for ev in sr.events {
-                match ev {
-                    EngineEvent::PartCompleted { .. } => {
-                        done = true;
-                    }
-                    EngineEvent::ToolCallStarted { .. } => {
-                        panic!("no tool must run before the cancel");
-                    }
-                    _ => {}
+    while let Some(sr) = stream.step().await.expect("step") {
+        let mut done = false;
+        for ev in sr.events {
+            match ev {
+                EngineEvent::PartCompleted { .. } => {
+                    done = true;
                 }
+                EngineEvent::ToolCallStarted { .. } => {
+                    panic!("no tool must run before the cancel");
+                }
+                _ => {}
             }
-            if done {
-                break;
-            }
-            if matches!(sr.step, norte_harness::Step::Done(_)) {
-                break;
-            }
-        } else {
+        }
+        if done || matches!(sr.step, norte_harness::Step::Done(_)) {
             break;
         }
     }

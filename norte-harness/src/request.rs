@@ -412,7 +412,8 @@ impl Harness {
         match self.layers.run(context, request, continuation).await {
             Ok(stream) => Ok(stream),
             Err(Error::ShortCircuited { layer, reason }) => {
-                self.emit(
+                eprintln!("DBG layered_call ShortCircuited layer={layer}");
+                let emitted = self.emit(
                     sender,
                     EngineEvent::LayerShortCircuited {
                         session,
@@ -421,6 +422,7 @@ impl Harness {
                     },
                 )
                 .await;
+                eprintln!("DBG layered_call emitted={emitted}");
                 Err(Error::ShortCircuited { layer, reason })
             }
             Err(error) => Err(error),

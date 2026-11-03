@@ -241,7 +241,8 @@ impl Turn {
                         continue;
                     }
                     self.state.session = Some(session_mut.clone());
-                    let _ = self.drain_events();
+                    let drained = self.drain_events();
+                    eprintln!("DBG step Err drained: {:?}", drained);
                     return Err(error);
                 }
             }

@@ -14,7 +14,6 @@ categories = ["development-tools::testing"]
 
 [dependencies]
 norte-core = { workspace = true }
-norte-harness = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
 serde_json = { workspace = true }

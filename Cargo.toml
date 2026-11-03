@@ -2,29 +2,15 @@
 resolver = "3"
 exclude = ["fuzz"]
 members = [
-    "benchmarks/agent-cost",
-    "benchmarks/cache-hit",
-    "benchmarks/latency",
-    "benchmarks/long-context",
-    "benchmarks/roundtrip-fidelity",
-    "benchmarks/schema-friction",
-    "benchmarks/support",
-    "benchmarks/token-counting",
-    "benchmarks/tool-loop",
-    "benchmarks/transport-retry",
-    "examples/cookbook",
     "norte",
-    "norte-facade-smoke",
     "norte-macros",
     "norte-core",
-    "norte-harness",
     "norte-http",
     "norte-anthropic",
     "norte-openai",
     "norte-gemini",
     "norte-tools",
     "norte-media",
-    "norte-testing",
     "norte-mcp",
 ]
 
@@ -40,7 +26,6 @@ authors = ["Jean Vides <j@vyde.dev>"]
 [workspace.dependencies]
 norte-macros = { path = "norte-macros", version = "0.0.2" }
 norte-core = { path = "norte-core", version = "0.0.2" }
-norte-harness = { path = "norte-harness", version = "0.0.2" }
 norte-http = { path = "norte-http", version = "0.0.2" }
 norte-anthropic = { path = "norte-anthropic", version = "0.0.2" }
 norte-openai = { path = "norte-openai", version = "0.0.2" }
@@ -49,7 +34,6 @@ norte-tools = { path = "norte-tools", version = "0.0.2" }
 norte-media = { path = "norte-media", version = "0.0.2" }
 norte-testing = { path = "norte-testing", version = "0.0.2" }
 norte-mcp = { path = "norte-mcp", version = "0.0.2" }
-norte-bench-support = { path = "benchmarks/support", version = "0.0.2" }
 
 tokio-tungstenite = "0.26"
 

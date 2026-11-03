@@ -1,8 +1,6 @@
 use norte_core::{
-    ContinuityFragment, ContinuityScope, ContinuitySemantics, Error, Message, Model, ModelRef,
-    NodeId, ReplayDecision, SessionId,
+    ContinuityFragment, ContinuityScope, ContinuitySemantics, Model, ModelRef, ReplayDecision,
 };
-use norte_harness::{Commit, Node, Phase, Store};
 
 /// Runs the [`Model`] contract every adapter must satisfy (FR-TEST-1).
 ///
@@ -62,98 +60,4 @@ pub fn model_conformance(model: &dyn Model, expected: &ModelRef) {
         "merging the same fragment must be deterministic"
     );
     assert!(merged.payload().ends_with(b"tail"));
-}
-
-/// Runs the full [`Store`] contract against `store`.
-///
-/// Every backend in the workspace calls this from its own test module, so a
-/// durable store cannot silently drift from the reference semantics.
-///
-/// # Panics
-///
-/// Panics when the store violates the contract.
-pub async fn store_conformance(store: &dyn Store) {
-    let session_id = SessionId::new();
-    let created = store
-        .commit(create_commit(session_id))
-        .await
-        .expect("create session");
-    assert_eq!(created.version, 1, "a new session starts at version 1");
-
-    match store.commit(create_commit(session_id)).await {
-        Err(Error::StoreConflict {
-            expected: None,
-            actual,
-            ..
-        }) => assert_eq!(actual, 1),
-        other => panic!("recreating a session must conflict, got {other:?}"),
-    }
-
-    let user = Node::message(Message::user("hello"), None);
-    let assistant = Node::message(Message::assistant("hi there"), Some(user.id));
-    let session = store
-        .commit(Commit {
-            session_id,
-            expected_version: Some(created.version),
-            nodes: vec![user.clone(), assistant.clone()],
-            head: Some(assistant.id),
-            phase: Phase::Idle,
-            turn: 1,
-            metadata: None,
-        })
-        .await
-        .expect("append turn");
-    assert_eq!(session.version, 2);
-    assert_eq!(session.head, Some(assistant.id));
-
-    let loaded = store.load(session_id).await.expect("load session");
-    assert_eq!(loaded, session);
-
-    let history = store.history(session.head).await.expect("history");
-    assert_eq!(history.len(), 2);
-    assert_eq!(history[0].text(), "hello");
-    assert_eq!(history[1].text(), "hi there");
-
-    let ancestors = store.ancestors(assistant.id).await.expect("ancestors");
-    assert_eq!(ancestors, vec![user.id, assistant.id]);
-
-    let children = store.children(user.id).await.expect("children");
-    assert_eq!(children, vec![assistant.id]);
-
-    match store
-        .commit(Commit {
-            session_id,
-            expected_version: Some(created.version),
-            nodes: Vec::new(),
-            head: None,
-            phase: Phase::Idle,
-            turn: 1,
-            metadata: None,
-        })
-        .await
-    {
-        Err(Error::StoreConflict {
-            expected: Some(1),
-            actual: 2,
-            ..
-        }) => {}
-        other => panic!("stale version must conflict, got {other:?}"),
-    }
-
-    match store.node(NodeId::new()).await {
-        Err(Error::NodeNotFound(_)) => {}
-        other => panic!("missing node must be a typed error, got {other:?}"),
-    }
-}
-
-fn create_commit(session_id: SessionId) -> Commit {
-    Commit {
-        session_id,
-        expected_version: None,
-        nodes: Vec::new(),
-        head: None,
-        phase: Phase::Idle,
-        turn: 0,
-        metadata: None,
-    }
 }

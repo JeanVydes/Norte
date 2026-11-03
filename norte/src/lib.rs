@@ -47,8 +47,6 @@ pub use norte_http as http;
 pub use norte_anthropic as anthropic;
 #[cfg(feature = "gemini")]
 pub use norte_gemini as gemini;
-#[cfg(feature = "harness")]
-pub use norte_harness as harness;
 #[cfg(feature = "mcp")]
 pub use norte_mcp as mcp;
 #[cfg(feature = "media")]
@@ -100,8 +98,6 @@ pub mod prelude {
         Capabilities, Error, FnExecutor, Layer, Message, Modality, Model, ModelRef, Part, Role,
         ToolOutput, ToolRegistry, TurnOptions, Usage,
     };
-    #[cfg(feature = "harness")]
-    pub use norte_harness::{Harness, HarnessBuilder, InMemoryStore, TurnInterceptor};
 
     #[cfg(feature = "tools")]
     pub use norte_tools::{EditTool, ReadTool, ShellTool, WriteTool};
@@ -109,33 +105,8 @@ pub mod prelude {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
 
     use super::*;
-
-    #[cfg(all(feature = "openai", feature = "harness"))]
-    #[test]
-    fn a_turn_can_be_wired_through_the_facade_alone() {
-        use harness::{HarnessBuilder, InMemoryStore};
-        use norte_core::blob::InMemoryBlobStore;
-
-        let capabilities = Capabilities::builder()
-            .input(Modality::Text)
-            .output(Modality::Text)
-            .build();
-        let model = presets::openai("gpt-5", "sk-test", capabilities).expect("a model");
-
-        let engine = HarnessBuilder::new()
-            .store(Arc::new(InMemoryStore::new()))
-            .blobs(Arc::new(InMemoryBlobStore::new()))
-            .model(Arc::new(model))
-            .tools(ToolRegistry::new())
-            .build()
-            .expect("an engine");
-
-        assert_eq!(engine.tools().len(), 0);
-        assert_eq!(openai::WIRE_CHAT, "openai.chat");
-    }
 
     #[test]
     fn the_root_is_the_core() {

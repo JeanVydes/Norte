@@ -1,14 +1,13 @@
 use std::collections::BTreeMap;
 
 use base64::Engine as _;
-use futures_util::StreamExt;
 use norte_core::{
     CallId, Citation, CitationSource, Error, ExtensionPart, FinishReason, LogprobAlternative,
     LogprobValue, MediaKind, MediaMetadata, MimeType, ModelStream, Part, ProviderError,
     ProviderErrorKind, ProviderId, ProviderTool, ReasoningVisibility, RefusalPart, Result,
     StreamEvent, TokenLogprob, Usage, VendorUsage,
 };
-use norte_http::SseStream;
+use norte_http::{SseStream, decode_model_stream};
 use serde_json::Value;
 
 use crate::continuity::OpenAiContinuity;
@@ -23,27 +22,7 @@ const AUDIO_MIME: &str = "audio/pcm16";
 /// Maps the vendor `SSE` stream into core stream events.
 pub(crate) fn map(sse: SseStream, continuity: OpenAiContinuity) -> ModelStream {
     let mut decoder = Decoder::new(continuity);
-    let mut failed = false;
-    let stream = sse.flat_map(move |event| {
-        let mut out: Vec<Result<StreamEvent>> = Vec::new();
-        if !failed {
-            match event {
-                Ok(event) => match decoder.decode(&event.data) {
-                    Ok(events) => out.extend(events.into_iter().map(Ok)),
-                    Err(error) => {
-                        out.push(Err(error));
-                        failed = true;
-                    }
-                },
-                Err(error) => {
-                    out.push(Err(error));
-                    failed = true;
-                }
-            }
-        }
-        futures_util::stream::iter(out)
-    });
-    Box::pin(stream)
+    decode_model_stream(sse, move |event| decoder.decode(&event.data))
 }
 
 #[derive(Clone, Debug)]
@@ -658,6 +637,20 @@ mod tests {
         events
     }
 
+    async fn drain_partial(data: &[&str]) -> Vec<StreamEvent> {
+        let mut results: Vec<_> = map(stream_of(data), continuity()).collect().await;
+        let error = results
+            .pop()
+            .expect("EOF error")
+            .expect_err("missing Finish");
+        assert_eq!(error.provider_kind(), Some(ProviderErrorKind::Decode));
+        assert!(error.to_string().contains("unexpected EOF"));
+        results
+            .into_iter()
+            .collect::<Result<Vec<_>>>()
+            .expect("decoded events")
+    }
+
     /// Loads a recorded transcript — a JSON array of SSE `data` payloads — and
     /// maps it through the wire, so live-provider behaviour is pinned hermetically
     /// (FR-TEST-2).
@@ -829,7 +822,7 @@ mod tests {
 
     #[tokio::test]
     async fn image_generation_output_is_materialized() {
-        let events = drain(&[
+        let events = drain_partial(&[
             r#"{"type":"response.output_item.done","output_index":0,"item":{"type":"image_generation_call","result":"AQID","status":"completed","size":"16x16"}}"#,
         ])
         .await;
@@ -858,7 +851,7 @@ mod tests {
 
     #[tokio::test]
     async fn streamed_refusal_becomes_a_refusal_part() {
-        let events = drain(&[
+        let events = drain_partial(&[
             r#"{"type":"response.refusal.delta","output_index":0,"content_index":0,"delta":"I can"}"#,
             r#"{"type":"response.refusal.done","output_index":0,"content_index":0,"refusal":"I cannot help"}"#,
         ])
@@ -883,7 +876,7 @@ mod tests {
 
     #[tokio::test]
     async fn streamed_audio_output_is_materialized() {
-        let events = drain(&[
+        let events = drain_partial(&[
             r#"{"type":"response.audio.transcript.delta","response_id":"r","delta":"hello"}"#,
             r#"{"type":"response.audio.delta","response_id":"r","delta":"AQID"}"#,
             r#"{"type":"response.audio.delta","response_id":"r","delta":"BAU="}"#,
@@ -932,7 +925,7 @@ mod tests {
 
     #[tokio::test]
     async fn url_citation_annotations_become_citations() {
-        let events = drain(&[
+        let events = drain_partial(&[
             r#"{"type":"response.output_text.delta","output_index":0,"delta":"see "}"#,
             r#"{"type":"response.output_text.annotation.added","output_index":0,"content_index":0,"annotation_index":0,"annotation":{"type":"url_citation","url":"https://example.test","title":"Example","start_index":0,"end_index":3}}"#,
         ])
@@ -950,7 +943,7 @@ mod tests {
 
     #[tokio::test]
     async fn file_citations_name_the_provider_file() {
-        let events = drain(&[
+        let events = drain_partial(&[
             r#"{"type":"response.output_text.annotation.added","output_index":0,"annotation":{"type":"file_citation","file_id":"file_1","filename":"notes.txt","index":0}}"#,
         ])
         .await;
@@ -967,7 +960,7 @@ mod tests {
 
     #[tokio::test]
     async fn provider_tool_items_are_typed() {
-        let events = drain(&[
+        let events = drain_partial(&[
             r#"{"type":"response.output_item.done","output_index":0,"item":{"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"search","query":"rust"}}}"#,
             r#"{"type":"response.output_item.done","output_index":1,"item":{"type":"file_search_call","id":"fs_1","status":"completed","queries":["rust"],"results":[{"file_id":"f_1","text":"fast"}]}}"#,
         ])
@@ -987,7 +980,7 @@ mod tests {
 
     #[tokio::test]
     async fn host_executed_items_round_trip_as_extensions() {
-        let events = drain(&[
+        let events = drain_partial(&[
             r#"{"type":"response.output_item.done","output_index":0,"item":{"type":"custom_tool_call","call_id":"c_1","name":"run","input":"x"}}"#,
         ])
         .await;
@@ -1015,7 +1008,7 @@ mod tests {
         let error = stream.next().await.expect("some").expect_err("error");
         assert_eq!(error.provider_kind(), Some(ProviderErrorKind::Other));
 
-        let done = drain(&["[DONE]", r#"{"type":"response.created"}"#]).await;
+        let done = drain_partial(&["[DONE]", r#"{"type":"response.created"}"#]).await;
         assert!(
             done.is_empty(),
             "the sentinel and the creation marker are dropped"
@@ -1024,7 +1017,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_text_delta_carries_the_logprobs_of_its_index() {
-        let events = drain(&[
+        let events = drain_partial(&[
             r#"{"type":"response.output_text.delta","output_index":2,"content_index":0,"delta":"Hi","logprobs":[{"token":"Hi","logprob":-0.1,"top_logprobs":[{"token":"Hello","logprob":-2.0}]}]}"#,
         ])
         .await;
@@ -1058,7 +1051,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_text_delta_without_logprobs_yields_text_alone() {
-        let events = drain(&[
+        let events = drain_partial(&[
             r#"{"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"plain"}"#,
         ])
         .await;

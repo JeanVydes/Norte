@@ -134,30 +134,13 @@ impl HttpClient {
         path: &str,
         body: Option<&Value>,
     ) -> Result<Value> {
-        let mut retries = 0u32;
-        loop {
-            let sent = self
-                .send_once(
-                    profile,
-                    method.clone(),
-                    path,
-                    body,
-                    "application/json",
-                    self.policy.request_timeout,
-                )
-                .await;
-            match sent {
-                Ok(response) => return read_json(response).await,
-                Err(error) => match self.backoff(retries, &error) {
-                    Some(delay) => {
-                        tracing::debug!(retries, delay = ?delay, "retrying HTTP request");
-                        tokio::time::sleep(delay).await;
-                        retries += 1;
-                    }
-                    None => return Err(error),
-                },
-            }
-        }
+        deadline(self.policy.request_timeout, async {
+            let response = self
+                .send_retry(profile, method, path, body, "application/json")
+                .await?;
+            read_json(response).await
+        })
+        .await
     }
 
     /// Sends a `multipart/form-data` `POST` and decodes the `JSON` response
@@ -202,22 +185,11 @@ impl HttpClient {
                 }
             };
         }
-        let mut builder = self.request(profile, Method::POST, path)?.multipart(form);
-        if let Some(timeout) = self.policy.request_timeout {
-            builder = builder.timeout(timeout);
-        }
-        let response = builder.send().await.map_err(|error| transport(&error))?;
-        let status = response.status();
-        if !status.is_success() {
-            let retry_after = response
-                .headers()
-                .get(RETRY_AFTER)
-                .and_then(|value| value.to_str().ok())
-                .and_then(parse_retry_after);
-            let text = response.text().await.unwrap_or_default();
-            return Err(status_error(status, &text, retry_after));
-        }
-        read_json(response).await
+        let builder = self.request(profile, Method::POST, path)?.multipart(form);
+        deadline(self.policy.request_timeout, async {
+            read_json(send(builder).await?).await
+        })
+        .await
     }
 
     /// Sends a `GET` and returns the raw response body.
@@ -230,33 +202,30 @@ impl HttpClient {
     /// Returns a mapped [`Error::Provider`] for any non-success status or
     /// transport failure.
     pub async fn send_get_bytes(&self, profile: &VendorProfile, path: &str) -> Result<Vec<u8>> {
-        let mut builder = self
+        let builder = self
             .request(profile, Method::GET, path)?
             .header(ACCEPT, "application/octet-stream");
-        if let Some(timeout) = self.policy.request_timeout {
-            builder = builder.timeout(timeout);
-        }
-        let response = builder.send().await.map_err(|error| transport(&error))?;
-        let status = response.status();
-        if !status.is_success() {
-            let retry_after = response
-                .headers()
-                .get(RETRY_AFTER)
-                .and_then(|value| value.to_str().ok())
-                .and_then(parse_retry_after);
-            let text = response.text().await.unwrap_or_default();
-            return Err(status_error(status, &text, retry_after));
-        }
-        let bytes = response.bytes().await.map_err(|error| transport(&error))?;
-        Ok(bytes.to_vec())
+        deadline(self.policy.request_timeout, async {
+            let bytes = send(builder)
+                .await?
+                .bytes()
+                .await
+                .map_err(|error| transport(&error))?;
+            Ok(bytes.to_vec())
+        })
+        .await
     }
 
     /// Opens an `SSE` stream, retrying a connection that never reached the
     /// provider.
     ///
     /// Unlike a `JSON` call the stream is not bounded as a whole — a long answer
-    /// is normal — but the policy's `stream_idle_timeout` fails it when the
-    /// provider stops sending mid-answer.
+    /// is normal. `request_timeout` bounds opening through successful response
+    /// headers, including connection attempts and retry backoffs (and error-body
+    /// reads for non-success statuses). It never follows a successful body.
+    /// After opening, only `stream_idle_timeout` bounds the wait for each event.
+    /// Neither a timeout nor any failure after headers is retried: the provider
+    /// may already be doing billable work.
     ///
     /// # Errors
     ///
@@ -268,35 +237,15 @@ impl HttpClient {
         path: &str,
         body: &Value,
     ) -> Result<SseStream> {
-        let mut retries = 0u32;
-        loop {
-            let sent = self
-                .send_once(
-                    profile,
-                    Method::POST,
-                    path,
-                    Some(body),
-                    "text/event-stream",
-                    self.policy.request_timeout,
-                )
-                .await;
-            match sent {
-                Ok(response) => {
-                    return Ok(guard_idle(
-                        decode_sse(response),
-                        self.policy.stream_idle_timeout,
-                    ));
-                }
-                Err(error) => match self.backoff(retries, &error) {
-                    Some(delay) => {
-                        tracing::debug!(retries, delay = ?delay, "retrying SSE connection");
-                        tokio::time::sleep(delay).await;
-                        retries += 1;
-                    }
-                    None => return Err(error),
-                },
-            }
-        }
+        let response = deadline(
+            self.policy.request_timeout,
+            self.send_retry(profile, Method::POST, path, Some(body), "text/event-stream"),
+        )
+        .await?;
+        Ok(guard_idle(
+            decode_sse(response),
+            self.policy.stream_idle_timeout,
+        ))
     }
 
     /// The delay before retrying `error`, or `None` when the transport does not
@@ -328,37 +277,71 @@ impl HttpClient {
         Ok(builder)
     }
 
-    async fn send_once(
+    async fn send_retry(
         &self,
         profile: &VendorProfile,
         method: Method,
         path: &str,
         body: Option<&Value>,
         accept: &str,
-        timeout: Option<Duration>,
     ) -> Result<Response> {
-        let builder = self.request(profile, method, path)?.header(ACCEPT, accept);
-        let builder = match body {
-            Some(body) => builder.json(body),
-            None => builder,
-        };
-        let builder = match timeout {
-            Some(timeout) => builder.timeout(timeout),
-            None => builder,
-        };
-        let response = builder.send().await.map_err(|error| transport(&error))?;
-        let status = response.status();
-        if status.is_success() {
-            return Ok(response);
+        let mut retries = 0;
+        loop {
+            let builder = self
+                .request(profile, method.clone(), path)?
+                .header(ACCEPT, accept);
+            let builder = match body {
+                Some(body) => builder.json(body),
+                None => builder,
+            };
+            match send(builder).await {
+                Ok(response) => return Ok(response),
+                Err(error) => match self.backoff(retries, &error) {
+                    Some(delay) => {
+                        tracing::debug!(retries, delay = ?delay, "retrying HTTP connection");
+                        tokio::time::sleep(delay).await;
+                        retries += 1;
+                    }
+                    None => return Err(error),
+                },
+            }
         }
-        let retry_after = response
-            .headers()
-            .get(RETRY_AFTER)
-            .and_then(|value| value.to_str().ok())
-            .and_then(parse_retry_after);
-        let text = response.text().await.unwrap_or_default();
-        Err(status_error(status, &text, retry_after))
     }
+}
+
+async fn deadline<T>(
+    timeout: Option<Duration>,
+    future: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    match timeout {
+        Some(timeout) => tokio::time::timeout(timeout, future)
+            .await
+            .unwrap_or_else(|_| {
+                Err(Error::provider(
+                    ProviderError::new(
+                        ProviderErrorKind::Transport,
+                        "HTTP request deadline elapsed",
+                    )
+                    .with_extension(STAGE, Value::from("timeout")),
+                ))
+            }),
+        None => future.await,
+    }
+}
+
+async fn send(builder: RequestBuilder) -> Result<Response> {
+    let response = builder.send().await.map_err(|error| transport(&error))?;
+    let status = response.status();
+    if status.is_success() {
+        return Ok(response);
+    }
+    let retry_after = response
+        .headers()
+        .get(RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(parse_retry_after);
+    let text = response.text().await.unwrap_or_default();
+    Err(status_error(status, &text, retry_after))
 }
 
 async fn read_json(response: Response) -> Result<Value> {
@@ -370,15 +353,29 @@ async fn read_json(response: Response) -> Result<Value> {
 }
 
 fn decode_sse(response: Response) -> SseStream {
-    let mut decoder = SseDecoder::new();
-    let stream = response.bytes_stream().flat_map(move |chunk| {
-        let events: Vec<Result<SseEvent>> = match chunk {
-            Ok(bytes) => decoder.push(&bytes).into_iter().map(Ok).collect(),
-            Err(error) => vec![Err(transport(&error))],
-        };
-        futures_util::stream::iter(events)
-    });
-    Box::pin(stream)
+    Box::pin(futures_util::stream::unfold(
+        Some((
+            response.bytes_stream(),
+            SseDecoder::new(),
+            std::collections::VecDeque::<Result<SseEvent>>::new(),
+        )),
+        |state| async move {
+            let (mut stream, mut decoder, mut pending) = state?;
+            loop {
+                if let Some(event) = pending.pop_front() {
+                    if event.is_err() {
+                        return Some((event, None));
+                    }
+                    return Some((event, Some((stream, decoder, pending))));
+                }
+                match stream.next().await {
+                    Some(Ok(bytes)) => pending.extend(decoder.push(&bytes)),
+                    Some(Err(error)) => return Some((Err(transport(&error)), None)),
+                    None => return decoder.finish().err().map(|error| (Err(error), None)),
+                }
+            }
+        },
+    ))
 }
 
 /// Fails the stream with a transport error when the provider stays silent for
@@ -419,10 +416,9 @@ fn stalled(idle: Duration) -> Error {
 /// This is the host's helper, not the transport's rule. The transport itself
 /// retries only a connection that never reached the provider (see
 /// [`TransportPolicy`]), since a retry after the provider started working can
-/// make it work twice. A host that retries these keeps the whole turn: a failed
-/// turn leaves the session resumable, so `Harness::resume` picks it up where it
-/// stopped — including any [`retry_after`](Error::retry_after) the provider
-/// asked for.
+/// make it work twice. The host decides whether retrying is safe for its own
+/// operation and should respect any [`retry_after`](Error::retry_after) the
+/// provider asked for. This classification does not promise resumable sessions.
 #[must_use]
 pub fn is_transient(error: &Error) -> bool {
     matches!(
@@ -448,10 +444,10 @@ fn never_reached_provider(error: &Error) -> bool {
 }
 
 fn transport(error: &reqwest::Error) -> Error {
-    let (kind, stage) = if error.is_connect() {
-        (ProviderErrorKind::Transport, "connect")
-    } else if error.is_timeout() {
+    let (kind, stage) = if error.is_timeout() {
         (ProviderErrorKind::Transport, "timeout")
+    } else if error.is_connect() {
+        (ProviderErrorKind::Transport, "connect")
     } else if error.is_decode() {
         (ProviderErrorKind::Decode, "decode")
     } else {
@@ -519,6 +515,10 @@ fn error_message(body: &str) -> Option<String> {
     }
     error.as_str().map(ToOwned::to_owned)
 }
+
+#[cfg(test)]
+#[path = "client_tests.rs"]
+mod transport_tests;
 
 #[cfg(test)]
 mod tests {
@@ -657,7 +657,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_silent_stream_fails_instead_of_hanging() {
         let stream: SseStream = Box::pin(futures_util::stream::pending());
         let mut guarded = guard_idle(stream, Some(Duration::from_millis(10)));

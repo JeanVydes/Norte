@@ -94,7 +94,7 @@ pub(crate) fn build_with_quirks(
     if let Some(top) = request.params.logprobs {
         body.insert("top_logprobs".to_owned(), json!(top));
     }
-    if !quirks.contains(Quirk::NoPromptCacheKey) {
+    if !quirks.contains(&Quirk::NoPromptCacheKey) {
         if let Some(key) = request
             .extensions
             .get(SESSION_EXTENSION)
@@ -104,7 +104,46 @@ pub(crate) fn build_with_quirks(
         }
     }
     splice_vendor_extensions(model, WIRE_RESPONSES, &request.extensions, &mut body)?;
+    validate_quirks(model, quirks, &body)?;
     Ok(Value::Object(body))
+}
+
+fn validate_quirks(
+    model: &ModelRef,
+    quirks: &Quirks,
+    body: &serde_json::Map<String, Value>,
+) -> Result<()> {
+    // Only fields this wire supports are restricted; seed and stop are Chat-only.
+    // Inspect nested fields after splicing both object and dotted extensions.
+    for (quirk, field, requested) in [
+        (
+            Quirk::NoStructuredOutput,
+            "text.format",
+            body.get("text")
+                .and_then(|text| text.get("format"))
+                .is_some(),
+        ),
+        (
+            Quirk::NoReasoningEffort,
+            "reasoning.effort",
+            body.get("reasoning")
+                .and_then(|reasoning| reasoning.get("effort"))
+                .is_some(),
+        ),
+        (
+            Quirk::NoPromptCacheKey,
+            "prompt_cache_key",
+            body.contains_key("prompt_cache_key"),
+        ),
+    ] {
+        if quirks.contains(&quirk) && requested {
+            return Err(Error::Capability {
+                model: model.clone(),
+                feature: format!("`{field}` (the vendor declares {quirk:?})"),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn split_instructions(messages: &[Message]) -> (Option<String>, &[Message]) {
@@ -844,6 +883,83 @@ mod tests {
         let quirks: Quirks = [Quirk::NoPromptCacheKey].into_iter().collect();
         let body = build_with_quirks(&model(), &continuity(), &quirks, &request).expect("build");
         assert!(body.get("prompt_cache_key").is_none());
+    }
+
+    #[test]
+    fn explicit_features_against_deviating_vendors_are_typed_errors() {
+        for (quirk, field) in [
+            (Quirk::NoStructuredOutput, "text.format"),
+            (Quirk::NoReasoningEffort, "reasoning.effort"),
+        ] {
+            let quirks = [quirk].into_iter().collect();
+            let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
+            build_with_quirks(&model(), &continuity(), &quirks, &request).expect("unset");
+            if quirk == Quirk::NoStructuredOutput {
+                request.params.output_schema = Some(json!({ "type": "object" }));
+            } else {
+                request.reasoning = ReasoningRequest::Effort(ReasoningEffort::High);
+            }
+            build(&model(), &continuity(), &request).expect("supported");
+            let error = build_with_quirks(&model(), &continuity(), &quirks, &request)
+                .expect_err("rejected");
+            assert!(matches!(error, Error::Capability { model: target, feature }
+                if target == model() && feature.contains(field)));
+        }
+        let mut request = ModelRequest::new(model(), vec![]);
+        request.reasoning = ReasoningRequest::Disabled;
+        let quirks = [Quirk::NoReasoningEffort].into_iter().collect();
+        let error = build_with_quirks(&model(), &continuity(), &quirks, &request)
+            .expect_err("disabled also serializes an effort");
+        assert!(matches!(error, Error::Capability { .. }));
+    }
+
+    #[test]
+    fn vendor_extensions_cannot_bypass_quirks() {
+        for (quirk, field, value) in [
+            (
+                Quirk::NoStructuredOutput,
+                "text",
+                json!({ "format": { "type": "json_object" } }),
+            ),
+            (
+                Quirk::NoStructuredOutput,
+                "text.format",
+                json!({ "type": "json_object" }),
+            ),
+            (
+                Quirk::NoReasoningEffort,
+                "reasoning",
+                json!({ "effort": "high" }),
+            ),
+            (Quirk::NoReasoningEffort, "reasoning.effort", json!("high")),
+            (
+                Quirk::NoPromptCacheKey,
+                "prompt_cache_key",
+                json!("explicit"),
+            ),
+        ] {
+            let quirks = [quirk].into_iter().collect();
+            let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
+            request
+                .extensions
+                .insert(format!("{WIRE_RESPONSES}:{field}"), value);
+            let error = build_with_quirks(&model(), &continuity(), &quirks, &request)
+                .expect_err("rejected");
+            assert!(matches!(error, Error::Capability { model: target, feature }
+                if target == model() && feature.contains(field)));
+        }
+        let quirks = [Quirk::NoStructuredOutput, Quirk::NoReasoningEffort]
+            .into_iter()
+            .collect();
+        let mut request = ModelRequest::new(model(), vec![]);
+        request
+            .extensions
+            .insert(format!("{WIRE_RESPONSES}:text.verbosity"), json!("low"));
+        request
+            .extensions
+            .insert(format!("{WIRE_RESPONSES}:reasoning.summary"), json!("auto"));
+        build_with_quirks(&model(), &continuity(), &quirks, &request)
+            .expect("unrestricted sibling fields");
     }
 
     #[test]

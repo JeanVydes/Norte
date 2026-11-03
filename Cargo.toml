@@ -3,6 +3,7 @@ resolver = "3"
 exclude = ["fuzz"]
 members = [
     "norte",
+    "norte-facade-smoke",
     "norte-macros",
     "norte-core",
     "norte-http",

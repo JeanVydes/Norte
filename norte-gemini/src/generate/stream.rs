@@ -1,13 +1,12 @@
 use std::collections::BTreeMap;
 
-use futures_util::StreamExt;
 use norte_core::{
     CallId, Citation, CitationSource, Error, ExtensionPart, FinishReason, LogprobAlternative,
     LogprobValue, MediaKind, MediaMetadata, MediaPart, MediaSource, MimeType, ModelStream, Part,
     ProviderError, ProviderErrorKind, ProviderTool, ReasoningVisibility, Result, SafetyRating,
     StreamEvent, TokenLogprob, Usage, VendorUsage,
 };
-use norte_http::SseStream;
+use norte_http::{SseStream, decode_model_stream};
 use serde_json::{Value, json};
 
 use crate::continuity::GeminiContinuity;
@@ -16,27 +15,7 @@ use crate::json::{base64_decode, opt_str};
 /// Maps the vendor `SSE` stream into core stream events.
 pub(crate) fn map(sse: SseStream, continuity: GeminiContinuity) -> ModelStream {
     let mut decoder = Decoder::new(continuity);
-    let mut failed = false;
-    let stream = sse.flat_map(move |event| {
-        let mut out: Vec<Result<StreamEvent>> = Vec::new();
-        if !failed {
-            match event {
-                Ok(event) => match decoder.decode(&event.data) {
-                    Ok(events) => out.extend(events.into_iter().map(Ok)),
-                    Err(error) => {
-                        out.push(Err(error));
-                        failed = true;
-                    }
-                },
-                Err(error) => {
-                    out.push(Err(error));
-                    failed = true;
-                }
-            }
-        }
-        futures_util::stream::iter(out)
-    });
-    Box::pin(stream)
+    decode_model_stream(sse, move |event| decoder.decode(&event.data))
 }
 
 #[derive(Clone, Debug)]
@@ -768,6 +747,20 @@ mod tests {
         continuity().decode(&token).expect("decode")
     }
 
+    async fn drain_partial(data: &[&str]) -> Vec<StreamEvent> {
+        let mut results: Vec<_> = map(stream_of(data), continuity()).collect().await;
+        let error = results
+            .pop()
+            .expect("EOF error")
+            .expect_err("missing Finish");
+        assert_eq!(error.provider_kind(), Some(ProviderErrorKind::Decode));
+        assert!(error.to_string().contains("unexpected EOF"));
+        results
+            .into_iter()
+            .collect::<Result<Vec<_>>>()
+            .expect("decoded events")
+    }
+
     /// Loads a recorded transcript — a JSON array of SSE `data` payloads — and
     /// maps it through the wire, so live-provider behaviour is pinned hermetically
     /// (FR-TEST-2).
@@ -919,7 +912,7 @@ mod tests {
 
     #[tokio::test]
     async fn text_signature_is_stored_with_the_whole_text() {
-        let events = drain(&[
+        let events = drain_partial(&[
             r#"{"candidates":[{"content":{"parts":[{"text":"an "}]}}]}"#,
             r#"{"candidates":[{"content":{"parts":[{"text":"answer","thoughtSignature":"sig"}]}}]}"#,
         ])
@@ -931,7 +924,7 @@ mod tests {
 
     #[tokio::test]
     async fn inline_media_is_materialized() {
-        let events = drain(&[
+        let events = drain_partial(&[
             r#"{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/png","data":"AQID"}}]}}]}"#,
         ])
         .await;
@@ -956,7 +949,7 @@ mod tests {
 
     #[tokio::test]
     async fn audio_output_is_materialized_as_audio() {
-        let events = drain(&[
+        let events = drain_partial(&[
             r#"{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"audio/wav","data":"AQID"}}]}}]}"#,
         ])
         .await;
@@ -969,7 +962,7 @@ mod tests {
 
     #[tokio::test]
     async fn video_output_is_materialized_as_video() {
-        let events = drain(&[
+        let events = drain_partial(&[
             r#"{"candidates":[{"content":{"parts":[{"fileData":{"mimeType":"video/mp4","fileUri":"https://example.test/a.mp4"}}]}}]}"#,
         ])
         .await;
@@ -985,7 +978,7 @@ mod tests {
 
     #[tokio::test]
     async fn vendor_file_output_is_a_url_for_the_engine_to_ingest() {
-        let events = drain(&[
+        let events = drain_partial(&[
             r#"{"candidates":[{"content":{"parts":[{"fileData":{"mimeType":"image/jpeg","fileUri":"https://example.test/a.jpg"}}]}}]}"#,
         ])
         .await;
@@ -1006,7 +999,7 @@ mod tests {
 
     #[tokio::test]
     async fn code_execution_parts_become_typed_provider_parts() {
-        let events = drain(&[
+        let events = drain_partial(&[
             r#"{"candidates":[{"content":{"parts":[{"executableCode":{"language":"PYTHON","code":"1+1"}}]}}]}"#,
             r#"{"candidates":[{"content":{"parts":[{"codeExecutionResult":{"outcome":"OUTCOME_OK","output":"2"}}]}}]}"#,
         ])
@@ -1038,7 +1031,7 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_parts_round_trip_as_extensions() {
-        let events = drain(&[
+        let events = drain_partial(&[
             r#"{"candidates":[{"content":{"parts":[{"vendorExtension":{"payload":[1,2,3]}}]}}]}"#,
         ])
         .await;
@@ -1058,7 +1051,7 @@ mod tests {
 
     #[tokio::test]
     async fn empty_parts_are_ignored() {
-        let events = drain(&[r#"{"candidates":[{"content":{"parts":[{}]}}]}"#]).await;
+        let events = drain_partial(&[r#"{"candidates":[{"content":{"parts":[{}]}}]}"#]).await;
         assert!(events.is_empty(), "an empty part yields no event");
     }
 
@@ -1106,7 +1099,7 @@ mod tests {
 
     #[tokio::test]
     async fn video_metadata_is_carried_on_the_media_part() {
-        let events = drain(&[
+        let events = drain_partial(&[
             r#"{"candidates":[{"content":{"parts":[{"fileData":{"mimeType":"video/mp4","fileUri":"https://example.test/a.mp4"},"videoMetadata":{"startOffset":"1s","endOffset":"10s","fps":5}}]}}]}"#,
         ])
         .await;
@@ -1126,7 +1119,7 @@ mod tests {
 
     #[tokio::test]
     async fn citation_metadata_sources_become_citations() {
-        let events = drain(&[
+        let events = drain_partial(&[
             r#"{"candidates":[{"content":{"parts":[{"text":"Rust"}]},"citationMetadata":{"citationSources":[{"uri":"https://example.test/a","title":"A"},{"uri":"https://example.test/b","title":"B","startIndex":0,"endIndex":4,"license":"CC"}]}}]}"#,
         ])
         .await;
@@ -1159,7 +1152,7 @@ mod tests {
 
     #[tokio::test]
     async fn safety_ratings_are_surfaced_verbatim() {
-        let events = drain(&[
+        let events = drain_partial(&[
             r#"{"candidates":[{"content":{"parts":[{"text":"hi"}]},"safetyRatings":[{"category":"HARM_CATEGORY_HATE_SPEECH","probability":"NEGLIGIBLE","probabilityScore":0.1,"blocked":false}]}]}"#,
         ])
         .await;
@@ -1174,7 +1167,7 @@ mod tests {
 
     #[tokio::test]
     async fn grounding_attributions_become_citations() {
-        let events = drain(&[
+        let events = drain_partial(&[
             r#"{"candidates":[{"content":{"parts":[{"text":"Rust"}]},"groundingAttributions":[{"sourceId":{"groundingChunk":{"web":{"uri":"https://example.test/a","title":"A"}}},"content":{"parts":[{"text":"Rust"}]}}]}]}"#,
         ])
         .await;
@@ -1190,13 +1183,13 @@ mod tests {
 
     #[tokio::test]
     async fn done_and_empty_chunks_are_ignored() {
-        let events = drain(&["[DONE]", r#"{"candidates":[]}"#]).await;
+        let events = drain_partial(&["[DONE]", r#"{"candidates":[]}"#]).await;
         assert!(events.is_empty(), "done and empty chunks yield no event");
     }
 
     #[tokio::test]
     async fn logprobs_decode_against_the_streamed_text_part() {
-        let events = drain(&[
+        let events = drain_partial(&[
             r#"{"candidates":[{"content":{"parts":[{"text":"Hello"}]},"logprobsResult":{"chosenCandidates":[{"token":"Hello","tokenId":123,"logProbability":-0.4},{"token":" world","logProbability":-0.2}],"topCandidates":[{"candidates":[{"token":"Hello","logProbability":-0.4},{"token":"Hi","logProbability":-1.9}]},{"candidates":[{"token":" world","logProbability":-0.2}]}],"logProbabilitySum":-0.6},"avgLogprobs":-0.3}]}"#,
         ])
         .await;

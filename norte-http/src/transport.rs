@@ -61,7 +61,8 @@ fn parse_http_date(value: &str) -> Option<chrono::DateTime<chrono::Utc>> {
 /// with [`retry_after`](norte_core::Error::retry_after) intact.
 ///
 /// **Timeouts.** `connect_timeout` bounds establishing a connection,
-/// `request_timeout` bounds a whole `JSON` call, and `stream_idle_timeout`
+/// `request_timeout` bounds a whole non-streaming call (or just opening an
+/// `SSE` stream, including retries and successful headers), and `stream_idle_timeout`
 /// bounds the silence *inside* an event stream: a provider that stops sending
 /// mid-answer fails with a transport error instead of hanging the turn forever.
 /// A host whose models think for minutes before the first token raises it or
@@ -77,7 +78,11 @@ pub struct TransportPolicy {
     pub max: Duration,
     /// Cap on establishing one connection.
     pub connect_timeout: Duration,
-    /// Cap on one `JSON` request, response included. `None` waits forever.
+    /// Total deadline for `JSON`, multipart and byte requests, including retries,
+    /// backoff and the response body. For `SSE`, bounds only opening through
+    /// successful headers (including retries/backoff and non-success error-body
+    /// reads); the successful body has no total deadline. `None` disables this
+    /// deadline, not the connection or stream-idle timeout.
     pub request_timeout: Option<Duration>,
     /// Cap on the silence between two events of a stream. `None` waits forever.
     pub stream_idle_timeout: Option<Duration>,

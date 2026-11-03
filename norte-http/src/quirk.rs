@@ -6,89 +6,57 @@ use serde::{Deserialize, Serialize};
 /// (FR-OAI-2).
 ///
 /// The framework ships no vendor table: a host declares the deviations it knows
-/// about on the [`VendorProfile`](crate::VendorProfile), and the adapter omits
-/// the corresponding optional request fields. A deviation is therefore an
-/// explicit, documented host decision rather than a runtime discovery.
+/// about on the [`VendorProfile`](crate::VendorProfile). Adapters omit automatic
+/// fields and reject explicitly requested incompatible features with a typed
+/// capability error, including features supplied through vendor extensions.
+/// Deviations are explicit host decisions rather than runtime discoveries.
 ///
 /// The set is non-exhaustive: new quirks may be added without a breaking change.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum Quirk {
-    /// The vendor rejects `stream_options` and never reports usage on the
-    /// stream, so the adapter omits the object.
+    /// Chat Completions rejects `stream_options`; omit automatic stream usage.
+    /// Does not apply to Responses, which has no such request field.
     NoStreamUsage,
-    /// The vendor rejects `response_format` (structured output). A request that
-    /// asks for a structured output schema against such a vendor is a typed
-    /// error, never a silent omission.
+    /// The vendor rejects structured output: `response_format` on Chat
+    /// Completions or `text.format` on Responses. Explicit requests are typed
+    /// capability errors, never silent omissions.
     NoStructuredOutput,
-    /// The vendor rejects `stop` sequences.
+    /// Chat Completions rejects `stop` sequences. Does not apply to Responses,
+    /// which does not map neutral stop sequences.
     NoStopSequences,
-    /// The vendor rejects `seed`.
+    /// Chat Completions rejects `seed`. Does not apply to Responses, which does
+    /// not map the neutral seed parameter.
     NoSeed,
-    /// The vendor rejects `reasoning_effort`.
+    /// The vendor rejects `reasoning_effort` on Chat Completions or
+    /// `reasoning.effort` on Responses.
     NoReasoningEffort,
-    /// The vendor rejects the `prompt_cache_key` extension field.
+    /// The vendor rejects `prompt_cache_key` on Chat Completions and Responses.
+    /// Omit the automatic session key; reject an explicit vendor extension.
     NoPromptCacheKey,
 }
 
-/// An ordered set of [`Quirk`]s. Ordered so iteration and serialization are
-/// deterministic.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Quirks(BTreeSet<Quirk>);
-
-impl Quirks {
-    /// An empty set.
-    #[must_use]
-    pub fn new() -> Self {
-        Self(BTreeSet::new())
-    }
-
-    /// Adds `quirk`.
-    pub fn insert(&mut self, quirk: Quirk) {
-        self.0.insert(quirk);
-    }
-
-    /// Whether `quirk` is in the set.
-    #[must_use]
-    pub fn contains(&self, quirk: Quirk) -> bool {
-        self.0.contains(&quirk)
-    }
-
-    /// Whether the set is empty.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    /// The quirks, in a deterministic order.
-    pub fn iter(&self) -> impl Iterator<Item = Quirk> + '_ {
-        self.0.iter().copied()
-    }
-}
-
-impl FromIterator<Quirk> for Quirks {
-    fn from_iter<I: IntoIterator<Item = Quirk>>(iter: I) -> Self {
-        Self(iter.into_iter().collect())
-    }
-}
+/// An ordered set of [`Quirk`]s with the standard [`BTreeSet`] API.
+///
+/// Iteration borrows the quirks in deterministic enum order. Serialization is
+/// an array of snake-case names, such as `["no_stream_usage", "no_seed"]`.
+pub type Quirks = BTreeSet<Quirk>;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn quirks_are_an_ordered_set() {
+    fn quirks_preserve_the_serialized_array_of_names() {
         let quirks: Quirks = [Quirk::NoSeed, Quirk::NoStreamUsage, Quirk::NoSeed]
             .into_iter()
             .collect();
-        assert!(quirks.contains(Quirk::NoSeed));
-        assert!(quirks.contains(Quirk::NoStreamUsage));
-        assert!(!quirks.contains(Quirk::NoStopSequences));
+        let wire = serde_json::json!(["no_stream_usage", "no_seed"]);
+        assert_eq!(serde_json::to_value(&quirks).expect("serialize"), wire);
         assert_eq!(
-            quirks.iter().collect::<Vec<_>>(),
-            vec![Quirk::NoStreamUsage, Quirk::NoSeed]
+            serde_json::from_value::<Quirks>(wire).expect("deserialize"),
+            quirks
         );
-        assert!(!Quirks::new().contains(Quirk::NoSeed));
     }
 }

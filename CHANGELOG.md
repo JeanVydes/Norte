@@ -66,6 +66,21 @@ Draft. Not published.
 
 ### Changed
 
+- `Quirks` is now a `BTreeSet<Quirk>` alias rather than a collection wrapper.
+  `contains` takes `&Quirk`, iteration yields references, and insertion returns
+  whether the set changed. Serialized quirk names and ordering are unchanged.
+- `SseDecoder::push` now returns `Vec<Result<SseEvent>>`. Callers must handle
+  malformed or oversized input; frames are bounded to 8 MiB, without a panic or
+  silent truncation. Complete events preceding a bad frame are delivered before
+  its terminal error, regardless of HTTP chunk boundaries. `finish` validates
+  the remaining buffer at EOF.
+- Model-call layers traverse the configured slice by reference instead of
+  allocating a boxed continuation chain and cloning layer references per call.
+- Provider streams share one decoding pipeline that preserves trailing usage
+  and drops the source immediately after its first error.
+- The facade smoke package is part of workspace validation again, exercising
+  the current facade and macros rather than the removed harness API.
+
 - The browser tool's answer to the model is a table, not a JSON object. The
   object repeated every key on every element, and on a page of ordinary links the
   keys were half the bytes: eighty elements were 7 096 bytes against 4 313 in
@@ -78,6 +93,25 @@ Draft. Not published.
   decide, and a list of prefixes is a list nobody can act on.
 
 ### Fixed
+
+- SSE requests apply `request_timeout` to opening through successful headers,
+  including connection retries, not to the lifetime of an active response.
+  `stream_idle_timeout` bounds the subsequent wait between events. Non-streaming
+  requests remain bounded through their response body, and timeouts are not
+  automatically replayed as connection failures.
+- Provider adapters and `collect` reject EOF without a `Finish` event instead
+  of reporting an incomplete generation as successful. The accumulator can still
+  recover partial content when a host cancels intentionally.
+- Continuity tokens arriving after a part closes are retained in the final
+  accumulated part. Restarting an open index or overwriting a completed index
+  fails without discarding the earlier content; tool argument parsing is shared
+  between explicit closure and final accumulation.
+- Explicit request fields rejected by a vendor quirk fail with a capability
+  error instead of silently disappearing. Validation also covers vendor
+  extensions; automatic usage/cache hints may still be omitted.
+- Dependency validation no longer references the removed `norte-harness` crate.
+  Current facade, layer and stream documentation distinguishes library contracts
+  from host-owned turn execution, persistence and cancellation.
 
 - Cancelling a turn no longer leaves a tool call unanswered. A cancel that
   landed after the model streamed a call — or while tools ran — committed the

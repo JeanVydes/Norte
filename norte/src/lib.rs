@@ -3,15 +3,19 @@
 //! The Norte stack behind one dependency. The crate root is `norte-core`, and
 //! every other crate is a module named after it: `norte::openai`,
 //! `norte::anthropic`, `norte::gemini`, `norte::http`, `norte::tools`,
-//! `norte::media`, `norte::mcp` and `norte::harness`.
+//! `norte::media`, `norte::mcp` and `norte::testing`, behind their features.
+//! It provides model and tool contracts, not an agent runtime.
 //!
 //! ```
+//! # #[cfg(feature = "openai")]
+//! # {
 //! # use norte::{Capabilities, Modality};
 //! let capabilities = Capabilities::builder()
 //!     .input(Modality::Text)
 //!     .output(Modality::Text)
 //!     .build();
 //! let model = norte::presets::openai("gpt-5", "sk-test", capabilities)?;
+//! # }
 //! # Ok::<(), norte::Error>(())
 //! ```
 //!
@@ -20,21 +24,20 @@
 //! | Feature | Adds |
 //! | --- | --- |
 //! | `openai` (default) | `norte::openai`, and `http` with it |
+//! | `http` | `norte::http` (also enabled by every provider) |
 //! | `anthropic` | `norte::anthropic` |
 //! | `gemini` (alias `google`) | `norte::gemini` |
 //! | `tools` | `norte::tools` |
 //! | `media` | `norte::media` |
 //! | `mcp` | `norte::mcp` |
-//! | `harness` | `norte::harness`, the reference agent loop |
 //! | `testing` | `norte::testing`, for a test target |
-//! | `full` | every provider, `tools`, `media`, `mcp` and `harness` |
+//! | `full` | every provider, `tools`, `media` and `mcp` (not `testing`) |
 
 #![forbid(unsafe_code)]
 
 pub use norte_core::*;
 
-/// The reference blob store, so a host can build a harness — or its own loop —
-/// without reaching into `norte_core::blob`.
+/// The reference blob store, available without reaching into `norte_core::blob`.
 pub use norte_core::blob::InMemoryBlobStore;
 
 /// The `#[tool]` attribute, with `ToolMetadata` resolved through this crate.
@@ -69,9 +72,12 @@ pub use norte_openai::{OpenAiChat, OpenAiResponses};
 /// ready adapter for a model id, an API key and a [`Capabilities`] declaration.
 ///
 /// ```
+/// # #[cfg(feature = "openai")]
+/// # {
 /// # use norte::{Capabilities, Modality};
 /// # let capabilities = Capabilities::builder().input(Modality::Text).build();
 /// let model = norte::presets::openai("gpt-5", "sk-test", capabilities)?;
+/// # }
 /// # Ok::<(), norte::Error>(())
 /// ```
 pub mod presets {
@@ -89,9 +95,6 @@ pub mod presets {
 /// shadow the standard `Result` of `fn main() -> Result<(), Box<dyn Error>>`.
 /// Import `norte::Result` where that alias is what you want, as a tool
 /// implementation does.
-///
-/// The harness is not in the root re-export: an application that wants it names
-/// `norte::harness`, and one that writes its own loop never has to see it.
 pub mod prelude {
     pub use norte_core::blob::InMemoryBlobStore;
     pub use norte_core::{

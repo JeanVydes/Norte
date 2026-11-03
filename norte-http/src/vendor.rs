@@ -136,8 +136,8 @@ mod tests {
         let profile = profile("https://api.example.com/v1")
             .with_quirk(Quirk::NoStreamUsage)
             .with_quirk(Quirk::NoSeed);
-        assert!(profile.quirks().contains(Quirk::NoStreamUsage));
-        assert!(profile.quirks().contains(Quirk::NoSeed));
-        assert!(!profile.quirks().contains(Quirk::NoStructuredOutput));
+        assert!(profile.quirks().contains(&Quirk::NoStreamUsage));
+        assert!(profile.quirks().contains(&Quirk::NoSeed));
+        assert!(!profile.quirks().contains(&Quirk::NoStructuredOutput));
     }
 }

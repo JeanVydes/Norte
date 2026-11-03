@@ -260,39 +260,41 @@ impl StreamAccumulator {
     ///
     /// # Errors
     ///
-    /// Returns a codec error for an event that does not suit the part it targets
-    /// and [`Error::LimitExceeded`] once a partial part exceeds its byte budget.
+    /// Returns a codec error for an event that does not suit the part it targets,
+    /// restarts an open part or overwrites a closed part, and
+    /// [`Error::LimitExceeded`] once a partial part exceeds its byte budget.
     pub fn apply(&mut self, event: StreamEvent) -> Result<Option<Part>> {
+        self.check_index(&event)?;
         match event {
-            StreamEvent::TextStart { index } => Ok(self.begin(
+            StreamEvent::TextStart { index } => self.begin(
                 index,
                 Partial::Text {
                     text: String::new(),
                     citations: Vec::new(),
                 },
-            )),
+            ),
             StreamEvent::TextDelta { index, text } => self.grow_text(index, &text),
-            StreamEvent::ReasoningStart { index, visibility } => Ok(self.begin(
+            StreamEvent::ReasoningStart { index, visibility } => self.begin(
                 index,
                 Partial::Reasoning {
                     visibility,
                     text: String::new(),
                 },
-            )),
+            ),
             StreamEvent::ReasoningDelta { index, text } => self.grow_reasoning(index, &text),
             StreamEvent::RefusalDelta { index, text } => self.grow_refusal(index, &text),
             StreamEvent::ToolCallStart {
                 index,
                 call_id,
                 name,
-            } => Ok(self.begin(
+            } => self.begin(
                 index,
                 Partial::ToolCall {
                     call_id,
                     name,
                     arguments: String::new(),
                 },
-            )),
+            ),
             StreamEvent::ToolCallDelta {
                 index,
                 call_id,
@@ -305,7 +307,7 @@ impl StreamAccumulator {
                 kind,
                 mime,
                 metadata,
-            } => Ok(self.begin(
+            } => self.begin(
                 index,
                 Partial::Media {
                     kind,
@@ -313,7 +315,7 @@ impl StreamAccumulator {
                     metadata,
                     bytes: Vec::new(),
                 },
-            )),
+            ),
             StreamEvent::MediaChunk { index, bytes, last } => self.grow_media(index, &bytes, last),
             StreamEvent::MediaMetadata { index, metadata } => {
                 self.set_media_metadata(index, metadata)
@@ -323,14 +325,14 @@ impl StreamAccumulator {
                 call_id,
                 tool,
                 input,
-            } => Ok(Some(self.provider_call(
+            } => Ok(Some(self.complete(
                 index,
-                ProviderToolCallPart {
+                Part::ProviderToolCall(ProviderToolCallPart {
                     call_id,
                     tool,
                     input,
                     continuity: None,
-                },
+                }),
             ))),
             StreamEvent::ProviderToolResult {
                 index,
@@ -338,21 +340,18 @@ impl StreamAccumulator {
                 tool,
                 output,
                 citations,
-            } => Ok(Some(self.provider_result(
+            } => Ok(Some(self.complete(
                 index,
-                ProviderToolResultPart {
+                Part::ProviderToolResult(ProviderToolResultPart {
                     call_id,
                     tool,
                     output,
                     citations,
                     continuity: None,
-                },
+                }),
             ))),
             StreamEvent::Citation { index, citation } => self.add_citation(index, citation),
-            StreamEvent::Part { index, part } => {
-                self.complete(index, part.clone());
-                Ok(Some(part))
-            }
+            StreamEvent::Part { index, part } => Ok(Some(self.complete(index, part))),
             StreamEvent::Continuity { .. }
             | StreamEvent::SafetyRatings { .. }
             | StreamEvent::Logprobs { .. } => Ok(None),
@@ -364,23 +363,40 @@ impl StreamAccumulator {
         }
     }
 
-    fn begin(&mut self, index: u32, partial: Partial) -> Option<Part> {
+    fn check_index(&self, event: &StreamEvent) -> Result<()> {
+        match event {
+            StreamEvent::TextStart { index }
+            | StreamEvent::TextDelta { index, .. }
+            | StreamEvent::ReasoningStart { index, .. }
+            | StreamEvent::ReasoningDelta { index, .. }
+            | StreamEvent::RefusalDelta { index, .. }
+            | StreamEvent::ToolCallStart { index, .. }
+            | StreamEvent::ToolCallDelta { index, .. }
+            | StreamEvent::MediaStart { index, .. }
+            | StreamEvent::MediaChunk { index, .. }
+            | StreamEvent::MediaMetadata { index, .. }
+            | StreamEvent::ProviderToolCall { index, .. }
+            | StreamEvent::ProviderToolResult { index, .. }
+            | StreamEvent::Citation { index, .. }
+            | StreamEvent::Part { index, .. }
+                if self.complete.contains_key(index) =>
+            {
+                Err(Error::Codec(format!(
+                    "event for a closed part at index {index}"
+                )))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn begin(&mut self, index: u32, partial: Partial) -> Result<Option<Part>> {
+        if self.partials.contains_key(&index) {
+            return Err(Error::Codec(format!(
+                "part already started at index {index}"
+            )));
+        }
         self.partials.insert(index, partial);
-        None
-    }
-
-    fn provider_call(&mut self, index: u32, mut part: ProviderToolCallPart) -> Part {
-        part.continuity = self.continuity.remove(&index);
-        let part = Part::ProviderToolCall(part);
-        self.complete(index, part.clone());
-        part
-    }
-
-    fn provider_result(&mut self, index: u32, mut part: ProviderToolResultPart) -> Part {
-        part.continuity = self.continuity.remove(&index);
-        let part = Part::ProviderToolResult(part);
-        self.complete(index, part.clone());
-        part
+        Ok(None)
     }
 
     fn add_citation(&mut self, index: u32, citation: Citation) -> Result<Option<Part>> {
@@ -523,20 +539,13 @@ impl StreamAccumulator {
                 "tool call done for a non-tool part at index {index}"
             )));
         };
-        let arguments = if arguments.trim().is_empty() {
-            serde_json::json!({})
-        } else {
-            serde_json::from_str(&arguments)
-                .map_err(|error| Error::Codec(format!("tool arguments: {error}")))?
-        };
         let part = Part::ToolCall(ToolCallPart {
             call_id,
             name,
-            arguments,
-            continuity: self.continuity.remove(&index),
+            arguments: Self::parse_tool_arguments(&arguments)?,
+            continuity: None,
         });
-        self.complete.insert(index, part.clone());
-        Ok(Some(part))
+        Ok(Some(self.complete(index, part)))
     }
 
     /// Replaces the metadata of the media partial at `index` (FR-STREAM-1).
@@ -586,8 +595,7 @@ impl StreamAccumulator {
                         mime: mime.clone(),
                         metadata: metadata.clone(),
                     });
-                    self.complete(index, part.clone());
-                    return Ok(Some(part));
+                    return Ok(Some(self.complete(index, part)));
                 }
                 Ok(None)
             }
@@ -597,16 +605,28 @@ impl StreamAccumulator {
         }
     }
 
-    /// Attaches the continuity token for the part at `index`.
+    /// Attaches the continuity token for the part at `index`, including a part
+    /// that has already completed.
     pub fn attach_continuity(
         &mut self,
         index: u32,
         token: crate::domain::continuity::ContinuityToken,
     ) {
-        self.continuity.insert(index, token);
+        if let Some(slot) = self
+            .complete
+            .get_mut(&index)
+            .and_then(Self::continuity_slot)
+        {
+            *slot = Some(token);
+        } else {
+            self.continuity.insert(index, token);
+        }
     }
 
     /// Closes every open part and returns the assembled content in index order.
+    ///
+    /// Does not require a [`StreamEvent::Finish`], so a host can recover partial
+    /// content after cancellation or a stream error.
     ///
     /// # Errors
     ///
@@ -631,20 +651,12 @@ impl StreamAccumulator {
                     call_id,
                     name,
                     arguments,
-                } => {
-                    let arguments = if arguments.trim().is_empty() {
-                        serde_json::json!({})
-                    } else {
-                        serde_json::from_str(&arguments)
-                            .map_err(|error| Error::Codec(format!("tool arguments: {error}")))?
-                    };
-                    Part::ToolCall(ToolCallPart {
-                        call_id,
-                        name,
-                        arguments,
-                        continuity: self.continuity.remove(&index),
-                    })
-                }
+                } => Part::ToolCall(ToolCallPart {
+                    call_id,
+                    name,
+                    arguments: Self::parse_tool_arguments(&arguments)?,
+                    continuity: self.continuity.remove(&index),
+                }),
                 Partial::Media {
                     kind,
                     mime,
@@ -671,9 +683,37 @@ impl StreamAccumulator {
         None
     }
 
-    fn complete(&mut self, index: u32, part: Part) {
+    fn parse_tool_arguments(arguments: &str) -> Result<serde_json::Value> {
+        if arguments.trim().is_empty() {
+            Ok(serde_json::json!({}))
+        } else {
+            serde_json::from_str(arguments)
+                .map_err(|error| Error::Codec(format!("tool arguments: {error}")))
+        }
+    }
+
+    fn continuity_slot(
+        part: &mut Part,
+    ) -> Option<&mut Option<crate::domain::continuity::ContinuityToken>> {
+        match part {
+            Part::Text(part) => Some(&mut part.continuity),
+            Part::Reasoning(part) => Some(&mut part.continuity),
+            Part::ToolCall(part) => Some(&mut part.continuity),
+            Part::ProviderToolCall(part) => Some(&mut part.continuity),
+            Part::ProviderToolResult(part) => Some(&mut part.continuity),
+            Part::Media(_) | Part::ToolResult(_) | Part::Refusal(_) | Part::Extension(_) => None,
+        }
+    }
+
+    fn complete(&mut self, index: u32, mut part: Part) -> Part {
+        if let Some(token) = self.continuity.remove(&index) {
+            if let Some(slot) = Self::continuity_slot(&mut part) {
+                *slot = Some(token);
+            }
+        }
         self.partials.remove(&index);
-        self.complete.insert(index, part);
+        self.complete.insert(index, part.clone());
+        part
     }
 
     fn check(&self, bytes: usize) -> Result<()> {
@@ -693,6 +733,7 @@ impl StreamAccumulator {
 /// # Errors
 ///
 /// Propagates model stream errors and any codec error from the accumulator.
+/// Returns a codec error if the stream ends without a [`StreamEvent::Finish`].
 pub async fn collect(model: &dyn crate::model::Model, request: ModelRequest) -> Result<Message> {
     let limits = request.limits;
     let mut stream = model.stream(request).await?;
@@ -711,7 +752,9 @@ pub async fn collect(model: &dyn crate::model::Model, request: ModelRequest) -> 
         accumulator.apply(event)?;
     }
     let accumulated = accumulator.finish()?;
-    let finish_reason = accumulated.finish_reason.unwrap_or(FinishReason::Stop);
+    let finish_reason = accumulated
+        .finish_reason
+        .ok_or_else(|| Error::Codec("model stream ended without a Finish event".to_owned()))?;
     let status = match finish_reason {
         FinishReason::Length => MessageStatus::Truncated,
         FinishReason::Cancelled => MessageStatus::Interrupted,
@@ -926,6 +969,9 @@ mod tests {
         assert_eq!(media.metadata.width, Some(1024));
         assert_eq!(media.metadata.height, Some(768));
         assert_eq!(media.source, MediaSource::Inline(vec![1, 2, 3, 4]));
+        let result = accumulator.finish().expect("finish");
+        assert_eq!(result.parts, vec![Part::Media(media)]);
+        assert_eq!(result.finish_reason, None);
     }
 
     #[test]
@@ -982,6 +1028,213 @@ mod tests {
                 text: "abcd".to_owned(),
             })
             .expect_err("over budget");
+    }
+
+    struct FixtureModel {
+        reference: crate::id::ModelRef,
+        capabilities: crate::capability::Capabilities,
+        events: Vec<StreamEvent>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::model::Model for FixtureModel {
+        fn reference(&self) -> &crate::id::ModelRef {
+            &self.reference
+        }
+
+        fn capabilities(&self) -> &crate::capability::Capabilities {
+            &self.capabilities
+        }
+
+        fn continuity(&self) -> &dyn crate::model::ContinuityAdapter {
+            panic!("fixture emits no continuity fragments")
+        }
+
+        async fn stream(&self, _request: ModelRequest) -> Result<crate::model::ModelStream> {
+            Ok(Box::pin(futures_util::stream::iter(
+                self.events.clone().into_iter().map(Ok),
+            )))
+        }
+    }
+
+    #[tokio::test]
+    async fn collect_requires_finish_even_for_an_empty_stream() {
+        let mut model = FixtureModel {
+            reference: "test/model".parse().expect("model"),
+            capabilities: crate::capability::Capabilities::default(),
+            events: Vec::new(),
+        };
+        for events in [
+            Vec::new(),
+            vec![StreamEvent::TextDelta {
+                index: 0,
+                text: "partial".to_owned(),
+            }],
+            vec![StreamEvent::Part {
+                index: 0,
+                part: Part::text("complete part, incomplete stream"),
+            }],
+        ] {
+            model.events = events;
+            let error = collect(
+                &model,
+                ModelRequest::new(model.reference.clone(), Vec::new()),
+            )
+            .await
+            .expect_err("EOF without Finish");
+            assert!(matches!(error, Error::Codec(message) if message.contains("Finish")));
+        }
+        for (reason, status) in [
+            (FinishReason::Stop, MessageStatus::Complete),
+            (FinishReason::ToolCalls, MessageStatus::Complete),
+            (FinishReason::Length, MessageStatus::Truncated),
+            (FinishReason::Cancelled, MessageStatus::Interrupted),
+        ] {
+            model.events = vec![
+                StreamEvent::Finish(reason.clone()),
+                StreamEvent::Usage(Usage {
+                    output_tokens: Some(3),
+                    ..Usage::default()
+                }),
+            ];
+            let message = collect(
+                &model,
+                ModelRequest::new(model.reference.clone(), Vec::new()),
+            )
+            .await
+            .expect("explicit finish permits an empty response");
+            let origin = message.origin.expect("origin");
+            assert_eq!(origin.finish_reason, reason);
+            assert_eq!(origin.status, status);
+            assert_eq!(origin.usage.output_tokens, Some(3));
+        }
+    }
+
+    #[test]
+    fn continuity_survives_before_and_after_part_completion() {
+        use crate::domain::continuity::{ContinuityScope, ContinuityToken};
+
+        let token = ContinuityToken::new(
+            "test.wire".parse().expect("wire family"),
+            ContinuityScope::Any,
+            1,
+            vec![1, 2],
+        );
+        for attach_before in [true, false] {
+            let mut accumulator = accumulator();
+            if attach_before {
+                accumulator.attach_continuity(0, token.clone());
+            }
+            let completed = accumulator
+                .apply(StreamEvent::Part {
+                    index: 0,
+                    part: Part::text("complete"),
+                })
+                .expect("part")
+                .expect("completed part");
+            if attach_before {
+                assert_eq!(completed.continuity(), Some(&token));
+            } else {
+                accumulator.attach_continuity(0, token.clone());
+            }
+            assert_eq!(
+                accumulator.finish().expect("finish").parts[0].continuity(),
+                Some(&token)
+            );
+        }
+
+        let mut accumulator = accumulator();
+        accumulator
+            .apply(StreamEvent::ToolCallStart {
+                index: 0,
+                call_id: CallId::new(),
+                name: "list".to_owned(),
+            })
+            .expect("start");
+        accumulator
+            .apply(StreamEvent::ToolCallDone { index: 0 })
+            .expect("done");
+        accumulator.attach_continuity(0, token.clone());
+        assert_eq!(
+            accumulator.finish().expect("finish").parts[0].continuity(),
+            Some(&token)
+        );
+    }
+
+    #[test]
+    fn restarting_an_index_does_not_discard_partial_content() {
+        let mut accumulator = accumulator();
+        accumulator
+            .apply(StreamEvent::TextDelta {
+                index: 0,
+                text: "partial".to_owned(),
+            })
+            .expect("delta");
+        assert!(matches!(
+            accumulator.apply(StreamEvent::TextStart { index: 0 }),
+            Err(Error::Codec(_))
+        ));
+        assert_eq!(
+            accumulator.finish().expect("recover partial").parts,
+            vec![Part::text("partial")]
+        );
+    }
+
+    #[test]
+    fn closed_indices_cannot_be_reopened_by_deltas() {
+        let mut accumulator = accumulator();
+        accumulator
+            .apply(StreamEvent::TextDelta {
+                index: 0,
+                text: "partial".to_owned(),
+            })
+            .expect("delta");
+        accumulator
+            .apply(StreamEvent::Part {
+                index: 0,
+                part: Part::text("complete"),
+            })
+            .expect("part");
+        for event in [
+            StreamEvent::TextStart { index: 0 },
+            StreamEvent::TextDelta {
+                index: 0,
+                text: "replacement".to_owned(),
+            },
+        ] {
+            assert!(matches!(accumulator.apply(event), Err(Error::Codec(_))));
+        }
+        assert_eq!(
+            accumulator.finish().expect("finish").parts,
+            vec![Part::text("complete")]
+        );
+    }
+
+    #[test]
+    fn tool_argument_parsing_agrees_at_done_and_finish() {
+        for arguments in ["", " \n\t", "{\"path\":\"/tmp/a\"}", "{"] {
+            let mut accumulator = accumulator();
+            accumulator
+                .apply(StreamEvent::ToolCallDelta {
+                    index: 0,
+                    call_id: CallId::new(),
+                    name: Some("read_file".to_owned()),
+                    arguments: arguments.to_owned(),
+                })
+                .expect("delta");
+            let finished = accumulator.clone().finish();
+            let closed = accumulator.apply(StreamEvent::ToolCallDone { index: 0 });
+            match (finished, closed) {
+                (Ok(finished), Ok(Some(closed))) => {
+                    assert_eq!(finished.parts, vec![closed]);
+                    assert_eq!(accumulator.finish().expect("finish").parts, finished.parts);
+                }
+                (Err(Error::Codec(finished)), Err(Error::Codec(closed))) => {
+                    assert_eq!(finished, closed);
+                }
+                other => panic!("parsing disagreed: {other:?}"),
+            }
+        }
     }
 
     #[test]

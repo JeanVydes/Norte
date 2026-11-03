@@ -1,4 +1,4 @@
-//! The `Google` Gemini Files API, as a [`ProviderFiles`](norte_core::ProviderFiles) port.
+//! The `Google` Gemini Files API, as a [`ProviderFiles`] port.
 
 use chrono::{DateTime, Utc};
 use norte_core::{BlobId, Error, MediaKind, MimeType, ProviderFileRef, ProviderFiles, Result};

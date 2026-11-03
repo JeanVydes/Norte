@@ -71,6 +71,28 @@ OpenRouter, Groq, Together, vLLM, llama.cpp and the rest go through that door.
 `VendorProfile` also has `with_header(name, value)` and `with_quirk(quirk)` for
 the small ways a compatible endpoint is not quite compatible.
 
+`Quirks` is a type alias for `BTreeSet<Quirk>`: use `contains(&Quirk::NoSeed)`
+(and borrowed iteration), or keep using `profile.with_quirk(Quirk::NoSeed)`.
+The set serializes deterministically as an array of snake-case names.
+
+| Quirk | Chat Completions field | Responses field | Behaviour |
+| --- | --- | --- | --- |
+| `NoStreamUsage` | `stream_options` | Not applicable | Omit automatic stream usage. |
+| `NoPromptCacheKey` | `prompt_cache_key` | `prompt_cache_key` | Omit the automatic session cache key. |
+| `NoStructuredOutput` | `response_format` | `text.format` | Reject explicit structured output. |
+| `NoSeed` | `seed` | Not applicable | Reject an explicit seed. |
+| `NoStopSequences` | `stop` | Not applicable | Reject explicit stop sequences. |
+| `NoReasoningEffort` | `reasoning_effort` | `reasoning.effort` | Reject an explicit wire effort. |
+
+Rejections are `Error::Capability` from `request_body` or before the HTTP call,
+never silent drops. Unset values and automatic reasoning do not trigger effort
+errors; Responses' explicit `Disabled` does, because it sends effort `"none"`.
+Vendor extensions cannot bypass these restrictions: explicitly injecting even
+an otherwise automatic restricted field is rejected. Responses does not map
+neutral seed or stop parameters, and these Chat-only flags do not add support
+for them. Its structured-output and effort restrictions leave sibling fields
+such as `text.verbosity` and `reasoning.summary` available.
+
 `AuthScheme` is `None`, `Bearer`, `Header { name, value }` or `Query { name,
 value }` — the four shapes the field actually uses. Secrets are wrapped in
 `Secret`, which does not print itself.

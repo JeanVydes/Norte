@@ -1,12 +1,11 @@
 use std::collections::BTreeMap;
 
-use futures_util::StreamExt;
 use norte_core::{
     CallId, Citation, CitationSource, Error, ExtensionPart, FinishReason, ModelStream, Part,
     ProviderError, ProviderErrorKind, ProviderTool, ReasoningVisibility, Result, StreamEvent,
     Usage, VendorUsage,
 };
-use norte_http::SseStream;
+use norte_http::{SseStream, decode_model_stream};
 use serde_json::Value;
 
 use crate::continuity::AnthropicContinuity;
@@ -15,27 +14,7 @@ use crate::json::{opt_str, str_field, u32_field};
 /// Maps the vendor `SSE` stream into core stream events.
 pub(crate) fn map(sse: SseStream, continuity: AnthropicContinuity) -> ModelStream {
     let mut decoder = Decoder::new(continuity);
-    let mut failed = false;
-    let stream = sse.flat_map(move |event| {
-        let mut out: Vec<Result<StreamEvent>> = Vec::new();
-        if !failed {
-            match event {
-                Ok(event) => match decoder.decode(&event.data) {
-                    Ok(events) => out.extend(events.into_iter().map(Ok)),
-                    Err(error) => {
-                        out.push(Err(error));
-                        failed = true;
-                    }
-                },
-                Err(error) => {
-                    out.push(Err(error));
-                    failed = true;
-                }
-            }
-        }
-        futures_util::stream::iter(out)
-    });
-    Box::pin(stream)
+    decode_model_stream(sse, move |event| decoder.decode(&event.data))
 }
 
 #[derive(Clone, Debug)]
@@ -529,6 +508,20 @@ mod tests {
         events
     }
 
+    async fn drain_partial(data: &[&str]) -> Vec<StreamEvent> {
+        let mut results: Vec<_> = map(stream_of(data), continuity()).collect().await;
+        let error = results
+            .pop()
+            .expect("EOF error")
+            .expect_err("missing Finish");
+        assert_eq!(error.provider_kind(), Some(ProviderErrorKind::Decode));
+        assert!(error.to_string().contains("unexpected EOF"));
+        results
+            .into_iter()
+            .collect::<Result<Vec<_>>>()
+            .expect("decoded events")
+    }
+
     /// Loads a recorded transcript — a JSON array of SSE `data` payloads — and
     /// maps it through the wire, so live-provider behaviour is pinned hermetically
     /// (FR-TEST-2).
@@ -713,7 +706,7 @@ mod tests {
 
     #[tokio::test]
     async fn thinking_settles_into_a_replayable_block() {
-        let events = drain(&[
+        let events = drain_partial(&[
             r#"{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}"#,
             r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"why"}}"#,
             r#"{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig"}}"#,
@@ -746,7 +739,7 @@ mod tests {
 
     #[tokio::test]
     async fn provider_server_tool_use_becomes_a_typed_call() {
-        let events = drain(&[
+        let events = drain_partial(&[
             r#"{"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_1","name":"web_search","input":{}}}"#,
             r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"rust\"}"}}"#,
             r#"{"type":"content_block_stop","index":0}"#,
@@ -766,7 +759,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_provider_result_correlates_with_its_call() {
-        let events = drain(&[
+        let events = drain_partial(&[
             r#"{"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_1","name":"web_search","input":{"query":"rust"}}}"#,
             r#"{"type":"content_block_stop","index":0}"#,
             r#"{"type":"content_block_start","index":1,"content_block":{"type":"web_search_tool_result","tool_use_id":"srvtoolu_1","content":[{"type":"web_search_result","title":"Rust","url":"https://rust-lang.org"}]}}"#,
@@ -792,7 +785,7 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_blocks_round_trip_as_extensions() {
-        let events = drain(&[
+        let events = drain_partial(&[
             r#"{"type":"content_block_start","index":0,"content_block":{"type":"container_upload","file_id":"file_1"}}"#,
             r#"{"type":"content_block_stop","index":0}"#,
         ])
@@ -810,7 +803,7 @@ mod tests {
 
     #[tokio::test]
     async fn char_citations_become_neutral_ranges() {
-        let events = drain(&[
+        let events = drain_partial(&[
             r#"{"type":"content_block_start","index":0,"content_block":{"type":"text"}}"#,
             r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Rust is fast"}}"#,
             r#"{"type":"content_block_delta","index":0,"delta":{"type":"citations_delta","citation":{"type":"char_location","cited_text":"Rust","document_index":0,"document_title":"intro.txt","start_char_index":0,"end_char_index":4}}}"#,
@@ -827,7 +820,7 @@ mod tests {
 
     #[tokio::test]
     async fn search_result_citations_become_urls() {
-        let events = drain(&[
+        let events = drain_partial(&[
             r#"{"type":"content_block_start","index":0,"content_block":{"type":"text"}}"#,
             r#"{"type":"content_block_delta","index":0,"delta":{"type":"citations_delta","citation":{"type":"search_result_location","cited_text":"x","source":"https://example.test","title":"Example"}}}"#,
         ])
@@ -844,7 +837,7 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_citations_keep_the_vendor_payload() {
-        let events = drain(&[
+        let events = drain_partial(&[
             r#"{"type":"content_block_start","index":0,"content_block":{"type":"text"}}"#,
             r#"{"type":"content_block_delta","index":0,"delta":{"type":"citations_delta","citation":{"type":"future_location","token":"abc"}}}"#,
         ])

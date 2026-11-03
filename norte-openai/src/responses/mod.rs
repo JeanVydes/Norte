@@ -70,7 +70,11 @@ impl OpenAiResponses {
     ///
     /// # Errors
     ///
-    /// Returns a codec error when a part cannot be expressed on this wire.
+    /// Returns a codec error when a part cannot be expressed on this wire, or
+    /// a capability error when structured output or reasoning effort (including
+    /// vendor extensions) conflicts with the profile's quirks. Automatic session
+    /// cache keys are omitted for `NoPromptCacheKey`; explicit cache-key
+    /// extensions are rejected instead.
     pub fn request_body(&self, request: &ModelRequest) -> Result<Value> {
         request::build_with_quirks(
             &self.reference,

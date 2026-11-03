@@ -1,12 +1,11 @@
 use std::collections::BTreeMap;
 
-use futures_util::StreamExt;
 use norte_core::{
     CallId, Citation, CitationSource, Error, FinishReason, LogprobAlternative, LogprobValue,
     MediaKind, MediaMetadata, MimeType, ModelStream, ProviderError, ProviderErrorKind,
     ReasoningVisibility, Result, StreamEvent, TokenLogprob, Usage, VendorUsage,
 };
-use norte_http::SseStream;
+use norte_http::{SseStream, decode_model_stream};
 use serde_json::Value;
 
 use crate::continuity::OpenAiContinuity;
@@ -26,27 +25,7 @@ const AUDIO_MIME: &str = "audio/pcm16";
 /// Maps the vendor `SSE` stream into core stream events.
 pub(crate) fn map(sse: SseStream, continuity: OpenAiContinuity) -> ModelStream {
     let mut decoder = Decoder::new(continuity);
-    let mut failed = false;
-    let stream = sse.flat_map(move |event| {
-        let mut out: Vec<Result<StreamEvent>> = Vec::new();
-        if !failed {
-            match event {
-                Ok(event) => match decoder.decode(&event.data) {
-                    Ok(events) => out.extend(events.into_iter().map(Ok)),
-                    Err(error) => {
-                        out.push(Err(error));
-                        failed = true;
-                    }
-                },
-                Err(error) => {
-                    out.push(Err(error));
-                    failed = true;
-                }
-            }
-        }
-        futures_util::stream::iter(out)
-    });
-    Box::pin(stream)
+    decode_model_stream(sse, move |event| decoder.decode(&event.data))
 }
 
 #[derive(Clone, Debug)]
@@ -572,6 +551,20 @@ mod tests {
         events
     }
 
+    async fn drain_partial(data: &[&str]) -> Vec<StreamEvent> {
+        let mut results: Vec<_> = map(stream_of(data), continuity()).collect().await;
+        let error = results
+            .pop()
+            .expect("EOF error")
+            .expect_err("missing Finish");
+        assert_eq!(error.provider_kind(), Some(ProviderErrorKind::Decode));
+        assert!(error.to_string().contains("unexpected EOF"));
+        results
+            .into_iter()
+            .collect::<Result<Vec<_>>>()
+            .expect("decoded events")
+    }
+
     /// Loads a recorded transcript — a JSON array of SSE `data` payloads — and
     /// maps it through the wire, so live-provider behaviour is pinned hermetically
     /// (FR-TEST-2).
@@ -712,7 +705,7 @@ mod tests {
 
     #[tokio::test]
     async fn mapped_counters_are_preserved_and_unmodelled_ones_survive() {
-        let events = drain(&[
+        let events = drain_partial(&[
             r#"{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":4,"total_tokens":14,"cost":0.0000012,"is_byok":false,"prompt_tokens_details":{"cached_tokens":2,"cache_write_tokens":1,"audio_tokens":3,"text_tokens":5,"image_tokens":2,"video_tokens":0},"cost_details":{"upstream_inference_cost":0.0000012},"completion_tokens_details":{"reasoning_tokens":1,"audio_tokens":2,"text_tokens":1,"accepted_prediction_tokens":1,"rejected_prediction_tokens":0}}}"#,
         ])
         .await;
@@ -879,7 +872,7 @@ mod tests {
 
     #[tokio::test]
     async fn url_citation_annotations_become_citations() {
-        let events = drain(&[
+        let events = drain_partial(&[
             r#"{"choices":[{"delta":{"content":"see ","annotations":[{"type":"url_citation","url_citation":{"url":"https://example.test","title":"Example","start_index":0,"end_index":3}}]}}]}"#,
         ])
         .await;
@@ -902,14 +895,14 @@ mod tests {
     #[tokio::test]
     async fn done_sentinel_is_ignored() {
         assert!(
-            drain(&["[DONE]"]).await.is_empty(),
+            drain_partial(&["[DONE]"]).await.is_empty(),
             "the done sentinel yields no event"
         );
     }
 
     #[tokio::test]
     async fn logprobs_decode_for_the_text_and_refusal_parts() {
-        let events = drain(&[
+        let events = drain_partial(&[
             r#"{"choices":[{"index":0,"delta":{"content":"H"},"logprobs":{"content":[{"token":"H","logprob":-0.25,"bytes":[72],"top_logprobs":[{"token":"h","logprob":-1.5,"bytes":[104],"vendor_field":7}]}]},"finish_reason":null}]}"#,
             r#"{"choices":[{"index":0,"delta":{"refusal":"no"},"logprobs":{"refusal":[{"token":"no","logprob":-0.1,"bytes":[110,111],"top_logprobs":[]}]},"finish_reason":null}]}"#,
         ])
@@ -949,7 +942,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_entry_without_a_probability_is_dropped() {
-        let events = drain(&[
+        let events = drain_partial(&[
             r#"{"choices":[{"index":0,"delta":{"content":"x"},"logprobs":{"content":[{"token":"x"}]},"finish_reason":null}]}"#,
         ])
         .await;

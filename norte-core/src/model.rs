@@ -21,13 +21,14 @@ pub type ModelStream = Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send + '
 pub const SESSION_EXTENSION: &str = "session";
 
 /// Session-metadata key carrying the effective request options of the last turn
-/// (FR-EXP-7). It is engine-managed; hosts must not write it.
+/// (FR-EXP-7). This is a convention for hosts that persist turn options;
+/// the model port does not manage session metadata.
 pub const TURN_OPTIONS_KEY: &str = "norte.turn_options";
 
 /// Session-metadata key carrying the tool results already produced for an
 /// assistant message whose remaining calls parked for approval, so resuming
-/// does not run those calls a second time (FR-APPR-8). It is engine-managed;
-/// hosts must not write it, and it is removed once the tool message commits.
+/// does not run those calls a second time (FR-APPR-8). This legacy host
+/// convention is not read or maintained by the model port.
 pub const PARTIAL_TOOLS_KEY: &str = "norte.partial_tools";
 
 /// The largest `top_logprobs` count the neutral model accepts. Every supported
@@ -188,12 +189,16 @@ impl TurnOptions {
     }
 }
 
-/// Bounds that keep a stream's memory predictable.
+/// Accumulation and host-channel limits, not a total memory budget.
+///
+/// [`crate::StreamAccumulator`] enforces `max_part_bytes`. Hosts own event
+/// buffering; adapters and transports may enforce additional wire-size limits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StreamLimits {
     /// Maximum bytes held for one unfinished part.
     pub max_part_bytes: usize,
-    /// Maximum events buffered between the engine and a consumer.
+    /// Event-channel capacity for a host that buffers model events.
+    /// The model port does not create a channel or enforce this value.
     pub max_buffered_events: usize,
 }
 
@@ -221,7 +226,8 @@ pub struct ModelRequest {
     pub reasoning: ReasoningRequest,
     /// The effective generation parameters (FR-ENG-9).
     pub params: GenerationParams,
-    /// The bounds the adapter must respect while streaming.
+    /// Limits for the consumer's accumulator and any host event channel.
+    /// These do not configure transport frame limits.
     pub limits: StreamLimits,
     /// Positions (exclusive end indices into `messages`) at which the provider
     /// may place a prompt-cache breakpoint. Deterministic: computed by
@@ -367,6 +373,12 @@ pub trait Model: Send + Sync {
     fn continuity(&self) -> &dyn ContinuityAdapter;
 
     /// Runs one generation and returns its events as they arrive.
+    ///
+    /// A successful stream includes [`StreamEvent::Finish`]. EOF without it is
+    /// incomplete, not an implicit successful stop. Usage may follow `Finish`.
+    /// An error terminates the stream. Hosts cancel an opening call by dropping
+    /// this future, or an active call by dropping the returned stream; tools
+    /// have a separate cooperative cancellation contract.
     ///
     /// # Errors
     ///

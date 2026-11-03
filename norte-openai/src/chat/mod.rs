@@ -75,7 +75,10 @@ impl OpenAiChat {
     ///
     /// # Errors
     ///
-    /// Returns a codec error when a part cannot be expressed on this wire.
+    /// Returns a codec error when a part cannot be expressed on this wire, or
+    /// a capability error when an explicit request field (including vendor
+    /// extensions) conflicts with the profile's quirks. Automatic stream usage
+    /// and session cache keys are omitted when their quirks are set.
     pub fn request_body(&self, request: &ModelRequest) -> Result<Value> {
         request::build(
             &self.reference,

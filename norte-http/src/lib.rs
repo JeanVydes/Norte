@@ -7,6 +7,7 @@ pub mod auth;
 pub mod client;
 /// Downloading media over HTTP.
 pub mod media;
+mod model_stream;
 /// Vendor deviations from a reference wire format.
 pub mod quirk;
 /// Secrets that never reach logs or debug output.
@@ -20,6 +21,7 @@ pub mod vendor;
 pub use auth::AuthScheme;
 pub use client::{HttpClient, MultipartField, SseStream, is_transient};
 pub use media::HttpMedia;
+pub use model_stream::decode_model_stream;
 pub use quirk::{Quirk, Quirks};
 pub use secret::Secret;
 pub use sse::{SseDecoder, SseEvent};

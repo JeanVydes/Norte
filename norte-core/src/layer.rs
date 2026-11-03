@@ -20,8 +20,9 @@ pub struct LayerContext {
 
 /// A typed reason a layer may short-circuit a request (FR-LAYER-2).
 ///
-/// The reason is recorded in the audit trail, so the same decision is always
-/// attributable.
+/// A rejecting layer can return this through [`crate::Error::ShortCircuited`].
+/// The host owns audit logging; returning a synthetic stream does not publish
+/// a reason automatically.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ShortCircuitReason {
@@ -56,9 +57,8 @@ pub fn synthetic_stream(events: Vec<StreamEvent>) -> ModelStream {
 
 /// Typed middleware around the request/stream lifecycle.
 ///
-/// Layers are pure with respect to the store: durable effects go through the
-/// engine's commit path. A layer may short-circuit with a synthetic stream;
-/// the reason it does so is recorded in the audit trail.
+/// A layer may forward a request, reject it, or return a synthetic stream.
+/// Persistence and audit logging belong to the host, not this contract.
 #[async_trait::async_trait]
 pub trait Layer: Send + Sync {
     /// The layer's name, as it appears in the audit trail.
@@ -113,36 +113,38 @@ impl LayerStack {
     /// # Errors
     ///
     /// Propagates the first error any layer or the terminal call returns.
-    pub async fn run<'a>(
-        &'a self,
+    pub async fn run(
+        &self,
         context: &LayerContext,
         request: ModelRequest,
-        terminal: &'a dyn Continuation,
+        terminal: &dyn Continuation,
     ) -> Result<ModelStream> {
-        let mut next: Box<dyn Continuation + 'a> = Box::new(Next::Terminal(terminal));
-        for layer in self.layers.iter().rev() {
-            next = Box::new(Next::Step(Arc::clone(layer), next));
+        Next {
+            layers: &self.layers,
+            terminal,
         }
-        next.call(context, request).await
+        .call(context, request)
+        .await
     }
 }
 
-/// One step in the boxed continuation chain: either the terminal call the stack
-/// wraps, or a layer wrapping the next step. A single type keeps the two cases
-/// in one match instead of two parallel structs (DRY).
-enum Next<'a> {
-    /// The innermost continuation: the adapter call the stack wraps.
-    Terminal(&'a dyn Continuation),
-    /// A layer wrapping the rest of the chain.
-    Step(Arc<dyn Layer>, Box<dyn Continuation + 'a>),
+struct Next<'a> {
+    layers: &'a [Arc<dyn Layer>],
+    terminal: &'a dyn Continuation,
 }
 
 #[async_trait::async_trait]
 impl Continuation for Next<'_> {
     async fn call(&self, context: &LayerContext, request: ModelRequest) -> Result<ModelStream> {
-        match self {
-            Next::Terminal(inner) => inner.call(context, request).await,
-            Next::Step(layer, next) => layer.wrap(context, request, next.as_ref()).await,
+        match self.layers.split_first() {
+            Some((layer, rest)) => {
+                let next = Self {
+                    layers: rest,
+                    terminal: self.terminal,
+                };
+                layer.wrap(context, request, &next).await
+            }
+            None => self.terminal.call(context, request).await,
         }
     }
 }
@@ -167,19 +169,93 @@ mod tests {
     use super::*;
     use crate::domain::message::FinishReason;
 
-    #[test]
-    fn a_short_circuit_reason_is_comparable() {
-        // The typed reason a layer reports through its own stream.
-        let reason = ShortCircuitReason::Rejected {
-            detail: "blocked".to_owned(),
-        };
-        assert_eq!(
-            reason,
-            ShortCircuitReason::Rejected {
-                detail: "blocked".to_owned(),
+    struct Recording {
+        name: &'static str,
+        calls: Arc<std::sync::Mutex<Vec<&'static str>>>,
+        short_circuit: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl Layer for Recording {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        async fn wrap(
+            &self,
+            context: &LayerContext,
+            request: ModelRequest,
+            next: &dyn Continuation,
+        ) -> Result<ModelStream> {
+            self.calls.lock().expect("calls").push(self.name);
+            if self.short_circuit {
+                Ok(synthetic_stream(vec![StreamEvent::Finish(
+                    FinishReason::Stop,
+                )]))
+            } else {
+                next.call(context, request).await
             }
-        );
-        assert_ne!(reason, ShortCircuitReason::CacheHit);
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Continuation for Recording {
+        async fn call(&self, _: &LayerContext, _: ModelRequest) -> Result<ModelStream> {
+            self.calls.lock().expect("calls").push(self.name);
+            Ok(synthetic_stream(vec![StreamEvent::Finish(
+                FinishReason::Stop,
+            )]))
+        }
+    }
+
+    #[tokio::test]
+    async fn layers_run_outermost_first_and_short_circuit_without_calling_the_rest() {
+        for (names, short_circuit, expected) in [
+            (vec![], false, vec!["model"]),
+            (
+                vec!["outer", "inner"],
+                false,
+                vec!["outer", "inner", "model"],
+            ),
+            (vec!["outer", "inner"], true, vec!["outer"]),
+        ] {
+            let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let layers = names
+                .into_iter()
+                .map(|name| {
+                    Arc::new(Recording {
+                        name,
+                        calls: calls.clone(),
+                        short_circuit,
+                    }) as Arc<dyn Layer>
+                })
+                .collect();
+            let stack = LayerStack::new(layers);
+            let terminal = Recording {
+                name: "model",
+                calls: calls.clone(),
+                short_circuit: false,
+            };
+            let context = LayerContext {
+                session: SessionId::new(),
+                turn: 1,
+            };
+            let model = crate::ModelRef::new(
+                crate::ProviderId::new("test").expect("provider"),
+                crate::ModelId::new("model").expect("model"),
+            );
+            let events: Vec<_> = stack
+                .run(&context, ModelRequest::new(model, vec![]), &terminal)
+                .await
+                .expect("stream")
+                .collect()
+                .await;
+            assert_eq!(*calls.lock().expect("calls"), expected);
+            assert!(matches!(
+                events.as_slice(),
+                [Ok(StreamEvent::Finish(FinishReason::Stop))]
+            ));
+        }
     }
 
     #[tokio::test]

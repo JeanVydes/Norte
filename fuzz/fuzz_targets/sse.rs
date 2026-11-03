@@ -9,7 +9,9 @@ fuzz_target!(|data: &[u8]| {
     while !chunk.is_empty() {
         let take = chunk.len().min(64);
         let (head, tail) = chunk.split_at(take);
-        let _ = decoder.push(head);
+        if decoder.push(head).iter().any(Result::is_err) {
+            return;
+        }
         chunk = tail;
     }
     let _ = decoder.is_empty();

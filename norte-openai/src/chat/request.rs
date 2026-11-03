@@ -17,14 +17,14 @@ type CallIndex = BTreeMap<CallId, String>;
 /// Builds the wire body for one `Chat Completions` request.
 ///
 /// `quirks` are the host-declared deviations of the target vendor (FR-OAI-2);
-/// each one omits the corresponding optional field.
+/// automatic fields are omitted and explicit incompatible features are rejected,
+/// including fields supplied through vendor extensions.
 ///
 /// # Errors
 ///
 /// Returns an error when a part cannot be expressed on this wire, for example a
-/// document or a blob that no [`MediaAdapter`] resolved, or when a structured
-/// output schema is requested against a vendor declared as
-/// [`Quirk::NoStructuredOutput`].
+/// document or a blob that no [`MediaAdapter`] resolved, or a capability error
+/// when an explicit request field conflicts with a vendor quirk.
 ///
 /// [`MediaAdapter`]: norte_core::MediaAdapter
 #[allow(clippy::too_many_lines)]
@@ -43,7 +43,7 @@ pub(crate) fn build(
     );
     body.insert("messages".to_owned(), Value::Array(messages));
     body.insert("stream".to_owned(), Value::Bool(true));
-    if !quirks.contains(Quirk::NoStreamUsage) {
+    if !quirks.contains(&Quirk::NoStreamUsage) {
         body.insert(
             "stream_options".to_owned(),
             json!({ "include_usage": true }),
@@ -55,22 +55,13 @@ pub(crate) fn build(
             Value::Array(build_tools(model, &request.tools)?),
         );
     }
-    if !quirks.contains(Quirk::NoReasoningEffort) {
-        if let Some(effort) = build_effort(request.reasoning) {
-            body.insert(
-                "reasoning_effort".to_owned(),
-                Value::String(effort.to_owned()),
-            );
-        }
+    if let Some(effort) = build_effort(request.reasoning) {
+        body.insert(
+            "reasoning_effort".to_owned(),
+            Value::String(effort.to_owned()),
+        );
     }
-    if quirks.contains(Quirk::NoStructuredOutput) {
-        if request.params.output_schema.is_some() {
-            return Err(Error::Capability {
-                model: model.clone(),
-                feature: "structured output (the vendor declares no_structured_output)".to_owned(),
-            });
-        }
-    } else if let Some(format) = build_response_format(request) {
+    if let Some(format) = build_response_format(request) {
         body.insert("response_format".to_owned(), format);
     }
     if let Some(max) = request.params.max_output_tokens {
@@ -112,12 +103,10 @@ pub(crate) fn build(
             body.insert("top_logprobs".to_owned(), json!(top));
         }
     }
-    if !quirks.contains(Quirk::NoSeed) {
-        if let Some(seed) = request.params.seed {
-            body.insert("seed".to_owned(), json!(seed));
-        }
+    if let Some(seed) = request.params.seed {
+        body.insert("seed".to_owned(), json!(seed));
     }
-    if !quirks.contains(Quirk::NoStopSequences) && !request.params.stop_sequences.is_empty() {
+    if !request.params.stop_sequences.is_empty() {
         body.insert(
             "stop".to_owned(),
             Value::Array(
@@ -130,7 +119,7 @@ pub(crate) fn build(
             ),
         );
     }
-    if !quirks.contains(Quirk::NoPromptCacheKey) {
+    if !quirks.contains(&Quirk::NoPromptCacheKey) {
         if let Some(key) = request
             .extensions
             .get(SESSION_EXTENSION)
@@ -140,7 +129,32 @@ pub(crate) fn build(
         }
     }
     splice_vendor_extensions(model, WIRE_CHAT, &request.extensions, &mut body)?;
+    validate_quirks(model, quirks, &body)?;
     Ok(Value::Object(body))
+}
+
+fn validate_quirks(
+    model: &ModelRef,
+    quirks: &Quirks,
+    body: &serde_json::Map<String, Value>,
+) -> Result<()> {
+    // Check the completed body so vendor extensions cannot bypass restrictions.
+    for (quirk, field) in [
+        (Quirk::NoStreamUsage, "stream_options"),
+        (Quirk::NoStructuredOutput, "response_format"),
+        (Quirk::NoStopSequences, "stop"),
+        (Quirk::NoSeed, "seed"),
+        (Quirk::NoReasoningEffort, "reasoning_effort"),
+        (Quirk::NoPromptCacheKey, "prompt_cache_key"),
+    ] {
+        if quirks.contains(&quirk) && body.contains_key(field) {
+            return Err(Error::Capability {
+                model: model.clone(),
+                feature: format!("`{field}` (the vendor declares {quirk:?})"),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Renders the neutral conversation as the wire's message array.
@@ -821,7 +835,7 @@ mod tests {
     }
 
     #[test]
-    fn quirks_omit_the_deviating_fields() {
+    fn quirks_omit_automatic_fields_without_rejecting_unset_features() {
         let quirks: Quirks = [
             Quirk::NoStreamUsage,
             Quirk::NoSeed,
@@ -832,9 +846,7 @@ mod tests {
         .into_iter()
         .collect();
         let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
-        request.params.seed = Some(7);
-        request.params.stop_sequences = vec!["stop".to_owned()];
-        request.reasoning = ReasoningRequest::Effort(ReasoningEffort::High);
+        request.reasoning = ReasoningRequest::Automatic;
         request
             .extensions
             .insert(SESSION_EXTENSION.to_owned(), json!("sess"));
@@ -844,6 +856,64 @@ mod tests {
         assert!(body.get("stop").is_none());
         assert!(body.get("reasoning_effort").is_none());
         assert!(body.get("prompt_cache_key").is_none());
+    }
+
+    #[test]
+    fn explicit_features_against_deviating_vendors_are_typed_errors() {
+        for (quirk, field) in [
+            (Quirk::NoSeed, "seed"),
+            (Quirk::NoStopSequences, "stop"),
+            (Quirk::NoReasoningEffort, "reasoning_effort"),
+        ] {
+            let quirks = [quirk].into_iter().collect();
+            let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
+            match quirk {
+                Quirk::NoSeed => request.params.seed = Some(7),
+                Quirk::NoStopSequences => request.params.stop_sequences = vec!["stop".to_owned()],
+                Quirk::NoReasoningEffort => {
+                    request.reasoning = ReasoningRequest::Effort(ReasoningEffort::High);
+                }
+                _ => unreachable!(),
+            }
+            let body = build(&model(), &continuity(), &Quirks::new(), &request).expect("supported");
+            assert!(body.get(field).is_some());
+            let error = build(&model(), &continuity(), &quirks, &request).expect_err("rejected");
+            assert!(matches!(error, Error::Capability { model: target, feature }
+                if target == model() && feature.contains(field)));
+        }
+    }
+
+    #[test]
+    fn vendor_extensions_cannot_bypass_quirks() {
+        for (quirk, field, value) in [
+            (Quirk::NoSeed, "seed", json!(7)),
+            (Quirk::NoStopSequences, "stop", json!(["stop"])),
+            (Quirk::NoReasoningEffort, "reasoning_effort", json!("high")),
+            (
+                Quirk::NoStructuredOutput,
+                "response_format",
+                json!({ "type": "json_object" }),
+            ),
+            (
+                Quirk::NoStreamUsage,
+                "stream_options.include_usage",
+                json!(true),
+            ),
+            (
+                Quirk::NoPromptCacheKey,
+                "prompt_cache_key",
+                json!("explicit"),
+            ),
+        ] {
+            let quirks = [quirk].into_iter().collect();
+            let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
+            request
+                .extensions
+                .insert(format!("{WIRE_CHAT}:{field}"), value);
+            let error = build(&model(), &continuity(), &quirks, &request).expect_err("rejected");
+            assert!(matches!(error, Error::Capability { model: target, feature }
+                if target == model() && feature.contains(field.split('.').next().expect("field"))));
+        }
     }
 
     #[test]

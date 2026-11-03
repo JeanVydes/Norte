@@ -6,21 +6,22 @@ workflow for contributing.
 
 ## Repository layout
 
-- `norte/` — the facade: `norte-core` re-exported at the root and every other
-  crate as a module of its own name, behind features. It adds no behaviour, and it
-  is the crate an application should depend on.
-- `norte-facade-smoke/` — a package whose only dependency is `norte`, which uses
-  the facade the way an application would.
-- `norte-core/` — the neutral domain model, streaming pipeline, layers,
-  capabilities and every contract (port). It carries abstractions only — no
-  vendor names, model tables or external persistence — and **no agent
-  runtime**: nothing in it knows there is a turn loop. `Message`, `Part`,
-  `Session` and `Commit` are here because a provider serialises them; the
-  `BlobStore` port is here because `MediaAdapter` names it.
-- `norte-harness/` — one reference agent loop over those contracts: the `Harness`
-  walks a session forward a turn at a time, with the tool loop, the interceptors
-  and the session store. It is deliberately *a* harness and not *the* harness; a
-  host that wants a different loop depends on `norte-core` alone.
+- `norte/` — the facade: `norte-core` re-exported at the root, the `#[tool]`
+  macro, and optional provider/helper modules. `norte/Cargo.toml` defines the
+  features; `norte/src/lib.rs` defines the re-exports. Applications can depend on
+  this crate alone. It provides no agent runtime.
+- `norte-facade-smoke/` — a workspace package whose only dependency is `norte`.
+  Its offline tests cover core types, macro metadata with implicit and explicit
+  facade anchors, the default provider model and the opt-in `tools` feature,
+  without starting a runtime or making network calls.
+- `norte-core/` — the neutral domain model and adapter contracts, with no agent
+  runtime or session store. `src/domain/` defines `Message`, `Part`, media and
+  continuity types; `src/model.rs` defines `Model` and `ModelRequest`;
+  `src/stream.rs` defines stream events and accumulation; `src/layer.rs` defines
+  model-call layers. `src/tool/` owns tool declarations, the registry and
+  execution; `src/blob.rs`, `src/media_adapter.rs` and `src/preprocess.rs` own
+  the blob and media seams. `src/lib.rs` lists the public modules and re-exports.
+  There are no `Session` or `Commit` domain types and no `norte-harness` crate.
 - `norte-http/` — shared HTTP transport, `VendorProfile`, auth schemes and
   `HttpMedia`.
 - `norte-openai/`, `norte-anthropic/`, `norte-gemini/` — the wire
@@ -32,11 +33,11 @@ workflow for contributing.
 - `norte-testing/` — the scripted model, fixture replayer, request probe
   and conformance suites.
 - `norte-macros/` — the procedural macros used across the workspace.
-- `examples/cookbook/` — small, self-contained recipes, nothing shared between
-  them on purpose. The crate root holds the ones that use `norte-core` alone;
-  `harness/` and `media/` hold the ones that need those crates.
-- `benchmarks/` — measurements against a real model, one folder per benchmark,
-  each with its own README and a `results/` folder the run writes into.
+- `examples/cookbook/` — recipe sources, not a current workspace member. Its
+  manifest still references the retired harness; it is not a validated guide to
+  the current API.
+- `benchmarks/` — benchmark sources with their own manifests and documentation,
+  not current workspace members.
 - `guide/` — the multi-page user guide, written in Markdown and built with
   [mdBook](https://rust-lang.github.io/mdBook/) (`mdbook serve guide`). CI
   publishes it to GitHub Pages from `dev`; a pull request only builds it.
@@ -64,10 +65,11 @@ workflow for contributing.
 cargo fmt --all
 ```
 
-- There is no conditional compilation inside a crate: core compiles with its full
-  surface, and a wire crate compiles whole. The only features in the workspace
-  select *which crates* are pulled in (`norte`), plus the `fuzz` feature the wire
-  crates expose to their fuzz targets.
+- Core compiles with its full surface, and a wire crate compiles whole. The
+  facade uses feature-gated re-exports to select optional crates; preserve the
+  feature definitions in `norte/Cargo.toml`, including `google` as an alias for
+  `gemini`, and `testing` as an opt-in separate from `full`. Wire crates also
+  expose a `fuzz` feature for their fuzz targets.
 - Document public APIs with doc comments. Keep the public surface stable and
   documented.
 - Clippy runs with `all` and `pedantic` denied (see `.github/workflows/rust.yml`).
@@ -107,7 +109,7 @@ cargo test -p norte-tools
 
 ## Running tests
 
-- All tests, including the README wiring test and the adapter conformance suites:
+- All tests in the current workspace:
 
 ```bash
 cargo test --workspace
@@ -123,9 +125,22 @@ Tests are hermetic: there are no live API keys and no external services. Provide
 behaviour is pinned by recorded fixtures; live smoke tests are run separately on a
 schedule (FR-TEST-2).
 
-A benchmark talks to a paid model, so `cargo test --workspace` type-checks and
-builds it but never runs it. Its results are written by the run, under its own
-`results/`.
+For focused facade checks (no network or agent runtime):
+
+```bash
+cargo test --offline -p norte-facade-smoke
+cargo test --offline -p norte
+cargo test --offline -p norte --no-default-features
+```
+
+The smoke package deliberately declares no direct dependencies other than
+`norte`; keep it that way so it catches facade paths that accidentally require
+an application to import an implementation crate. It checks macro metadata, not
+an async tool executor. Offline checks require dependencies to be cached locally.
+
+Workspace commands do not validate the non-member cookbook or benchmark
+manifests. Check those sources against the current contracts before running them;
+benchmarks may contact paid models.
 
 ## Adding a new crate to the workspace
 
@@ -144,7 +159,7 @@ Norte follows [semantic versioning](https://semver.org/).
 - **Patch** releases fix behaviour without changing the public API.
 - **Minor** releases add public API in a backwards-compatible way.
 - **Major** releases may change the public API. **Breaking changes to the neutral
-  model — the domain types, capability descriptors, ports and engine surface in
+  model — the domain types, capability descriptors and ports in
   `norte-core` — require a major version.**
 
 Practically:
@@ -160,8 +175,12 @@ Practically:
 
 ## Publishing crates
 
-The workspace publishes eleven crates; `examples/cookbook`, `benchmarks/agent-cost`
-and `norte-facade-smoke` are `publish = false` and never leave the repository.
+The library crates are `norte`, `norte-core`, `norte-macros`, `norte-http`,
+`norte-openai`, `norte-anthropic`, `norte-gemini`, `norte-tools`, `norte-media`,
+`norte-mcp` and `norte-testing`. The facade's optional `testing` dependency pulls
+`norte-testing` into the workspace through its path dependency. The
+`norte-facade-smoke` workspace member is `publish = false`; cookbook and benchmark
+sources are not current workspace members.
 
 One command does the whole set, in dependency order, and it works before anything
 is on the registry: `cargo publish --workspace` stands up a temporary local

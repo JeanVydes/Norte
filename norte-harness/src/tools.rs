@@ -23,7 +23,7 @@ use norte_core::id::ToolName;
 use norte_core::tool::ToolCallInfo;
 
 use super::{
-    CALL_CANCELLED_REASON, CallSite, ChannelSink, Harness, PreparedCall, ToolTurn, execute_call,
+    CALL_CANCELLED_REASON, CallSite, Harness, PreparedCall, ToolTurn, execute_call,
     results_in_call_order,
 };
 
@@ -234,16 +234,13 @@ impl Harness {
         if self.interceptors.is_empty() {
             return Ok(None);
         }
-        let sink = ChannelSink {
-            sender: sender.clone(),
-        };
         let context = InterceptionContext {
             point: ConsultationPoint::ToolCall { call: call.clone() },
             session: session.id,
             turn: session.turn,
             head: session.head,
             messages: history.unwrap_or_default(),
-            events: &sink,
+            events: sender,
         };
         for interceptor in self.interceptors.interceptors() {
             match interceptor.intercept(&context).await? {

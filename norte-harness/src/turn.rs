@@ -25,7 +25,7 @@ use norte_core::id::{NodeId, SessionId};
 use norte_core::model::TurnOptions;
 
 use super::{
-    ChannelSink, Consultation, Harness, TurnOutcome, session_turn_options, turn_metadata,
+    Consultation, Harness, TurnOutcome, session_turn_options, turn_metadata,
     unanswered_call_errors,
 };
 
@@ -57,8 +57,6 @@ enum EndOfTurn {
     Continue,
     /// The turn finished.
     Finish(TurnOutcome),
-    /// Not an end-of-turn situation; proceed to an iteration.
-    None,
 }
 
 /// The outcome of one `Turn::step`: the step plus the events it produced.
@@ -70,23 +68,28 @@ pub struct StepResult {
     pub events: Vec<EngineEvent>,
 }
 
-/// A host-driven turn: one iteration per `step()` call.
-pub struct Turn {
-    engine: Harness,
-    session_id: SessionId,
-    input: Option<Message>,
-    options: TurnOptions,
-    // Runtime state, lazily initialised on the first step.
+/// Runtime state of a turn, initialised lazily on the first `step()`.
+#[derive(Default)]
+struct TurnState {
     session: Option<Session>,
     effective: Option<TurnOptions>,
     last: Option<Message>,
     early_results: Vec<ToolResultPart>,
     iterations: usize,
     input_consumed: bool,
+    finished: Option<TurnOutcome>,
+}
+
+/// A host-driven turn: one iteration per `step()` call.
+pub struct Turn {
+    engine: Harness,
+    session_id: SessionId,
+    input: Option<Message>,
+    options: TurnOptions,
     cancellation: CancellationToken,
     events_tx: mpsc::Sender<EngineEvent>,
     events_rx: mpsc::Receiver<EngineEvent>,
-    finished: Option<TurnOutcome>,
+    state: TurnState,
 }
 
 impl Turn {
@@ -104,22 +107,16 @@ impl Turn {
             session_id,
             input,
             options,
-            session: None,
-            effective: None,
-            last: None,
-            early_results: Vec::new(),
-            iterations: 0,
-            input_consumed: false,
             cancellation,
             events_tx: tx,
             events_rx: rx,
-            finished: None,
+            state: TurnState::default(),
         }
     }
 
     /// Ensures the session is loaded and the effective options computed.
     async fn init(&mut self) -> Result<()> {
-        if self.session.is_some() {
+        if self.state.session.is_some() {
             return Ok(());
         }
         let session = self.engine.store.load(self.session_id).await?;
@@ -127,8 +124,8 @@ impl Turn {
             .options
             .clone()
             .over(&session_turn_options(&session).over(&self.engine.default_turn_options()));
-        self.session = Some(session);
-        self.effective = Some(effective);
+        self.state.session = Some(session);
+        self.state.effective = Some(effective);
         Ok(())
     }
 
@@ -145,7 +142,7 @@ impl Turn {
     /// Panics if called before `init` has run (internal invariant; `step`
     /// initialises on first call).
     pub async fn step(&mut self) -> Result<Option<StepResult>> {
-        if let Some(outcome) = &self.finished {
+        if let Some(outcome) = &self.state.finished {
             return Ok(Some(StepResult {
                 step: Step::Done(Box::new(outcome.clone())),
                 events: Vec::new(),
@@ -154,75 +151,75 @@ impl Turn {
         self.init().await?;
 
         // Consume the input on the first step.
-        if !self.input_consumed {
-            let session = self.session.as_mut().expect("initialised");
+        if !self.state.input_consumed {
+            let session = self.state.session.as_mut().expect("initialised");
             if let Some(outcome) = self
                 .engine
                 .append_input(session, self.input.take(), &self.events_tx)
                 .await?
             {
-                self.finished = Some(outcome.clone());
-                self.session = Some(session.clone());
+                self.state.finished = Some(outcome.clone());
+                self.state.session = Some(session.clone());
                 let events = self.drain_events();
                 return Ok(Some(StepResult {
                     step: Step::Done(Box::new(outcome)),
                     events,
                 }));
             }
-            self.input_consumed = true;
+            self.state.input_consumed = true;
         }
 
         let events_tx = self.events_tx.clone();
         let cancellation = self.cancellation.clone();
 
         loop {
-            self.iterations += 1;
-            if self.iterations > self.engine.config.max_iterations {
+            self.state.iterations += 1;
+            if self.state.iterations > self.engine.config.max_iterations {
                 return Err(Error::InvalidInput(format!(
                     "agent exceeded {} iterations",
                     self.engine.config.max_iterations
                 )));
             }
 
-            let session_mut = self.session.as_mut().expect("initialised");
+            let session_mut = self.state.session.as_mut().expect("initialised");
             match self
                 .engine
-                .end_of_turn_check(session_mut, &events_tx, &mut self.last)
+                .end_of_turn_check(session_mut, &events_tx, &mut self.state.last)
                 .await?
             {
-                EndOfTurn::Continue => continue,
-                EndOfTurn::Finish(outcome) => {
-                    self.finished = Some(outcome.clone());
-                    self.session = Some(session_mut.clone());
+                Some(EndOfTurn::Continue) => continue,
+                Some(EndOfTurn::Finish(outcome)) => {
+                    self.state.finished = Some(outcome.clone());
+                    self.state.session = Some(session_mut.clone());
                     let events = self.drain_events();
                     return Ok(Some(StepResult {
                         step: Step::Done(Box::new(outcome)),
                         events,
                     }));
                 }
-                EndOfTurn::None => {}
+                None => {}
             }
 
-            let session_mut = self.session.as_mut().expect("initialised");
-            let effective = self.effective.clone().expect("initialised");
+            let session_mut = self.state.session.as_mut().expect("initialised");
+            let effective = self.state.effective.clone().expect("initialised");
             let step = self
                 .engine
                 .run_one_iteration(
                     session_mut,
-                    &mut self.last,
-                    &mut self.early_results,
+                    &mut self.state.last,
+                    &mut self.state.early_results,
                     &effective,
                     &events_tx,
                     &cancellation,
                 )
                 .await?;
             // Persist the (possibly updated) session back.
-            self.session = Some(session_mut.clone());
+            self.state.session = Some(session_mut.clone());
 
             let events = self.drain_events();
             match step {
                 Step::Done(outcome) => {
-                    self.finished = Some((*outcome).clone());
+                    self.state.finished = Some((*outcome).clone());
                     return Ok(Some(StepResult {
                         step: Step::Done(outcome),
                         events,
@@ -275,7 +272,7 @@ impl Turn {
     ///
     /// Panics if `step` has never been called.
     pub fn session(&self) -> &Session {
-        self.session.as_ref().expect("step() not yet called")
+        self.state.session.as_ref().expect("step() not yet called")
     }
 
     /// The receiver for engine events produced by this turn.
@@ -332,15 +329,15 @@ impl Harness {
     }
 
     /// End-of-turn check: if the head is a final assistant message, consult the
-    /// host. Returns `Continue` when the host added messages (re-evaluate),
-    /// `Finish` when the turn ends, or `None` when this is not an end-of-turn
-    /// situation.
+    /// host. Returns `Some(Continue)` when the host added messages
+    /// (re-evaluate), `Some(Finish)` when the turn ends, or `None` when this is
+    /// not an end-of-turn situation.
     async fn end_of_turn_check(
         &self,
         session: &mut Session,
         sender: &mpsc::Sender<EngineEvent>,
         last: &mut Option<Message>,
-    ) -> Result<EndOfTurn> {
+    ) -> Result<Option<EndOfTurn>> {
         let head_message = match session.head {
             Some(head) => Some(self.store.node(head).await?.message),
             None => None,
@@ -351,12 +348,12 @@ impl Harness {
                     .end_of_turn(session, sender, last.clone(), message)
                     .await?
                 else {
-                    return Ok(EndOfTurn::Continue);
+                    return Ok(Some(EndOfTurn::Continue));
                 };
-                return Ok(EndOfTurn::Finish(outcome));
+                return Ok(Some(EndOfTurn::Finish(outcome)));
             }
         }
-        Ok(EndOfTurn::None)
+        Ok(None)
     }
 
     /// Runs one iteration: either the tool calls or a generate+commit.
@@ -510,8 +507,9 @@ impl Harness {
                 ConsultationPoint::EndOfTurn,
             )
             .await?;
+        let added = consultation.session.head != session.head;
         *session = consultation.session;
-        if consultation.added {
+        if added {
             return Ok(None);
         }
         Ok(Some(TurnOutcome {
@@ -575,16 +573,13 @@ impl Harness {
         if self.interceptors.is_empty() {
             return Ok(Consultation::unchanged(session.clone()));
         }
-        let sink = ChannelSink {
-            sender: sender.clone(),
-        };
         let context = InterceptionContext {
             point,
             session: session.id,
             turn: session.turn,
             head: session.head,
             messages: history.unwrap_or_default(),
-            events: &sink,
+            events: sender,
         };
         let mut messages = Vec::new();
         let mut stop = None;
@@ -617,7 +612,6 @@ impl Harness {
         if messages.is_empty() {
             return Ok(Consultation {
                 session: session.clone(),
-                added: false,
                 stop,
             });
         }
@@ -653,7 +647,6 @@ impl Harness {
         .await;
         Ok(Consultation {
             session: committed,
-            added: true,
             stop,
         })
     }

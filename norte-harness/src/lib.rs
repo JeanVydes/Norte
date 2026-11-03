@@ -642,24 +642,10 @@ fn stream_delta(event: &StreamEvent) -> Option<StreamDelta> {
     }
 }
 
-struct ChannelSink {
-    sender: mpsc::Sender<EngineEvent>,
-}
-
-impl EventSink for ChannelSink {
-    fn emit(&self, event: EngineEvent) {
-        if self.sender.try_send(event).is_err() {
-            tracing::debug!("layer event dropped: engine channel full or closed");
-        }
-    }
-}
-
 /// What the host decided, and what the engine did about it.
 struct Consultation {
     /// The session after the messages the host added.
     session: Session,
-    /// Whether messages joined the session.
-    added: bool,
     /// Whether the host asked for the turn to end.
     stop: Option<String>,
 }
@@ -669,7 +655,6 @@ impl Consultation {
     fn unchanged(session: Session) -> Self {
         Self {
             session,
-            added: false,
             stop: None,
         }
     }

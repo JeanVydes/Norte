@@ -25,8 +25,7 @@ use norte_core::id::{NodeId, SessionId};
 use norte_core::model::TurnOptions;
 
 use super::{
-    Consultation, Harness, TurnOutcome, session_turn_options, turn_metadata,
-    unanswered_call_errors,
+    Consultation, Harness, TurnOutcome, session_turn_options, turn_metadata, unanswered_call_errors,
 };
 
 /// One step of a host-driven turn.
@@ -391,7 +390,12 @@ impl Harness {
                 // or a decision to stop the turn now.
                 let history = self.store.history(session.head).await?;
                 let consultation = self
-                    .consult(session, sender, Some(&history), ConsultationPoint::PostTools)
+                    .consult(
+                        session,
+                        sender,
+                        Some(&history),
+                        ConsultationPoint::PostTools,
+                    )
                     .await?;
                 *session = consultation.session;
                 if consultation.stop.is_some() {

@@ -73,6 +73,24 @@ struct TurnState {
     finished: Option<TurnOutcome>,
 }
 
+/// The phase a turn is in, so its state is one value and not a handful of
+/// fields that must agree with each other.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TurnPhase {
+    /// The session has not been loaded yet.
+    Init,
+    /// The input is being consumed.
+    Input,
+    /// Checking whether the turn has ended.
+    CheckEnd,
+    /// Running the tool calls of one iteration.
+    AwaitingTool,
+    /// Generating and committing an answer.
+    Generating,
+    /// The turn finished.
+    Done,
+}
+
 /// A host-driven turn: one iteration per `step()` call.
 pub struct Turn {
     engine: Harness,
@@ -83,6 +101,7 @@ pub struct Turn {
     events_tx: mpsc::Sender<EngineEvent>,
     events_rx: mpsc::Receiver<EngineEvent>,
     state: TurnState,
+    phase: TurnPhase,
 }
 
 impl Turn {
@@ -104,6 +123,7 @@ impl Turn {
             events_tx: tx,
             events_rx: rx,
             state: TurnState::default(),
+            phase: TurnPhase::Init,
         }
     }
 

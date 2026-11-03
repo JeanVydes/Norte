@@ -45,6 +45,12 @@ impl Harness {
         let model_ref = self.model.reference().clone();
         let capabilities = self.model.capabilities();
         let (history, invalidated) = self.preprocess_history(history).await?;
+        if cancellation.is_cancelled() {
+            let message = self
+                .finalize_message(Accumulated::default(), true, model_ref, Digest::of_json(&serde_json::json!(null)))
+                .await?;
+            return Ok((message, true, Vec::new()));
+        }
         if invalidated {
             self.emit(
                 sender,
@@ -56,6 +62,13 @@ impl Harness {
             .await;
         }
         let reconstructed = self.reconstruct(&history).await?;
+
+        if cancellation.is_cancelled() {
+            let message = self
+                .finalize_message(Accumulated::default(), true, model_ref, Digest::of_json(&serde_json::json!(null)))
+                .await?;
+            return Ok((message, true, Vec::new()));
+        }
 
         let sent_parts: Vec<Part> = reconstructed
             .messages

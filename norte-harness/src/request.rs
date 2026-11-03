@@ -103,7 +103,6 @@ impl Harness {
         let stream = tokio::select! {
             biased;
             () = cancellation.cancelled() => {
-                eprintln!("DBG generate: cancellation detected before layered_call");
                 // The person stopped the turn before the provider was asked.
                 // Commit the same interrupted message the stream path commits
                 // when it is cancelled before its first part; there is no
@@ -133,7 +132,6 @@ impl Harness {
         // here, drop the stream (closing the connection) and commit the
         // interrupted, empty assistant message instead of reporting a request.
         if cancellation.is_cancelled() {
-            eprintln!("DBG generate: cancellation detected after layered_call");
             let message = self
                 .finalize_message(Accumulated::default(), true, model_ref, request_digest)
                 .await?;

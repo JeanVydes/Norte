@@ -33,14 +33,9 @@ use super::{
 #[derive(Clone, Debug)]
 pub enum Step {
     /// `AwaitingTool` phase: the tool calls ran.
-    Tools {
-        /// The session after the tools ran.
-        session: Box<Session>,
-    },
+    Tools,
     /// Idle/Streaming phase: an answer was generated and committed.
     Generated {
-        /// The session after the commit.
-        session: Box<Session>,
         /// The assistant message that was committed.
         message: Box<Message>,
         /// Whether the generation was interrupted.
@@ -378,9 +373,7 @@ impl Harness {
                         message: last.clone(),
                     })));
                 }
-                Ok(Step::Tools {
-                    session: Box::new(session.clone()),
-                })
+                Ok(Step::Tools)
             }
             Phase::Idle | Phase::Streaming => {
                 // The host may add messages before this request is built.
@@ -413,7 +406,6 @@ impl Harness {
                     })));
                 }
                 Ok(Step::Generated {
-                    session: Box::new(session.clone()),
                     message: Box::new(message),
                     interrupted,
                 })

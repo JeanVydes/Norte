@@ -45,7 +45,7 @@ pub enum Step {
 }
 
 /// Internal result of the end-of-turn check.
-enum EndOfTurn {
+pub(crate) enum EndOfTurn {
     /// The host added messages; re-evaluate.
     Continue,
     /// The turn finished.
@@ -128,7 +128,12 @@ impl Turn {
     }
 
     /// Ensures the session is loaded and the effective options computed.
-    async fn init(&mut self) -> Result<()> {
+    /// Loads the session and computes the effective options.
+    ///
+    /// # Errors
+    ///
+    /// Returns the store error when the session cannot be loaded.
+    pub async fn init(&mut self) -> Result<()> {
         if self.state.session.is_some() {
             return Ok(());
         }
@@ -343,7 +348,7 @@ impl Harness {
     /// The host may add messages before the input, so they come first. A parked
     /// session still owes a tool result, and the messages must not come between
     /// the call and it. Returns the turn outcome when the host stopped the turn.
-    async fn append_input(
+    pub(crate) async fn append_input(
         &self,
         session: &mut Session,
         input: Option<Message>,
@@ -376,7 +381,7 @@ impl Harness {
     /// host. Returns `Some(Continue)` when the host added messages
     /// (re-evaluate), `Some(Finish)` when the turn ends, or `None` when this is
     /// not an end-of-turn situation.
-    async fn end_of_turn_check(
+    pub(crate) async fn end_of_turn_check(
         &self,
         session: &mut Session,
         sender: &mpsc::Sender<EngineEvent>,
@@ -532,7 +537,7 @@ impl Harness {
     /// the turn. An interrupted answer that had already streamed a call is
     /// closed here too: the error result for each unanswered call commits
     /// beside the message.
-    async fn commit_answer(
+    pub(crate) async fn commit_answer(
         &self,
         session: &mut Session,
         message: &Message,
@@ -586,7 +591,7 @@ impl Harness {
     ///
     /// A message the host was holding keeps the turn alive, so the turn ends
     /// only when the host has nothing left to say.
-    async fn end_of_turn(
+    pub(crate) async fn end_of_turn(
         &self,
         session: &mut Session,
         sender: &mpsc::Sender<EngineEvent>,
@@ -618,7 +623,7 @@ impl Harness {
     /// The host may add messages to the session first. An interceptor reads
     /// the history the request carries, so the store is read once and the
     /// request reuses it.
-    async fn prepare_request(
+    pub(crate) async fn prepare_request(
         &self,
         session: &Session,
         sender: &mpsc::Sender<EngineEvent>,
@@ -658,7 +663,7 @@ impl Harness {
     /// the version the turn already holds: an interceptor never races the
     /// turn, and what it adds lands in the graph, in the request digest and in
     /// the history the policies read.
-    async fn consult(
+    pub(crate) async fn consult(
         &self,
         session: &Session,
         sender: &mpsc::Sender<EngineEvent>,
@@ -747,7 +752,12 @@ impl Harness {
     }
 
     /// Chains the turn's input onto the head.
-    async fn append_turn(
+    /// Chains the turn's input onto the head.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store or store-conflict error.
+    pub async fn append_turn(
         &self,
         session: &Session,
         message: Message,

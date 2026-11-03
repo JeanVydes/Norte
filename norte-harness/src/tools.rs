@@ -29,7 +29,7 @@ use super::{
 
 impl Harness {
     /// Runs the calls of the head message and commits their results.
-    pub(super) async fn run_tools(
+    pub(crate) async fn run_tools(
         &self,
         session: &Session,
         sender: &mpsc::Sender<EngineEvent>,

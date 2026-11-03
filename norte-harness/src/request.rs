@@ -33,8 +33,14 @@ use super::{
 };
 
 impl Harness {
+    /// Runs the model and returns the answer, whether it was interrupted, and
+    /// any tool results produced early.
+    ///
+    /// # Errors
+    ///
+    /// Returns a capability, codec or provider error.
     #[allow(clippy::too_many_lines)]
-    pub(super) async fn generate(
+    pub async fn generate(
         &self,
         session: &Session,
         history: Vec<Message>,

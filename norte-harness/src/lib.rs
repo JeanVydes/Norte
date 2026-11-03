@@ -791,6 +791,7 @@ pub struct TurnBuilder<'a> {
     session: SessionId,
     input: Option<Message>,
     options: TurnOptions,
+    cancellation: Option<CancellationToken>,
 }
 
 impl<'a> TurnBuilder<'a> {
@@ -800,6 +801,7 @@ impl<'a> TurnBuilder<'a> {
             session,
             input: None,
             options: TurnOptions::default(),
+            cancellation: None,
         }
     }
 
@@ -808,6 +810,16 @@ impl<'a> TurnBuilder<'a> {
     #[must_use]
     pub fn input(mut self, message: Message) -> Self {
         self.input = Some(message);
+        self
+    }
+
+    /// Supplies the token that cancels this turn.
+    ///
+    /// A host that hears a cancel on another task hands its token here and
+    /// signals it without holding the turn. The default is a fresh token.
+    #[must_use]
+    pub fn cancellation(mut self, token: CancellationToken) -> Self {
+        self.cancellation = Some(token);
         self
     }
 
@@ -978,7 +990,7 @@ impl<'a> TurnBuilder<'a> {
     /// channel and drained through `Turn::events`.
     #[must_use]
     pub fn start_stepped(self) -> turn::Turn {
-        let cancellation = tokio_util::sync::CancellationToken::new();
+        let cancellation = self.cancellation.unwrap_or_default();
         turn::Turn::new(
             self.engine.clone(),
             self.session,

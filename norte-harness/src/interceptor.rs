@@ -32,6 +32,8 @@ pub enum ConsultationPoint {
         /// The call being decided about.
         call: ToolCallPart,
     },
+    /// After the tool calls of one iteration ran, before the next request.
+    PostTools,
     /// At the end of a turn, before the engine lets it finish.
     EndOfTurn,
 }
@@ -47,6 +49,7 @@ impl ConsultationPoint {
             ConsultationPoint::ToolCall { call } => Some(call),
             ConsultationPoint::PreInput
             | ConsultationPoint::PreflightRequest
+            | ConsultationPoint::PostTools
             | ConsultationPoint::EndOfTurn => None,
         }
     }
@@ -154,6 +157,20 @@ pub trait TurnInterceptor: Send + Sync {
     /// Returns an error when the host cannot decide. The turn then fails with
     /// it and the session stays resumable.
     async fn intercept(&self, context: &InterceptionContext<'_>) -> Result<Interception>;
+
+    /// Called when an error occurs during the turn. The host may inject messages
+    /// or stop the turn; the default lets the turn fail with the error.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the host cannot decide.
+    async fn on_error(
+        &self,
+        _context: &InterceptionContext<'_>,
+        _error: &norte_core::error::Error,
+    ) -> Result<Interception> {
+        Ok(Interception::Continue)
+    }
 }
 
 /// The interceptors an engine consults, in registration order.

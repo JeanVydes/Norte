@@ -135,6 +135,7 @@ impl Turn {
     ///
     /// Panics if called before `init` has run (internal invariant; `step`
     /// initialises on first call).
+    #[allow(clippy::too_many_lines)]
     pub async fn step(&mut self) -> Result<Option<StepResult>> {
         if let Some(outcome) = &self.state.finished {
             return Ok(Some(StepResult {
@@ -197,7 +198,7 @@ impl Turn {
 
             let session_mut = self.state.session.as_mut().expect("initialised");
             let effective = self.state.effective.clone().expect("initialised");
-            let step = self
+            let step_result = self
                 .engine
                 .run_one_iteration(
                     session_mut,
@@ -207,24 +208,42 @@ impl Turn {
                     &events_tx,
                     &cancellation,
                 )
-                .await?;
-            // Persist the (possibly updated) session back.
-            self.state.session = Some(session_mut.clone());
+                .await;
+            match step_result {
+                Ok(step) => {
+                    // Persist the (possibly updated) session back.
+                    self.state.session = Some(session_mut.clone());
 
-            let events = self.drain_events();
-            match step {
-                Step::Done(outcome) => {
-                    self.state.finished = Some((*outcome).clone());
-                    return Ok(Some(StepResult {
-                        step: Step::Done(outcome),
-                        events,
-                    }));
+                    let events = self.drain_events();
+                    match step {
+                        Step::Done(outcome) => {
+                            self.state.finished = Some((*outcome).clone());
+                            return Ok(Some(StepResult {
+                                step: Step::Done(outcome),
+                                events,
+                            }));
+                        }
+                        other => {
+                            return Ok(Some(StepResult {
+                                step: other,
+                                events,
+                            }));
+                        }
+                    }
                 }
-                other => {
-                    return Ok(Some(StepResult {
-                        step: other,
-                        events,
-                    }));
+                Err(error) => {
+                    // Ask the host interceptors how to handle the error.
+                    let retry = self
+                        .engine
+                        .handle_error(session_mut, &events_tx, &error)
+                        .await?;
+                    if retry {
+                        self.state.session = Some(session_mut.clone());
+                        continue;
+                    }
+                    self.state.session = Some(session_mut.clone());
+                    let _ = self.drain_events();
+                    return Err(error);
                 }
             }
         }
@@ -367,6 +386,20 @@ impl Harness {
                     .run_tools(session, sender, cancellation, early_results)
                     .await?;
                 early_results.clear();
+                // The host may add messages after the tools ran, before the next
+                // request is built: a tool result the host wants to annotate,
+                // or a decision to stop the turn now.
+                let history = self.store.history(session.head).await?;
+                let consultation = self
+                    .consult(session, sender, Some(&history), ConsultationPoint::PostTools)
+                    .await?;
+                *session = consultation.session;
+                if consultation.stop.is_some() {
+                    return Ok(Step::Done(Box::new(TurnOutcome {
+                        session: session.clone(),
+                        message: last.clone(),
+                    })));
+                }
                 if cancellation.is_cancelled() {
                     return Ok(Step::Done(Box::new(TurnOutcome {
                         session: session.clone(),
@@ -411,6 +444,41 @@ impl Harness {
                 })
             }
         }
+    }
+
+    /// Asks the host interceptors how to handle an error. Returns `true` when
+    /// the host asked to retry the current iteration.
+    async fn handle_error(
+        &self,
+        session: &Session,
+        sender: &mpsc::Sender<EngineEvent>,
+        error: &Error,
+    ) -> Result<bool> {
+        if self.interceptors.is_empty() {
+            return Ok(false);
+        }
+        let sink = sender;
+        let context = InterceptionContext {
+            point: ConsultationPoint::PreflightRequest,
+            session: session.id,
+            turn: session.turn,
+            head: session.head,
+            messages: &[],
+            events: sink,
+        };
+        let mut injected = false;
+        for interceptor in self.interceptors.interceptors() {
+            match interceptor.on_error(&context, error).await? {
+                Interception::Continue | Interception::RefuseCall { .. } => {}
+                Interception::Stop { .. } => return Ok(false),
+                Interception::Inject(added) => {
+                    if !added.is_empty() {
+                        injected = true;
+                    }
+                }
+            }
+        }
+        Ok(injected)
     }
 
     /// Whether the loop keeps working from the current head.

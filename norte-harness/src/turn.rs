@@ -241,8 +241,9 @@ impl Turn {
                         continue;
                     }
                     self.state.session = Some(session_mut.clone());
-                    let drained = self.drain_events();
-                    eprintln!("DBG step Err drained: {:?}", drained);
+                    // Leave the events in the buffer for the caller to drain
+                    // and process: draining here loses LayerShortCircuited and
+                    // other events the caller needs to report.
                     return Err(error);
                 }
             }

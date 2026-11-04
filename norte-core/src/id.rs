@@ -273,7 +273,7 @@ macro_rules! name_id {
 }
 
 name_id!(ProviderId, "provider id", |value: &str| value.chars().all(
-    |c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_'
+    |c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_' | '/')
 ));
 
 name_id!(ModelId, "model id", |value: &str| value.chars().all(|c| {
@@ -343,6 +343,12 @@ mod tests {
     #[test]
     fn model_ref_rejects_missing_provider() {
         assert!(ModelRef::from_str("claude").is_err());
+    }
+
+    #[test]
+    fn provider_ids_can_use_namespaced_slashes() {
+        let provider = ProviderId::new("models-dev/nvidia").expect("provider");
+        assert_eq!(provider.as_str(), "models-dev/nvidia");
     }
 
     #[test]

@@ -1,19 +1,27 @@
 [package]
 name = "norte-core"
-description = "Durable sessions, history reconstruction, the domain model and every contract an agent harness is built on"
+description = "Norte core: the domain model, durable sessions, history reconstruction and the ports every adapter builds on"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
+documentation = "https://jeanvydes.github.io/Norte/"
 authors.workspace = true
 readme = "../README.md"
 keywords = ["llm", "ai-agents", "streaming", "sessions", "tool-calling"]
 categories = ["asynchronous", "concurrency"]
 
+[features]
+default = []
+# Image preprocessing needs the `image` crate; without it the core stays
+# free of image codecs.
+media = ["dep:image"]
+
 [dependencies]
 norte-macros = { workspace = true }
+image = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 schemars = { workspace = true }

@@ -14,6 +14,11 @@ enforced by its section's suite as a whole.
 Ids are stable: they are referenced from source comments and workflow names, so
 they are not renumbered when wording is tightened.
 
+**Maintenance rule:** a change that alters behaviour a requirement states
+must update that requirement in the same commit. If a requirement can no
+longer be found in the code, delete it or mark it superseded — do not leave
+a ledger that describes a library that no longer exists.
+
 ## 1. Introduction
 
 ### 1.1 Purpose
@@ -93,7 +98,7 @@ Library authors integrating providers, agent-framework developers, and operators
 | `norte-openai` | OpenAI Responses wire (primary), Chat Completions wire with quirk flags, vendor presets. | core, http |
 | `norte-gemini` | Gemini generateContent wire, full feature surface. | core, http |
 | `norte-tools` | Default tool suite. Ships the production-grade command executor, the file executors (read, write, edit) and their host-facing schemas. | core |
-| `norte-media` | Optional media preprocessing: host-configured image resize / re-encode. | core |
+| `norte-core` (`media` feature) | Optional media preprocessing: host-configured image resize / re-encode. | — |
 | `norte-testing` | Scripted model, fixture replayer, request probe, conformance suites. | core |
 | `norte-mcp` | Model Context Protocol in both directions: `McpClient` performs the handshake and wraps every remote tool as one host tool named `mcp__<server>__<tool>`, so per-tool schemas and audit records survive; `McpServer` publishes a host `ToolRegistry` over a transport. Stdio and in-process transports ship. | core |
 | future crates | `norte-store-*`, `norte-tools-*`. | core |

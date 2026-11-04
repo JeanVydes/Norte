@@ -1,4 +1,6 @@
 /target
+# The cookbook is a standalone package: its target/ is not the workspace one.
+examples/**/target
 .sqlx/
 *.env
 .env.*
@@ -21,6 +23,8 @@ draft_*
 sandbox/
 tmp/
 /fuzz/target
+# The cookbook is a standalone package: its target/ is not the workspace one.
+examples/**/target
 /fuzz/artifacts
 /fuzz/corpus
 /fuzz/coverage

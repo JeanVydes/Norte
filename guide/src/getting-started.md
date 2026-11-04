@@ -130,16 +130,15 @@ in [Providers](concepts/providers.md).
 ## Runnable examples
 
 The repository ships a cookbook of small, self-contained recipes — one file per
-topic, each wiring its own engine:
+topic, each driving the ports directly:
 
 ```sh
 OPENROUTER_API_KEY=sk-or-... \
 COOKBOOK_ENDPOINT=https://openrouter.ai/api/v1 \
 COOKBOOK_MODEL=deepseek/deepseek-v4.1-flash-1017 \
-cargo run -p norte-cookbook --example events
+cargo run -p norte-cookbook --example model
 ```
 
-`events`, `streaming`, `observer`, `tools`, `agent`,
-`executors`, `observers`, `cache`, `export_import`, `branching`. Each file is
-meant to be read and copied on its own. `norte-cookbook` is not a library:
-nothing is shared between recipes on purpose.
+`model`, `turn`, `tool_loop`, `chat`, `tools`, `layer`, `image_in`, `image_out`. Each file is meant
+to be read and copied on its own. `norte-cookbook` is not a library and not a
+workspace member: nothing is shared between recipes on purpose.

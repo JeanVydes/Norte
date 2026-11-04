@@ -3,7 +3,6 @@ resolver = "3"
 exclude = ["fuzz"]
 members = [
     "norte",
-    "norte-facade-smoke",
     "norte-macros",
     "norte-core",
     "norte-http",
@@ -11,7 +10,6 @@ members = [
     "norte-openai",
     "norte-gemini",
     "norte-tools",
-    "norte-media",
     "norte-mcp",
 ]
 
@@ -32,7 +30,6 @@ norte-anthropic = { path = "norte-anthropic", version = "0.0.2" }
 norte-openai = { path = "norte-openai", version = "0.0.2" }
 norte-gemini = { path = "norte-gemini", version = "0.0.2" }
 norte-tools = { path = "norte-tools", version = "0.0.2" }
-norte-media = { path = "norte-media", version = "0.0.2" }
 norte-testing = { path = "norte-testing", version = "0.0.2" }
 norte-mcp = { path = "norte-mcp", version = "0.0.2" }
 

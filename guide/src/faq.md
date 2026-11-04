@@ -93,7 +93,7 @@ on top of it.
 
 Yes, within what you declared. Media has a `Part`, a `Modality`, a blob store for
 the large bytes (`inline_threshold` decides when they leave the history), and
-`norte-media` for preprocessing an image down to the provider's limits
+`norte_core::media_image` for preprocessing an image down to the provider's limits
 (`ImagePreprocessor`: max dimension, max bytes, output format, quality).
 
 ## Can I get token probabilities?

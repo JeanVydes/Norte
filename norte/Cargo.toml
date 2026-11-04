@@ -1,12 +1,13 @@
 [package]
 name = "norte"
-description = "Build AI agents in Rust: durable sessions, streaming, tools and adapters for OpenAI, Anthropic and Gemini"
+description = "The Norte facade: build AI agents in Rust with OpenAI, Anthropic and Gemini adapters, durable sessions, streaming and tools"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
+documentation = "https://jeanvydes.github.io/Norte/"
 authors.workspace = true
 readme = "../README.md"
 keywords = ["llm", "ai-agents", "openai", "anthropic", "gemini"]
@@ -24,7 +25,6 @@ norte-openai = { workspace = true, optional = true }
 norte-anthropic = { workspace = true, optional = true }
 norte-gemini = { workspace = true, optional = true }
 norte-tools = { workspace = true, optional = true }
-norte-media = { workspace = true, optional = true }
 norte-mcp = { workspace = true, optional = true }
 norte-testing = { workspace = true, optional = true }
 
@@ -38,7 +38,7 @@ anthropic = ["dep:norte-anthropic", "http"]
 gemini = ["dep:norte-gemini", "http"]
 google = ["gemini"]
 tools = ["dep:norte-tools"]
-media = ["dep:norte-media"]
+media = ["norte-core/media"]
 mcp = ["dep:norte-mcp"]
 # Test helpers are opt-in: they are not part of what an application ships.
 testing = ["dep:norte-testing"]
@@ -51,3 +51,10 @@ serde = { workspace = true }
 
 [lints]
 workspace = true
+
+# The facade smoke test exercises the `tools` feature exports; without the
+# feature the prelude has no tool suite to check.
+[[test]]
+name = "facade_smoke"
+path = "tests/facade_smoke.rs"
+required-features = ["tools"]

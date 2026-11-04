@@ -48,12 +48,12 @@ pub use norte_http as http;
 
 #[cfg(feature = "anthropic")]
 pub use norte_anthropic as anthropic;
+#[cfg(feature = "media")]
+pub use norte_core::media_image as media;
 #[cfg(feature = "gemini")]
 pub use norte_gemini as gemini;
 #[cfg(feature = "mcp")]
 pub use norte_mcp as mcp;
-#[cfg(feature = "media")]
-pub use norte_media as media;
 #[cfg(feature = "openai")]
 pub use norte_openai as openai;
 #[cfg(feature = "testing")]

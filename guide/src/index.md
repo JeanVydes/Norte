@@ -7,58 +7,25 @@ Nothing in your application names a vendor, and no model catalogue is baked in:
 you declare what your models can do, and the engine does the rest — every call
 under rules you write, every turn in a history you can audit.
 
-## The mental model
+## What you get
 
-Five ideas hold the whole library together.
-
-- **A model is a port.** `Arc<dyn Model>` is the only thing the engine knows how
-  to call. A wire adapter (`norte-openai`, `-anthropic`, `-gemini`) is one
-  implementation; a scripted model in a test is another. Swapping the provider is
-  swapping one `Arc`, not rewriting the application.
-- **A session is durable, a turn is atomic.** A `Session` is a tree of commits in
-  a `Store`. A turn ends in exactly one commit: the session is either at the
-  version before it or the version after it, never in between. A tool loop is
-  several turns, each committed and each billed on its own.
-- **Everything the model said is kept.** Parts, provider reasoning blocks the
-  neutral model has no field for, token counters, cache markers — kept verbatim
-  and replayed unchanged, so a session can be exported and re-imported
-  byte-for-byte and its provider cache prefix survives.
-- **The host decides what a tool may do.** A tool's declaration is the host's, so
-  a wrapper around it decides what a call may attempt, and an interceptor
-  decides what the conversation may do next and whether a call may run at all.
-  The engine runs the calls the host gave it.
-- **The engine never prices anything.** `Usage` carries the counters a provider
-  reported and, verbatim, whatever else its payload carried — including a price,
-  if it reported one. A rate table is not something this library maintains.
+- A **model port** (`Arc<dyn Model>`): swap the provider by swapping one
+  `Arc`, not the application.
+- **Durable sessions**: a session is a tree of commits in a `Store`; a turn
+  ends in exactly one commit — never in between.
+- **Streaming tools**: tools run, stream their output and report back, with
+  the host deciding what a call may attempt.
+- **Provider-reported usage and cost**: no rate table, no invented prices.
 
 ## What it is not
 
-- Not a model catalogue. There is no table of model ids, context windows or
-  prices in the repository: capabilities are declared by the host, and anything a
-  wire reports that the neutral model has no field for is kept, not interpreted.
-- Not an agent framework. There is no built-in ReAct loop, no planner and no
-  prompt library. What the engine gives you is a durable, streaming turn with
-  tools, steering and cost visibility; the loop around it is your code.
-- Not tied to a cloud. Persistence is two traits — `Store` and `BlobStore` — with
-  in-memory implementations that are ready to use and nothing else.
-
-## Running it in production
-
-- **An in-process library.** No sidecar, no daemon and no control plane: Norte is
-  a crate your service links. The model endpoint is configuration, so a private
-  gateway, an on-prem server and a cloud provider are the same code path.
-- **Scales horizontally.** Sessions live in the `Store` and bytes in the
-  `BlobStore` you implement, so workers share a session with optimistic
-  concurrency instead of a coordinator, and one that dies mid-turn leaves the
-  session at its last commit.
-- **Auditable.** Every turn is one commit carrying the model that answered, the
-  token counters and the cost the provider reported, and every tool call is an
-  event a host can observe.
-- **Data stays where you put it.** No telemetry and no call home: the only network
-  traffic is to the endpoint you configure, and secrets are redacted from tool
-  output before it is stored or replayed.
-- **Permissive and audited.** MIT licence, `unsafe` forbidden, dependencies
-  audited and parsers fuzzed in CI, MSRV pinned.
+- Not a model catalogue: capabilities are declared by you, and anything a
+  wire reports that the neutral model has no field for is kept, not
+  interpreted.
+- Not an agent framework: no built-in ReAct loop, planner or prompt library.
+  The loop around the engine is your code.
+- Not tied to a cloud: persistence is two traits (`Store`, `BlobStore`)
+  with in-memory implementations ready to use.
 
 ## Where to go
 

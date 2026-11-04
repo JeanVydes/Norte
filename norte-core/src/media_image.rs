@@ -4,7 +4,7 @@ use image::codecs::jpeg::JpegEncoder;
 use image::imageops::FilterType;
 use image::{DynamicImage, ExtendedColorType, ImageFormat};
 
-use norte_core::{Error, MediaKind, MediaPayload, MediaPreprocessor, MimeType, Result};
+use crate::{Error, MediaKind, MediaPayload, MediaPreprocessor, MimeType, Result};
 
 /// What an [`ImagePreprocessor`] re-encodes to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

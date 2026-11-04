@@ -19,6 +19,9 @@ pub mod id;
 pub mod layer;
 /// The provider-file seam for media parts.
 pub mod media_adapter;
+/// Image preprocessing: resize and re-encode images before a model sees them.
+#[cfg(feature = "media")]
+pub mod media_image;
 /// The model port and the request it receives.
 pub mod model;
 /// Media preprocessing before a request is built.
@@ -61,6 +64,8 @@ pub use layer::{
     synthetic_stream,
 };
 pub use media_adapter::{MediaAdapter, ProviderFiles};
+#[cfg(feature = "media")]
+pub use media_image::{ImageOutput, ImagePreprocessor};
 pub use model::{
     ContinuityAdapter, GenerationParams, MAX_TOP_LOGPROBS, Model, ModelRequest, ModelStream,
     PARTIAL_TOOLS_KEY, SESSION_EXTENSION, StreamLimits, TURN_OPTIONS_KEY, TurnOptions,

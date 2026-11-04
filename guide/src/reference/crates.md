@@ -13,7 +13,6 @@ turn loop, sessions, persistence, approvals and event consumers.
 | `norte-anthropic` | core, http | Messages wire adapter, Files API and native preset. |
 | `norte-gemini` | core, http | generateContent wire adapter, explicit cached content, Files API and native preset. |
 | `norte-tools` | core | Host tools such as read, write, edit and command. |
-| `norte-media` | core | Media preprocessing. |
 | `norte-mcp` | core | MCP client, server, transports and remote-tool integration. |
 | `norte-testing` | core | Scripted and probe models, fixtures and model conformance checks. |
 | `norte-macros` | none | Procedural macros for typed tool declarations. |

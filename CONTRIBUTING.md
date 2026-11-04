@@ -10,7 +10,6 @@ workflow for contributing.
   macro, and optional provider/helper modules. `norte/Cargo.toml` defines the
   features; `norte/src/lib.rs` defines the re-exports. Applications can depend on
   this crate alone. It provides no agent runtime.
-- `norte-facade-smoke/` — a workspace package whose only dependency is `norte`.
   Its offline tests cover core types, macro metadata with implicit and explicit
   facade anchors, the default provider model and the opt-in `tools` feature,
   without starting a runtime or making network calls.
@@ -28,7 +27,6 @@ workflow for contributing.
   adapters and the native vendor presets.
 - `norte-tools/` — the default host tool suite, including the `command`
   executor.
-- `norte-media/` — media preprocessing helpers.
 - `norte-mcp/` — Model Context Protocol integration.
 - `norte-testing/` — the scripted model, fixture replayer, request probe
   and conformance suites.
@@ -128,15 +126,15 @@ schedule (FR-TEST-2).
 For focused facade checks (no network or agent runtime):
 
 ```bash
-cargo test --offline -p norte-facade-smoke
 cargo test --offline -p norte
 cargo test --offline -p norte --no-default-features
 ```
 
-The smoke package deliberately declares no direct dependencies other than
-`norte`; keep it that way so it catches facade paths that accidentally require
-an application to import an implementation crate. It checks macro metadata, not
-an async tool executor. Offline checks require dependencies to be cached locally.
+The facade smoke test (`norte/tests/facade_smoke.rs`, needs the `tools`
+feature) resolves every path through the facade, so it catches facade paths
+that accidentally require an application to import an implementation crate.
+It checks macro metadata, not an async tool executor. Offline checks require
+dependencies to be cached locally.
 
 Workspace commands do not validate the non-member cookbook or benchmark
 manifests. Check those sources against the current contracts before running them;
@@ -176,11 +174,9 @@ Practically:
 ## Publishing crates
 
 The library crates are `norte`, `norte-core`, `norte-macros`, `norte-http`,
-`norte-openai`, `norte-anthropic`, `norte-gemini`, `norte-tools`, `norte-media`,
-`norte-mcp` and `norte-testing`. The facade's optional `testing` dependency pulls
+`norte-openai`, `norte-anthropic`, `norte-gemini`, `norte-tools`, `norte-mcp` and `norte-testing`. The facade's optional `testing` dependency pulls
 `norte-testing` into the workspace through its path dependency. The
-`norte-facade-smoke` workspace member is `publish = false`; cookbook and benchmark
-sources are not current workspace members.
+cookbook and benchmark sources are not current workspace members.
 
 One command does the whole set, in dependency order, and it works before anything
 is on the registry: `cargo publish --workspace` stands up a temporary local

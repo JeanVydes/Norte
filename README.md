@@ -19,33 +19,15 @@ Nothing in your application names a vendor, and no model catalogue is baked in:
 you declare what your models can do, and the requests follow, every call inside
 the rules you write, every turn in a history you can audit.
 
-## The core does not know what an agent is
+## Two crates, one choice
 
-Norte is split so that the agent part is *optional*, not assumed.
+**`norte`** is the facade most applications depend on: core types at the
+root, optional provider and helper crates as modules, presets and a
+prelude. That is the whole public surface.
 
-- **`norte-core`** owns what a provider sees. The port is one method:
-
-  ```rust
-  async fn stream(&self, request: ModelRequest) -> Result<ModelStream>;
-  ```
-
-  and a `ModelRequest` carries `messages: Vec<Message>` — the conversation
-  already flattened to a list. Beside it: `Part`, `Role`, `Usage`,
-  `StreamEvent`, the `Model`/`BlobStore`/`MediaAdapter` ports, `Layer` and
-  `Observer`.
-- **`norte-harness`** owns everything that exists because something *walks* that
-  list forward: the branch graph (`Session`, `Commit`, `Node`, `Conversation`),
-  the store it commits through, the tool loop, the interceptors, and the
-  `EngineEvent`s it reports. `Harness` is one way to drive the port, and *a*
-  harness rather than *the* harness.
-
-  The rule in one line: **the core knows a list of messages; the harness knows a
-  graph.**
-
-A host that wants a different loop — its own scheduling, a graph instead of a
-session, a batch job with no loop at all — depends on `norte-core` alone
-and never sees the harness. That is the point of the split: the contracts are the
-product, and the loop is one consumer of them.
+**`norte-core`** is the port everything builds on — messages, parts,
+capabilities, the `Model`/`Store`/`BlobStore` traits, streaming and the
+turn loop. Depend on it alone if you write your own loop.
 
 ## Why Norte
 
@@ -74,18 +56,17 @@ product, and the loop is one consumer of them.
 
 ## Providers and coverage
 
-| Provider | Crate | APIs | Coverage |
-| --- | --- | --- | --- |
-| OpenAI | `norte-openai` | Responses, Chat Completions | `███████████████████░` 95 % |
-| Anthropic | `norte-anthropic` | Messages | `███████████████████░` 95 % |
-| Google Gemini | `norte-gemini` | generateContent, cached content | `███████████████████░` 95 % |
+| Provider | Crate | APIs |
+| --- | --- | --- |
+| OpenAI | `norte-openai` | Responses, Chat Completions |
+| Anthropic | `norte-anthropic` | Messages |
+| Google Gemini | `norte-gemini` | generateContent, cached content |
 
-Coverage is the share of each vendor's documented API the adapter implements.
-Two directions are out of scope by decision and will not be implemented: the
-Realtime API and unary `stream: false` delivery (deprecated as a direction —
-`collect()` already covers blocking callers). A modality an API cannot express
-is a typed error, never a silent drop, and a documented block with no neutral
-form is kept verbatim and replayed unchanged.
+Two directions are out of scope by decision: the Realtime API and unary
+`stream: false` delivery (`collect()` already covers blocking callers). A
+modality an API cannot express is a typed error, never a silent drop, and
+a documented block with no neutral form is kept verbatim and replayed
+unchanged.
 
 Anything OpenAI-compatible works through the OpenAI adapter with your own base
 `URL`: OpenRouter, Groq, Together, vLLM, an internal gateway or a self-hosted
@@ -96,17 +77,17 @@ and a key.
 
 ```toml
 [dependencies]
-norte = { version = "0.0.1", features = ["harness", "tools"] }
+norte = { version = "0.0.2", features = ["tools"] }
 ```
 
-The core, the providers and their contracts come by default. `harness` adds the
-agent loop, `tools` the default tool suite; a host that writes its own loop
-leaves `harness` out and never compiles it.
+The core, the providers and their contracts come by default. `tools` adds
+the default tool suite; `media`, `mcp` and `testing` are opt-in. A host that
+writes its own loop depends on `norte-core` alone and never compiles the
+rest.
 
 ## Quickstart
 
-The core is a model port and the value types a conversation is made of. No
-harness, no session, no framework — one request, every event:
+The core is a model port and the value types a conversation is made of — one request, every event:
 
 ```rust
 use std::error::Error;
@@ -157,45 +138,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
 A model id and a profile are all the configuration a call needs: the adapter is
 chosen by name, the endpoint is a `URL`, and the key comes from the environment.
 
-To drive a *session* instead — history, tools, one atomic commit per turn —
-reach for the harness, which is one client of this port among others:
+## Sessions and tools
 
-```rust
-use std::sync::Arc;
-
-use norte::prelude::*;
-
-let harness = HarnessBuilder::new()
-    .store(Arc::new(InMemoryStore::new()))
-    .blobs(Arc::new(InMemoryBlobStore::new()))
-    .model(Arc::new(model))
-    .tools(ToolRegistry::new())
-    .build()?;
-
-let session = harness.create().await?;
-let outcome = harness
-    .send(session.id, Message::user("Hello!"))
-    .finish()
-    .await?;
-println!("{}", outcome.message.as_ref().map(Message::text).unwrap_or_default());
-```
-
-`Store` and `BlobStore` are ports. The in-memory pair above implements the whole
-contract — one atomic commit per turn, optimistic concurrency,
+On top of that port, `norte-core` also gives you the turn loop, streaming
+tools and the `Store`/`BlobStore` ports. The in-memory pair implements the
+whole contract — one atomic commit per turn, optimistic concurrency,
 content-addressed bytes — and is the right default for a CLI, a desktop
 app or a single-process worker. When a session has to outlive the process,
 implement the two traits over your own database and object storage.
 
-## Examples
+For runnable, end-to-end recipes see the
+[cookbook](https://github.com/JeanVydes/Norte/tree/dev/examples/cookbook):
+one small program per topic, each meant to be read and copied on its own.
 
-Runnable, end-to-end programs live in
-[`examples/`](https://github.com/JeanVydes/Norte/tree/dev/examples):
+## Measurements
 
-- [`cookbook`](https://github.com/JeanVydes/Norte/tree/dev/examples/cookbook) —
-  one small, self-contained recipe per topic: events, streaming, declaring tools,
-  observers, idempotent tools.
-
-Measurements live in
+Benchmarks live in
 [`benchmarks/`](https://github.com/JeanVydes/Norte/tree/dev/benchmarks): each one
 is a folder with the program, how to run it, and the reports it writes.
 

@@ -1,69 +1,29 @@
 [package]
 name = "norte-cookbook"
-version.workspace = true
-edition.workspace = true
-rust-version.workspace = true
-license.workspace = true
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
 publish = false
-description = "Small, runnable recipes for Norte: the core alone at the root, the harness and media in their own folders."
+description = "Small, runnable recipes for Norte: the core alone at the root."
 
 [dependencies]
-norte-core = { workspace = true }
-norte-harness = { workspace = true }
-norte-http = { workspace = true }
-norte-openai = { workspace = true }
-norte-tools = { workspace = true }
+norte-core = { path = "../../norte-core" }
+norte-http = { path = "../../norte-http" }
+norte-openai = { path = "../../norte-openai" }
+norte-tools = { path = "../../norte-tools" }
 # The recipes drive the ports directly, so a scripted model is the honest stand-in.
-norte-testing = { workspace = true }
-async-trait = { workspace = true }
-base64 = { workspace = true }
-chrono = { workspace = true }
-futures-util = { workspace = true }
-schemars = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+norte-testing = { path = "../../norte-testing" }
+async-trait = "0.1"
+base64 = "0.22"
+chrono = "0.4"
+futures-util = "0.3"
+schemars = "1"
+serde = "1"
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 
-[lints]
-workspace = true
 
-# Nested under a topic folder, which Cargo's autodiscovery does not reach.
-[[example]]
-name = "agent"
-path = "examples/harness/agent/main.rs"
-
-[[example]]
-name = "branching"
-path = "examples/harness/branching/main.rs"
-
-[[example]]
-name = "events"
-path = "examples/harness/events/main.rs"
-
-[[example]]
-name = "export_import"
-path = "examples/harness/export_import/main.rs"
-
-[[example]]
-name = "observer"
-path = "examples/harness/observer/main.rs"
-
-[[example]]
-name = "observers"
-path = "examples/harness/observers/main.rs"
-
-[[example]]
-name = "rate_limit"
-path = "examples/harness/rate_limit/main.rs"
-
-[[example]]
-name = "streaming"
-path = "examples/harness/streaming/main.rs"
-
-[[example]]
-name = "media"
-path = "examples/media/media/main.rs"
-
-[[example]]
-name = "provider_files"
-path = "examples/media/provider_files/main.rs"
+# Not a workspace member on purpose: the recipes are read and copied, not
+# published. An empty [workspace] keeps Cargo from claiming the parent one.
+[workspace]

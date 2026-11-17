@@ -198,6 +198,8 @@ fn build_messages(
 
 fn build_effort(request: ReasoningRequest) -> Option<&'static str> {
     match request {
+        // The catalogues that accept off spell it as an effort called `none`.
+        ReasoningRequest::Disabled => Some("none"),
         ReasoningRequest::Effort(ReasoningEffort::Minimal) => Some("minimal"),
         ReasoningRequest::Effort(ReasoningEffort::Low) => Some("low"),
         ReasoningRequest::Effort(ReasoningEffort::Medium) => Some("medium"),
@@ -832,6 +834,16 @@ mod tests {
             let body = build(&model(), &continuity(), &Quirks::new(), &request).expect("build");
             assert_eq!(body["reasoning_effort"], name);
         }
+    }
+
+    #[test]
+    fn turning_reasoning_off_maps_to_the_none_effort() {
+        let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
+        request.reasoning = ReasoningRequest::Disabled;
+
+        let body = build(&model(), &continuity(), &Quirks::new(), &request).expect("build");
+
+        assert_eq!(body["reasoning_effort"], "none");
     }
 
     #[test]

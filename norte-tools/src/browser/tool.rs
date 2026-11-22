@@ -1,8 +1,9 @@
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use norte_core::{
-    AnyFunction, FnExecutor, Part, Result, ToolContext, ToolDeclaration, ToolMetadata, ToolOutput,
+    AnyFunction, Error, FnExecutor, Part, Result, ToolContext, ToolDeclaration, ToolMetadata,
+    ToolOutput,
 };
 use tokio::sync::Mutex;
 
@@ -17,7 +18,7 @@ use super::request::BrowserRequest;
 #[derive(Clone)]
 pub struct BrowserTool {
     limits: BrowserLimits,
-    client: reqwest::Client,
+    client: OnceLock<std::result::Result<reqwest::Client, String>>,
     cdp_client: Arc<Mutex<Option<CdpSession>>>,
     current_tab: Arc<Mutex<Option<String>>>,
     snapshot: Arc<Mutex<Option<String>>>,
@@ -42,17 +43,25 @@ impl BrowserTool {
     /// Builds a tool with default limits and the default CDP endpoint.
     #[must_use]
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
         Self {
             limits: BrowserLimits::default(),
-            client,
+            client: OnceLock::new(),
             cdp_client: Arc::new(Mutex::new(None)),
             current_tab: Arc::new(Mutex::new(None)),
             snapshot: Arc::new(Mutex::new(None)),
         }
+    }
+
+    fn client(&self) -> Result<&reqwest::Client> {
+        self.client
+            .get_or_init(|| {
+                reqwest::Client::builder()
+                    .timeout(Duration::from_secs(10))
+                    .build()
+                    .map_err(|error| format!("could not build the browser HTTP client: {error}"))
+            })
+            .as_ref()
+            .map_err(|error| Error::Other(error.clone()))
     }
 
     /// Replaces the tool's limits, including its endpoint and URL policy.
@@ -94,10 +103,11 @@ impl BrowserTool {
     /// Returns an error when the URL is outside the host's policy, when an
     /// action fails, or when the CDP connection cannot be established.
     pub async fn run(&self, request: &BrowserRequest, _ctx: &ToolContext) -> Result<ToolOutput> {
+        let client = self.client()?;
         let outcome = execute_browser_action(
             request,
             &self.limits,
-            &self.client,
+            client,
             &self.cdp_client,
             &self.current_tab,
             &self.snapshot,
@@ -136,3 +146,7 @@ impl FnExecutor<BrowserRequest, ToolOutput> for BrowserTool {
 pub fn browser_tool() -> Arc<dyn AnyFunction> {
     Arc::new(BrowserTool::new().into_declaration())
 }
+
+#[cfg(test)]
+#[path = "tool_tests.rs"]
+mod tests;

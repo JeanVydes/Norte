@@ -33,6 +33,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
+use norte_core::sync::lock_or_recover;
 use norte_core::{
     BlobId, BlobStore, Cancellation, Digest, Error, FnExecutor, Part, Result, ToolContext,
     ToolDeclaration, ToolMetadata, ToolOutput, ToolProgress, ToolStream,
@@ -655,8 +656,8 @@ impl ShellTool {
         clock: &Clock,
         command_line: &str,
     ) -> Result<ToolOutput> {
-        let stdout = snapshot.0.lock().expect("command stdout").clone();
-        let stderr = snapshot.1.lock().expect("command stderr").clone();
+        let stdout = lock_or_recover(&snapshot.0).clone();
+        let stderr = lock_or_recover(&snapshot.1).clone();
         // A detached call does not report the merged view: its reader is still
         // writing into it, and two streams reported apart say more than one
         // that is still filling up.
@@ -1151,11 +1152,9 @@ impl Streams {
         guard.disarm();
 
         Drained {
-            stdout: self.stdout.lock().expect("command stdout").clone(),
-            stderr: self.stderr.lock().expect("command stderr").clone(),
-            merged: self
-                .merged
-                .map(|shared| shared.lock().expect("command merged").clone()),
+            stdout: lock_or_recover(&self.stdout).clone(),
+            stderr: lock_or_recover(&self.stderr).clone(),
+            merged: self.merged.map(|shared| lock_or_recover(&shared).clone()),
             complete,
         }
     }
@@ -1457,12 +1456,12 @@ impl StreamReader {
             match pipe.read(&mut buffer).await {
                 Ok(0) => break,
                 Ok(read) => {
-                    self.capture.lock().expect("command capture").total += read;
+                    lock_or_recover(&self.capture).total += read;
                     let clean = redactor.feed(&buffer[..read]);
                     self.keep(&clean, &mut sent);
                 }
                 Err(error) => {
-                    self.capture.lock().expect("command capture").error = Some(error.to_string());
+                    lock_or_recover(&self.capture).error = Some(error.to_string());
                     break;
                 }
             }
@@ -1478,9 +1477,9 @@ impl StreamReader {
         if clean.is_empty() {
             return;
         }
-        self.capture.lock().expect("command capture").push(clean);
+        lock_or_recover(&self.capture).push(clean);
         if let Some(shared) = &self.shared {
-            shared.lock().expect("command merged").push(clean);
+            lock_or_recover(shared).push(clean);
         }
         let budget = self.cap.saturating_sub(*sent);
         if budget > 0 {
@@ -1496,7 +1495,7 @@ impl StreamReader {
     }
 
     fn close(&self) {
-        self.capture.lock().expect("command capture").finished = true;
+        lock_or_recover(&self.capture).finished = true;
         if !self.merge || self.role == StreamRole::Stdout {
             let progress = ToolProgress {
                 stream: self.emitted(),
@@ -1854,8 +1853,8 @@ fn close_abandoned(
     stdout: &Arc<Mutex<Captured>>,
     stderr: &Arc<Mutex<Captured>>,
 ) {
-    let stdout_finished = stdout.lock().expect("command stdout").finished;
-    let stderr_finished = stderr.lock().expect("command stderr").finished;
+    let stdout_finished = lock_or_recover(stdout).finished;
+    let stderr_finished = lock_or_recover(stderr).finished;
     if !stdout_finished {
         context.emit(ToolProgress {
             stream: ToolStream::Stdout,

@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
+use norte_core::sync::lock_or_recover;
 use norte_core::{
     BlobStore, Error, MediaAdapter, MediaKind, MediaPart, MediaSource, MimeType, ProviderError,
     ProviderErrorKind, ProviderFileRef, ProviderFiles, Result,
@@ -127,14 +128,11 @@ impl HttpMedia {
     }
 
     fn cached(&self, key: &(String, String)) -> Option<ProviderFileRef> {
-        self.restored.lock().expect("media cache").get(key).cloned()
+        lock_or_recover(&self.restored).get(key).cloned()
     }
 
     fn remember(&self, key: (String, String), reference: ProviderFileRef) {
-        self.restored
-            .lock()
-            .expect("media cache")
-            .insert(key, reference);
+        lock_or_recover(&self.restored).insert(key, reference);
     }
 }
 

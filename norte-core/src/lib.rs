@@ -28,6 +28,8 @@ pub mod model;
 pub mod preprocess;
 /// Stream events and the accumulator that folds them into parts.
 pub mod stream;
+/// Poison-tolerant mutex access for long-lived hosts.
+pub mod sync;
 /// Tool declarations, the registry and execution.
 pub mod tool;
 

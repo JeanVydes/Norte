@@ -7,8 +7,6 @@
 //! kind is unknown to this version is preserved verbatim as an
 //! [`Part::Extension`] so a newer server is never silently lossy.
 
-use std::sync::OnceLock;
-
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 
@@ -128,7 +126,7 @@ fn base64_media(kind: MediaKind, block: &ContentBlock) -> McpResult<MediaPart> {
     let bytes = STANDARD.decode(data)?;
     let mime = match block.mime_type.as_deref() {
         Some(mime) => MimeType::new(mime)?,
-        None => octet_stream(),
+        None => octet_stream()?,
     };
     Ok(MediaPart::new(kind, MediaSource::Inline(bytes), mime))
 }
@@ -145,7 +143,7 @@ fn resource_to_part(contents: ResourceContents) -> McpResult<Part> {
         let bytes = STANDARD.decode(blob)?;
         let mime = match contents.mime_type.as_deref() {
             Some(mime) => MimeType::new(mime)?,
-            None => octet_stream(),
+            None => octet_stream()?,
         };
         let kind = kind_for_mime(mime.as_str());
         return Ok(Part::Media(MediaPart::new(
@@ -187,13 +185,8 @@ fn kind_for_mime(mime: &str) -> MediaKind {
     }
 }
 
-fn octet_stream() -> MimeType {
-    static FALLBACK: OnceLock<MimeType> = OnceLock::new();
-    FALLBACK
-        .get_or_init(|| {
-            MimeType::new("application/octet-stream").expect("the fallback MIME type is valid")
-        })
-        .clone()
+fn octet_stream() -> McpResult<MimeType> {
+    Ok(MimeType::new("application/octet-stream")?)
 }
 
 #[cfg(test)]

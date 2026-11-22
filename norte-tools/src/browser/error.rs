@@ -42,9 +42,9 @@ impl BrowserErrorCode {
 }
 
 fn tool_failure(reason: impl Into<String>, code: Option<BrowserErrorCode>) -> Error {
-    // The name is a compile-time constant of this crate and passes the
-    // identifier rules the constructor checks.
-    let tool = norte_core::ToolName::new(TOOL_NAME).expect("browser_use is a valid tool name");
+    let Ok(tool) = norte_core::ToolName::new(TOOL_NAME) else {
+        return Error::Other(format!("invalid browser tool name: {TOOL_NAME}"));
+    };
     Error::ToolFailed {
         tool,
         reason: reason.into(),

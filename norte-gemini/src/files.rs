@@ -1,4 +1,4 @@
-//! The `Google` Gemini Files API, as a [`ProviderFiles`] port.
+//! The `Google` Gemini Files API, as a [provider-file port](norte_core::ProviderFiles).
 
 use chrono::{DateTime, Utc};
 use norte_core::{BlobId, Error, MediaKind, MimeType, ProviderFileRef, ProviderFiles, Result};
@@ -9,7 +9,7 @@ const UPLOAD_PATH: &str = "files?uploadType=multipart";
 /// Suffix, including the download root, that names a stored file's bytes.
 const DOWNLOAD_SUFFIX: &str = ":download?alt=media";
 
-/// The `Google` Gemini Files API as a [`ProviderFiles`] port.
+/// The `Google` Gemini Files API as a [provider-file port](norte_core::ProviderFiles).
 ///
 /// Uploads bytes through the Files API's single-shot `uploadType=multipart`
 /// path and fetches them back with `files/{id}:download?alt=media`. Like the

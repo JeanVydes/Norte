@@ -1,7 +1,7 @@
 //! The blob port: content-addressed bytes, for media and for anything else too
 //! large to travel inline.
 //!
-//! This stays in the core because [`MediaAdapter`](crate::media_adapter::MediaAdapter)
+//! This stays in the core because [`MediaAdapter`]
 //! names it and `norte-http::HttpMedia` implements that port: moving the blob
 //! store out would point an adapter at `norte-harness`.
 //!

@@ -14,7 +14,7 @@
 set -euo pipefail
 
 # Concrete adapters must not depend on each other or on test/host code.
-adapters="norte-anthropic norte-openai norte-gemini norte-tools norte-media norte-mcp"
+adapters="norte-anthropic norte-openai norte-gemini norte-tools norte-mcp"
 
 core_forbidden='^(norte-(http|harness|anthropic|openai|gemini|tools|media|testing|mcp)) v|^(reqwest|hyper|axum|tower-http|sqlx|diesel|mongodb|redis|rusqlite|aws-sdk|tokio-postgres) '
 

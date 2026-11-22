@@ -1,4 +1,4 @@
-//! The `OpenAI` Files API, as a [`ProviderFiles`] port.
+//! The `OpenAI` Files API, as a [provider-file port](norte_core::ProviderFiles).
 
 use chrono::DateTime;
 use norte_core::{BlobId, Error, MediaKind, MimeType, ProviderFileRef, ProviderFiles, Result};
@@ -11,7 +11,7 @@ const COLLECTION: &str = "files";
 /// reference over any endpoint, unlike `assistants` or `fine-tune`.
 const DEFAULT_PURPOSE: &str = "user_data";
 
-/// The `OpenAI` Files API as a [`ProviderFiles`] port.
+/// The `OpenAI` Files API as a [provider-file port](norte_core::ProviderFiles).
 ///
 /// It uploads bytes (`POST /files`) and fetches them back
 /// (`GET /files/{id}/content`). It is not part of the request path: the host

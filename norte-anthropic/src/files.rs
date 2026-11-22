@@ -1,4 +1,4 @@
-//! The `Anthropic` Files API, as a [`ProviderFiles`] port.
+//! The `Anthropic` Files API, as a [provider-file port](norte_core::ProviderFiles).
 
 use chrono::{DateTime, Utc};
 use norte_core::{BlobId, Error, MediaKind, MimeType, ProviderFileRef, ProviderFiles, Result};
@@ -7,7 +7,7 @@ use norte_http::{HttpClient, MultipartField, VendorProfile};
 /// Path of the Files collection, relative to the profile's base `URL`.
 const COLLECTION: &str = "files";
 
-/// The `Anthropic` Files API as a [`ProviderFiles`] port.
+/// The `Anthropic` Files API as a [provider-file port](norte_core::ProviderFiles).
 ///
 /// It uploads bytes (`POST /files`) and fetches them back
 /// (`GET /files/{id}/content`). Like the `OpenAI` port, it is not part of the

@@ -107,7 +107,6 @@ impl BrowserTool {
             parts: vec![Part::text(describe(&outcome))],
             structured: Some(serde_json::to_value(&outcome)?),
             is_error: false,
-            effects: Vec::new(),
         })
     }
 }

@@ -836,7 +836,6 @@ fn render(output: &ReadOutput) -> Result<ToolOutput> {
         parts: vec![Part::text(describe(output))],
         structured: Some(serde_json::to_value(output)?),
         is_error: output.text_kind == TextKind::Binary,
-        effects: Vec::new(),
     })
 }
 

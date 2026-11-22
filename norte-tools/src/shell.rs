@@ -1190,7 +1190,6 @@ fn render(renderer: &dyn ShellRenderer, output: &ShellOutput) -> Result<ToolOutp
         parts: vec![Part::text(body)],
         structured: Some(structured),
         is_error,
-        effects: Vec::new(),
     })
 }
 

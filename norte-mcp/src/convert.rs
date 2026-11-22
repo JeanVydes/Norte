@@ -36,7 +36,6 @@ pub(crate) fn result_to_output(result: CallToolResult) -> McpResult<ToolOutput> 
         parts,
         structured: result.structured_content,
         is_error: result.is_error,
-        effects: Vec::new(),
     })
 }
 

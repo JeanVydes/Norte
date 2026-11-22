@@ -1349,7 +1349,6 @@ fn render(outcome: &EditOutcome, hint: Option<&str>) -> Result<ToolOutput> {
         parts: vec![Part::text(describe(outcome, hint))],
         structured: Some(serde_json::to_value(outcome)?),
         is_error: outcome.code != EditCode::Applied,
-        effects: Vec::new(),
     })
 }
 

@@ -32,6 +32,10 @@ struct RawDom {
     fingerprint: String,
 }
 
+pub(super) fn snapshot_token(fingerprint: &str, offset: usize) -> String {
+    Digest::of(format!("{offset}:{fingerprint}").as_bytes()).to_hex()
+}
+
 /// Maps visible controls to stable ids without putting their values in the text.
 ///
 /// Filtering, paging and capping happen in the page, so a large page does not
@@ -118,7 +122,7 @@ pub(super) async fn extract_interactive(
     let value = session.evaluate(&script, timeout_dur).await?;
     let raw: RawDom = serde_json::from_value(value)
         .map_err(|error| tool_fail(format!("invalid DOM response: {error}")))?;
-    let token = Digest::of(raw.fingerprint.as_bytes()).to_hex();
+    let token = snapshot_token(&raw.fingerprint, offset);
     Ok(DomSnapshot {
         elements: raw.elements,
         matched: raw.matched,

@@ -6,7 +6,7 @@ use serde_json::json;
 use tokio::sync::{Mutex, broadcast};
 
 use super::cdp::{Tab, encode_query, pick_tab, wait_for_event};
-use super::dom::{check_snapshot, key_event};
+use super::dom::{check_snapshot, key_event, snapshot_token};
 use super::error::{BrowserErrorCode, is_connection_error, tool_fail_code};
 use super::render::describe;
 use super::*;
@@ -183,6 +183,15 @@ fn a_press_key_request_parses_with_a_typed_key_and_snapshot() {
         }
     );
     assert_eq!(request.snapshot.as_deref(), Some("snapshot-token"));
+}
+
+#[test]
+fn a_new_offset_invalidates_the_element_snapshot() {
+    let fingerprint = "BUTTON:Sign in";
+    assert_ne!(
+        snapshot_token(fingerprint, 0),
+        snapshot_token(fingerprint, 10)
+    );
 }
 
 #[tokio::test]

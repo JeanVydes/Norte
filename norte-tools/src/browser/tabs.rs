@@ -88,10 +88,12 @@ pub(super) async fn resolve_current_tab(
 ) -> Result<Tab> {
     let tabs = list_targets(client, limits).await?;
     let remembered = current_slot.lock().await.clone();
-    if let Some(id) = remembered
-        && let Some(tab) = tabs.iter().find(|tab| tab.id == id)
-    {
-        return Ok(tab.clone());
+    let remembered_tab = remembered
+        .as_deref()
+        .and_then(|id| tabs.iter().find(|tab| tab.id == id))
+        .cloned();
+    if let Some(tab) = remembered_tab {
+        return Ok(tab);
     }
     tabs.into_iter()
         .next()

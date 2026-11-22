@@ -1,7 +1,7 @@
 //! The facade as an application uses it: every path, and the attribute macro,
 //! starts at `norte::`.
 
-#![cfg(false)]
+#![cfg(any())]
 
 use std::sync::Arc;
 

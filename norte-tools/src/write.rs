@@ -258,6 +258,7 @@ fn render(output: &WriteOutput) -> Result<ToolOutput> {
         parts: vec![Part::text(body)],
         structured: Some(serde_json::to_value(output)?),
         is_error: output.code == WriteCode::Exists,
+        effects: Vec::new(),
     })
 }
 

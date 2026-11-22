@@ -1,5 +1,16 @@
 /// Where declarations are collected and looked up by name.
 pub mod registry;
+/// A host instruction a tool asks to have applied after its call.
+pub mod tool_effect;
+/// A validated user-role message a tool asks the host to add.
+pub mod user_message_draft;
+
+pub use tool_effect::ToolEffect;
+pub use user_message_draft::UserMessageDraft;
+
+#[cfg(test)]
+#[path = "user_message_draft_tests.rs"]
+mod draft_tests;
 
 use std::collections::BTreeMap;
 use std::fmt::Debug;
@@ -341,6 +352,9 @@ pub struct ToolOutput {
     /// Whether the tool reported an error.
     #[serde(default)]
     pub is_error: bool,
+    /// Instructions for the host, never sent to the provider as tool content.
+    #[serde(skip)]
+    pub effects: Vec<ToolEffect>,
 }
 
 impl ToolOutput {
@@ -351,6 +365,7 @@ impl ToolOutput {
             parts: vec![Part::Text(TextPart::new(text))],
             structured: None,
             is_error: false,
+            effects: Vec::new(),
         }
     }
 
@@ -361,6 +376,7 @@ impl ToolOutput {
             parts: Vec::new(),
             structured: Some(value),
             is_error: false,
+            effects: Vec::new(),
         }
     }
 
@@ -377,6 +393,13 @@ impl ToolOutput {
     #[must_use]
     pub fn with_media(mut self, media: MediaPart) -> Self {
         self.parts.push(Part::Media(media));
+        self
+    }
+
+    /// Adds a host effect to the result.
+    #[must_use]
+    pub fn with_effect(mut self, effect: ToolEffect) -> Self {
+        self.effects.push(effect);
         self
     }
 }

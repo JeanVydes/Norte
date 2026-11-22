@@ -11,8 +11,8 @@ pub mod shell;
 pub mod write;
 
 pub use browser::{
-    BrowserAction, BrowserLimits, BrowserOutput, BrowserRequest, BrowserTool, InteractiveElement,
-    browser_tool,
+    BrowserAction, BrowserKey, BrowserLimits, BrowserOutput, BrowserRequest, BrowserScheme,
+    BrowserTool, ContentOrigin, InteractiveElement, UrlPolicy, browser_tool,
 };
 
 pub use edit::{

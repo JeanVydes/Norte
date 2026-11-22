@@ -94,12 +94,12 @@ pub struct ShellRequest {
     /// How long the process may run, in milliseconds. A value above the host's
     /// ceiling is clamped to it.
     ///
-    /// Zero asks for no bound at all, which only a host that set
-    /// [`ShellLimits::allow_indefinite`] grants; anywhere else it is the host's
-    /// default, because an unclamped zero would be a request to run forever.
+    /// Zero asks for no bound at all, which the host grants unless it turned
+    /// [`ShellLimits::allow_indefinite`] off, in which case the host's default
+    /// applies because an unclamped zero would be a request to run forever.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(
-        description = "How long the process may run, in milliseconds. Above the host's ceiling it is clamped to it. Zero asks for no bound, which the host grants only where it allows it, for a call that starts something long-lived; a foreground call that asks for zero is given the host's default instead."
+        description = "How long the process may run, in milliseconds. Above the host's ceiling it is clamped to it. Zero asks for no bound, which the host grants by default. A host may refuse it and apply its configured default timeout instead."
     )]
     pub timeout_ms: Option<u64>,
     /// Whether to answer without waiting for the process.
@@ -432,12 +432,11 @@ pub struct ShellLimits {
     pub max_timeout: Duration,
     /// Whether a request of `0` is granted, meaning no bound at all.
     ///
-    /// Off by default, because a call with no bound cannot be told from a hung
-    /// one by whoever is waiting for it. A host turns it on for the calls it
-    /// runs in the background, where nothing waits: a server started for the rest
-    /// of the session is the case it exists for. The process is still the host's
-    /// to kill — the group guard, the cancellation token and the detach token all
-    /// reach it exactly as they do a bounded call.
+    /// On by default. A call with no bound cannot be told from a hung one by
+    /// whoever is waiting, so a host that needs that distinction turns this off
+    /// and every zero gets the host's default bound. The process stays the
+    /// host's to kill: the group guard, the cancellation token and the detach
+    /// token reach it exactly as they do a bounded call.
     pub allow_indefinite: bool,
     /// How long a signalled process group has to leave before it is killed.
     pub grace: Duration,
@@ -460,7 +459,7 @@ impl Default for ShellLimits {
         Self {
             default_timeout: Duration::from_secs(120),
             max_timeout: Duration::from_secs(600),
-            allow_indefinite: false,
+            allow_indefinite: true,
             grace: Duration::from_secs(2),
             drain: Duration::from_secs(2),
             max_output_bytes: 1024 * 1024,
@@ -560,12 +559,12 @@ impl ShellTool {
     /// clamped to the host's ceiling; and everything else, which gets the host's
     /// default. A request of `0` asks for no bound — a zero-millisecond run would
     /// kill every process before it started, so the number would be useless as
-    /// anything but a sentinel — and it is granted only where
-    /// [`ShellLimits::allow_indefinite`] says so.
+    /// anything but a sentinel — and it is granted unless
+    /// [`ShellLimits::allow_indefinite`] is off.
     ///
     /// `None` is not "no limit by accident": a call with no bound runs until it
     /// ends, is cancelled, or is detached, and the caller has no way to make the
-    /// difference between it and a hung one. That is why the host decides.
+    /// difference between it and a hung one. That is why the host can turn it off.
     fn timeout(&self, request: &ShellRequest) -> Option<Duration> {
         let Some(millis) = request.timeout_ms else {
             return Some(self.limits.default_timeout);
@@ -2114,14 +2113,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn zero_asks_for_no_bound_and_gets_the_host_default_by_default() {
+    async fn zero_gets_the_host_default_when_the_host_refuses_it() {
         // `0` is a sentinel, not a duration: a zero-millisecond bound would kill
-        // every process before it started. A host that has not opted in reads it
-        // as "no opinion" and applies its default, which is what keeps the
-        // number from being a hole a model can disappear into.
+        // every process before it started. A host that refuses it reads it as
+        // "no opinion" and applies its default, which keeps the number from
+        // being a hole a model can disappear into.
         let limits = ShellLimits {
             default_timeout: Duration::from_millis(120),
             grace: Duration::from_millis(50),
+            allow_indefinite: false,
             ..ShellLimits::default()
         };
         let tool = ShellTool::new().with_limits(limits);
@@ -2130,7 +2130,7 @@ mod tests {
         assert_eq!(
             structured(&output)["code"],
             "timeout",
-            "an opt-out host applied its default of 120 ms"
+            "a host that refused it applied its default of 120 ms"
         );
     }
 

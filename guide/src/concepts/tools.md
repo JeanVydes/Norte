@@ -126,7 +126,8 @@ of them — a test in this repository fails if one reaches the wire.
 - `with_secrets(impl IntoIterator<Item = impl Into<String>>)` — values redacted
   from the tool result before it is shown to the model.
 - `with_limits(ShellLimits)` — the host's bounds, including
-  `allow_indefinite`, which is what grants a `timeout_ms` of zero.
+  `allow_indefinite`, which grants a `timeout_ms` of zero unless the host turns
+  it off.
 
 A `shell` request runs any script. **Authorizing it is the host's job.** The
 executor will run what it is given; what decides whether `cargo` is yes and `rm`

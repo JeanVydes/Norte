@@ -11,6 +11,13 @@ entry describes the whole set.
 
 Draft. Not published.
 
+### Changed
+
+- `ShellLimits::allow_indefinite` is on by default, so a `shell` request with
+  `timeout_ms: 0` runs without a bound unless the host turns the flag off. The
+  tool schema now says so, and a host that needs every call bounded can refuse
+  the request and apply its default timeout.
+
 ### Added
 
 - The browser element list reports what a control is, not only what it says. Each

@@ -186,6 +186,15 @@ pub enum StreamEvent {
     },
     /// The usage the provider reported.
     Usage(Usage),
+    /// Metadata observed from the provider response and shared transport.
+    ResponseMetadata {
+        /// The HTTP status, when the response headers arrived.
+        http_status: Option<u16>,
+        /// Connection retries made before the response, when known.
+        retry_count: Option<u32>,
+        /// The model name echoed by the provider's response schema.
+        resolved_model: Option<String>,
+    },
     /// Why the provider stopped generating.
     Finish(FinishReason),
 }
@@ -354,7 +363,8 @@ impl StreamAccumulator {
             StreamEvent::Part { index, part } => Ok(Some(self.complete(index, part))),
             StreamEvent::Continuity { .. }
             | StreamEvent::SafetyRatings { .. }
-            | StreamEvent::Logprobs { .. } => Ok(None),
+            | StreamEvent::Logprobs { .. }
+            | StreamEvent::ResponseMetadata { .. } => Ok(None),
             StreamEvent::Usage(usage) => Ok(self.set_usage(usage)),
             StreamEvent::Finish(reason) => {
                 self.finish_reason = Some(reason);

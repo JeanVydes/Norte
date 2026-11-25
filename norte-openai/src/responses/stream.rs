@@ -53,6 +53,7 @@ impl Decoder {
         }
         let value: Value = serde_json::from_str(data)?;
         match str_field(&value, "type")? {
+            "response.created" => Ok(response_model_metadata(&value)),
             "response.output_item.added" => self.output_item_added(&value),
             "response.output_item.done" => self.output_item_done(&value),
             "response.output_text.delta" => Self::text_delta(&value),
@@ -312,10 +313,12 @@ impl Decoder {
 
     fn finish(&self, value: &Value) -> Vec<StreamEvent> {
         let response = value.get("response").unwrap_or(value);
-        vec![
+        let mut events = response_model_metadata(value);
+        events.extend([
             StreamEvent::Usage(usage_of(response)),
             StreamEvent::Finish(self.finish_reason(response)),
-        ]
+        ]);
+        events
     }
 
     fn finish_reason(&self, response: &Value) -> FinishReason {
@@ -332,6 +335,20 @@ impl Decoder {
             _ => FinishReason::Stop,
         }
     }
+}
+
+fn response_model_metadata(value: &Value) -> Vec<StreamEvent> {
+    let response = value.get("response").unwrap_or(value);
+    opt_str(response, "model")
+        .filter(|model| !model.is_empty())
+        .map(|model| {
+            vec![StreamEvent::ResponseMetadata {
+                http_status: None,
+                retry_count: None,
+                resolved_model: Some(model.to_owned()),
+            }]
+        })
+        .unwrap_or_default()
 }
 
 /// Surfaces the probabilities the vendor reported for one output-text delta
@@ -685,6 +702,19 @@ mod tests {
             events.last(),
             Some(&StreamEvent::Finish(FinishReason::Stop))
         );
+    }
+
+    #[tokio::test]
+    async fn reports_the_model_from_the_responses_schema() {
+        let events = drain(&[
+            r#"{"type":"response.completed","response":{"model":"gpt-revision","status":"completed","usage":{}}}"#,
+        ])
+        .await;
+        assert!(events.iter().any(|event| matches!(
+            event,
+            StreamEvent::ResponseMetadata { resolved_model: Some(model), .. }
+                if model == "gpt-revision"
+        )));
     }
 
     #[tokio::test]

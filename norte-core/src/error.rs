@@ -60,6 +60,8 @@ pub struct ProviderError {
     pub status: Option<u16>,
     /// How long the provider asked the caller to wait.
     pub retry_after: Option<Duration>,
+    /// Number of connection retries the shared HTTP transport performed.
+    pub transport_retries: u32,
     /// Anything else the payload carried, kept verbatim.
     pub extensions: BTreeMap<String, Value>,
 }
@@ -73,6 +75,7 @@ impl ProviderError {
             code: None,
             status: None,
             retry_after: None,
+            transport_retries: 0,
             extensions: BTreeMap::new(),
         }
     }
@@ -95,6 +98,13 @@ impl ProviderError {
     #[must_use]
     pub fn with_retry_after(mut self, retry_after: Duration) -> Self {
         self.retry_after = Some(retry_after);
+        self
+    }
+
+    /// Sets the number of connection retries performed before this failure.
+    #[must_use]
+    pub fn with_transport_retries(mut self, retries: u32) -> Self {
+        self.transport_retries = retries;
         self
     }
 

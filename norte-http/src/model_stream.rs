@@ -25,7 +25,26 @@ pub fn decode_model_stream(
 
             let sse = source.as_mut()?;
             let result = match sse.next().await {
-                Some(Ok(event)) => decode(&event),
+                Some(Ok(event)) => {
+                    let response_status = event.response_status;
+                    let transport_retries = event.transport_retries;
+                    let has_transport_metadata =
+                        event.response_status.is_some() || event.transport_retries.is_some();
+                    if has_transport_metadata {
+                        pending.push_back(StreamEvent::ResponseMetadata {
+                            http_status: event.response_status,
+                            retry_count: event.transport_retries,
+                            resolved_model: None,
+                        });
+                    }
+                    if has_transport_metadata && event.data.is_empty() {
+                        Ok(Vec::new())
+                    } else {
+                        decode(&event).map_err(|error| {
+                            response_error(error, response_status, transport_retries)
+                        })
+                    }
+                }
                 Some(Err(error)) => Err(error),
                 None => {
                     *source = None;
@@ -47,11 +66,28 @@ pub fn decode_model_stream(
                 }
                 Err(error) => {
                     *source = None;
+                    pending.clear();
                     return Some((Err(error), state));
                 }
             }
         }
     }))
+}
+
+fn response_error(error: Error, status: Option<u16>, retries: Option<u32>) -> Error {
+    match error {
+        Error::Provider(provider) => {
+            let provider = match status {
+                Some(status) => provider.with_status(status),
+                None => *provider,
+            };
+            Error::Provider(Box::new(match retries {
+                Some(retries) => provider.with_transport_retries(retries),
+                None => provider,
+            }))
+        }
+        other => other,
+    }
 }
 
 #[cfg(test)]
@@ -138,6 +174,36 @@ mod tests {
                 .expect("complete stream"),
             expected
         );
+    }
+
+    #[tokio::test]
+    async fn forwards_transport_metadata_before_vendor_events() {
+        let sse: SseStream = Box::pin(stream::iter(vec![
+            Ok(SseEvent {
+                response_status: Some(200),
+                transport_retries: Some(2),
+                ..SseEvent::default()
+            }),
+            Ok(SseEvent {
+                data: "finish".to_owned(),
+                ..SseEvent::default()
+            }),
+        ]));
+        let mut model =
+            decode_model_stream(sse, |_| Ok(vec![StreamEvent::Finish(FinishReason::Stop)]));
+        assert_eq!(
+            model.next().await.expect("metadata").expect("ok"),
+            StreamEvent::ResponseMetadata {
+                http_status: Some(200),
+                retry_count: Some(2),
+                resolved_model: None,
+            }
+        );
+        assert_eq!(
+            model.next().await.expect("finish").expect("ok"),
+            StreamEvent::Finish(FinishReason::Stop)
+        );
+        assert!(model.next().await.is_none());
     }
 
     struct DropFlag(Arc<AtomicBool>);

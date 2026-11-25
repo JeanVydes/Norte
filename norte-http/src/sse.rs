@@ -15,6 +15,10 @@ pub struct SseEvent {
     pub id: Option<String>,
     /// A reconnection delay the stream asked for, when it asked.
     pub retry: Option<Duration>,
+    /// HTTP response status, attached by the shared transport when opening a stream.
+    pub response_status: Option<u16>,
+    /// Connection retries performed before this response arrived.
+    pub transport_retries: Option<u32>,
 }
 
 /// Incremental `SSE` parser. Feed it raw chunks in any split; it returns the

@@ -74,6 +74,17 @@ impl Decoder {
             return Err(stream_error(error));
         }
         let mut events = Vec::new();
+        if let Some(model) = value
+            .get("model")
+            .and_then(Value::as_str)
+            .filter(|model| !model.is_empty())
+        {
+            events.push(StreamEvent::ResponseMetadata {
+                http_status: None,
+                retry_count: None,
+                resolved_model: Some(model.to_owned()),
+            });
+        }
         if let Some(usage) = value.get("usage").filter(|usage| !usage.is_null()) {
             events.push(StreamEvent::Usage(usage_of(usage)));
         }
@@ -612,6 +623,20 @@ mod tests {
             })
             .expect("finish");
         assert_eq!(finish, FinishReason::Stop);
+    }
+
+    #[tokio::test]
+    async fn reports_the_model_from_the_chat_response_schema() {
+        let events = drain(&[
+            r#"{"model":"openai/model-revision","choices":[]}"#,
+            r#"{"choices":[{"finish_reason":"stop","delta":{}}]}"#,
+        ])
+        .await;
+        assert!(events.iter().any(|event| matches!(
+            event,
+            StreamEvent::ResponseMetadata { resolved_model: Some(model), .. }
+                if model == "openai/model-revision"
+        )));
     }
 
     #[tokio::test]

@@ -59,6 +59,17 @@ impl Decoder {
             return Err(stream_error(error));
         }
         let mut events = Vec::new();
+        if let Some(model) = value
+            .get("modelVersion")
+            .and_then(Value::as_str)
+            .filter(|model| !model.is_empty())
+        {
+            events.push(StreamEvent::ResponseMetadata {
+                http_status: None,
+                retry_count: None,
+                resolved_model: Some(model.to_owned()),
+            });
+        }
         self.prompt_feedback(&value);
         self.candidates(&value, &mut events)?;
         if let Some(usage) = value.get("usageMetadata").filter(|usage| !usage.is_null()) {
@@ -795,6 +806,19 @@ mod tests {
             events.last(),
             Some(&StreamEvent::Finish(FinishReason::Stop))
         );
+    }
+
+    #[tokio::test]
+    async fn reports_the_model_version_from_the_generate_schema() {
+        let events = drain(&[
+            r#"{"modelVersion":"gemini-revision","candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}"#,
+        ])
+        .await;
+        assert!(events.iter().any(|event| matches!(
+            event,
+            StreamEvent::ResponseMetadata { resolved_model: Some(model), .. }
+                if model == "gemini-revision"
+        )));
     }
 
     #[tokio::test]

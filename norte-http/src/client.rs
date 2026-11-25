@@ -137,7 +137,8 @@ impl HttpClient {
         deadline(self.policy.request_timeout, async {
             let response = self
                 .send_retry(profile, method, path, body, "application/json")
-                .await?;
+                .await?
+                .response;
             read_json(response).await
         })
         .await
@@ -237,13 +238,15 @@ impl HttpClient {
         path: &str,
         body: &Value,
     ) -> Result<SseStream> {
-        let response = deadline(
+        let opened = deadline(
             self.policy.request_timeout,
             self.send_retry(profile, Method::POST, path, Some(body), "text/event-stream"),
         )
         .await?;
+        let (response, retry_count) = (opened.response, opened.retry_count);
+        let status = response.status().as_u16();
         Ok(guard_idle(
-            decode_sse(response),
+            decode_sse(response, status, retry_count),
             self.policy.stream_idle_timeout,
         ))
     }
@@ -284,7 +287,7 @@ impl HttpClient {
         path: &str,
         body: Option<&Value>,
         accept: &str,
-    ) -> Result<Response> {
+    ) -> Result<RetryResponse> {
         let mut retries = 0;
         loop {
             let builder = self
@@ -295,18 +298,35 @@ impl HttpClient {
                 None => builder,
             };
             match send(builder).await {
-                Ok(response) => return Ok(response),
+                Ok(response) => {
+                    return Ok(RetryResponse {
+                        response,
+                        retry_count: retries,
+                    });
+                }
                 Err(error) => match self.backoff(retries, &error) {
                     Some(delay) => {
                         tracing::debug!(retries, delay = ?delay, "retrying HTTP connection");
                         tokio::time::sleep(delay).await;
                         retries += 1;
                     }
-                    None => return Err(error),
+                    None => {
+                        return Err(match error {
+                            Error::Provider(provider) => {
+                                Error::Provider(Box::new(provider.with_transport_retries(retries)))
+                            }
+                            other => other,
+                        });
+                    }
                 },
             }
         }
     }
+}
+
+struct RetryResponse {
+    response: Response,
+    retry_count: u32,
 }
 
 async fn deadline<T>(
@@ -352,30 +372,73 @@ async fn read_json(response: Response) -> Result<Value> {
     serde_json::from_slice(&bytes).map_err(Error::from)
 }
 
-fn decode_sse(response: Response) -> SseStream {
+fn decode_sse(response: Response, status: u16, retry_count: u32) -> SseStream {
     Box::pin(futures_util::stream::unfold(
         Some((
             response.bytes_stream(),
             SseDecoder::new(),
             std::collections::VecDeque::<Result<SseEvent>>::new(),
+            false,
         )),
-        |state| async move {
-            let (mut stream, mut decoder, mut pending) = state?;
+        move |state| async move {
+            let (mut stream, mut decoder, mut pending, mut attached_metadata) = state?;
             loop {
                 if let Some(event) = pending.pop_front() {
                     if event.is_err() {
+                        let event =
+                            event.map_err(|error| response_error(error, status, retry_count));
                         return Some((event, None));
                     }
-                    return Some((event, Some((stream, decoder, pending))));
+                    let mut event = event.expect("checked event");
+                    if !attached_metadata {
+                        event.response_status = Some(status);
+                        event.transport_retries = Some(retry_count);
+                        attached_metadata = true;
+                    }
+                    return Some((
+                        Ok(event),
+                        Some((stream, decoder, pending, attached_metadata)),
+                    ));
                 }
                 match stream.next().await {
                     Some(Ok(bytes)) => pending.extend(decoder.push(&bytes)),
-                    Some(Err(error)) => return Some((Err(transport(&error)), None)),
-                    None => return decoder.finish().err().map(|error| (Err(error), None)),
+                    Some(Err(error)) => {
+                        return Some((
+                            Err(response_error(transport(&error), status, retry_count)),
+                            None,
+                        ));
+                    }
+                    None => {
+                        if let Err(error) = decoder.finish() {
+                            return Some((Err(response_error(error, status, retry_count)), None));
+                        }
+                        if !attached_metadata {
+                            return Some((
+                                Ok(SseEvent {
+                                    response_status: Some(status),
+                                    transport_retries: Some(retry_count),
+                                    ..SseEvent::default()
+                                }),
+                                None,
+                            ));
+                        }
+                        return None;
+                    }
                 }
             }
         },
     ))
+}
+
+fn response_error(error: Error, status: u16, retry_count: u32) -> Error {
+    match error {
+        Error::Provider(provider) => Error::Provider(Box::new(
+            provider
+                .with_status(status)
+                .with_transport_retries(retry_count),
+        )),
+        other => other,
+    }
 }
 
 /// Fails the stream with a transport error when the provider stays silent for

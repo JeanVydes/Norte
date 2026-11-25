@@ -71,7 +71,16 @@ impl Decoder {
         if let Some(usage) = message.get("usage") {
             self.merge_usage(usage);
         }
-        vec![StreamEvent::Usage(self.usage())]
+        let mut events = Vec::new();
+        if let Some(model) = opt_str(message, "model").filter(|model| !model.is_empty()) {
+            events.push(StreamEvent::ResponseMetadata {
+                http_status: None,
+                retry_count: None,
+                resolved_model: Some(model.to_owned()),
+            });
+        }
+        events.push(StreamEvent::Usage(self.usage()));
+        events
     }
 
     fn block_start(&mut self, value: &Value) -> Result<Vec<StreamEvent>> {
@@ -603,6 +612,21 @@ mod tests {
             events.last(),
             Some(&StreamEvent::Finish(FinishReason::Stop))
         );
+    }
+
+    #[tokio::test]
+    async fn reports_the_model_from_the_messages_schema() {
+        let events = drain(&[
+            r#"{"type":"message_start","message":{"model":"claude-revision","usage":{"input_tokens":1}}}"#,
+            r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}"#,
+            r#"{"type":"message_stop"}"#,
+        ])
+        .await;
+        assert!(events.iter().any(|event| matches!(
+            event,
+            StreamEvent::ResponseMetadata { resolved_model: Some(model), .. }
+                if model == "claude-revision"
+        )));
     }
 
     #[tokio::test]

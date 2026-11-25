@@ -288,6 +288,101 @@ name_id!(WireFamily, "wire family", |value: &str| value.chars().all(
     |c| { c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') }
 ));
 
+/// A typed key for a model request extension.
+///
+/// `Session` is Norte's internal cache identity. `Vendor` carries a
+/// provider-specific request field scoped to one wire family.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum VendorExtensionKey {
+    /// Internal session identity used by adapters for stable prompt caching.
+    Session,
+    /// A provider request field, encoded as `family:path` in configuration.
+    Vendor {
+        /// Wire family this extension applies to.
+        family: WireFamily,
+        /// Dotted request-body path.
+        path: String,
+    },
+}
+
+impl VendorExtensionKey {
+    /// Builds a key for a non-empty dotted field path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidInput`] if the path is empty or has an empty
+    /// dotted segment.
+    pub fn new(family: WireFamily, path: impl Into<String>) -> Result<Self> {
+        let path = path.into();
+        if path.is_empty() || path.split('.').any(str::is_empty) {
+            return Err(Error::InvalidInput(format!(
+                "vendor extension path must have non-empty segments: {path}"
+            )));
+        }
+        Ok(Self::Vendor { family, path })
+    }
+
+    /// The wire family this field applies to.
+    #[must_use]
+    pub fn family(&self) -> Option<&WireFamily> {
+        match self {
+            Self::Session => None,
+            Self::Vendor { family, .. } => Some(family),
+        }
+    }
+
+    /// The dotted field path inside the provider request.
+    #[must_use]
+    pub fn path(&self) -> Option<&str> {
+        match self {
+            Self::Session => None,
+            Self::Vendor { path, .. } => Some(path),
+        }
+    }
+}
+
+impl Display for VendorExtensionKey {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Session => f.write_str("session"),
+            Self::Vendor { family, path } => write!(f, "{family}:{path}"),
+        }
+    }
+}
+
+impl FromStr for VendorExtensionKey {
+    type Err = Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        if value == "session" {
+            return Ok(Self::Session);
+        }
+        let (family, path) = value.split_once(':').ok_or_else(|| {
+            Error::InvalidInput("vendor extension key needs family:path".to_owned())
+        })?;
+        Self::new(WireFamily::new(family)?, path)
+    }
+}
+
+impl Serialize for VendorExtensionKey {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for VendorExtensionKey {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        value.parse().map_err(serde::de::Error::custom)
+    }
+}
+
 /// A provider and model pair. The only way to name a model across the API.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ModelRef {

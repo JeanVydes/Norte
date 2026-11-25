@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
-use crate::id::{BlobId, ModelRef, NodeId, ProviderId, SessionId, ToolName};
+use crate::id::{BlobId, ModelRef, ProviderId, ToolName};
 
 /// The crate's result type.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -155,42 +155,6 @@ pub enum Error {
     /// An identifier could not be parsed.
     #[error("invalid identifier: {0}")]
     InvalidId(String),
-
-    /// A document carries a schema version this build does not know.
-    #[error("invalid schema version {found} for {kind}")]
-    SchemaVersion {
-        /// The document kind.
-        kind: String,
-        /// The version the document carries.
-        found: u16,
-    },
-
-    /// A stored phase name is not one this build knows.
-    #[error("unknown phase: {0}")]
-    UnknownPhase(String),
-
-    /// A stored node kind is not one this build knows.
-    #[error("unknown node kind: {0}")]
-    UnknownNodeKind(String),
-
-    /// A commit lost a race: the stored session moved.
-    #[error("store conflict on session {session}: expected {expected:?}, found {actual}")]
-    StoreConflict {
-        /// The session being committed.
-        session: SessionId,
-        /// The version the commit was built from.
-        expected: Option<u64>,
-        /// The version the store holds.
-        actual: u64,
-    },
-
-    /// No session with that id.
-    #[error("session not found: {0}")]
-    SessionNotFound(SessionId),
-
-    /// No node with that id.
-    #[error("node not found: {0}")]
-    NodeNotFound(NodeId),
 
     /// No blob with that id.
     #[error("blob not found: {0}")]

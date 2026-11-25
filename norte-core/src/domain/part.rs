@@ -3,7 +3,7 @@ use serde_json::Value;
 
 use crate::domain::continuity::ContinuityToken;
 use crate::domain::media::{MediaPart, MediaSource};
-use crate::id::{BlobId, CallId, ProviderId};
+use crate::id::{BlobId, CallId, ProviderId, ToolName};
 
 /// How much of a model's reasoning the provider made available.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -107,7 +107,7 @@ pub struct ToolCallPart {
     /// The call.
     pub call_id: CallId,
     /// The tool's name.
-    pub name: String,
+    pub name: ToolName,
     /// The arguments document the model produced.
     pub arguments: Value,
     /// The opaque material the adapter needs to replay this call.

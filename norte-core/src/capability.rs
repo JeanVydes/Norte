@@ -408,16 +408,16 @@ impl Capabilities {
     }
 
     /// Fails when the model cannot honor a generation parameter the turn asks
-    /// for. Only `logprobs` is gated today; the other parameters are either
-    /// wire-level no-ops or covered by the modality, tool and reasoning checks
-    /// (FR-LP-1).
+    /// for. Parameter values are validated before feature support is checked.
     ///
     /// # Errors
     ///
     /// Returns [`Error::Capability`] when the model does not declare
-    /// [`Feature::Logprobs`], and [`Error::LimitExceeded`] above
-    /// [`MAX_TOP_LOGPROBS`].
+    /// [`Error::InvalidInput`] for invalid parameter values,
+    /// [`Feature::Logprobs`] when unsupported, and [`Error::LimitExceeded`]
+    /// above [`MAX_TOP_LOGPROBS`].
     pub fn check_generation(&self, model: &ModelRef, params: &GenerationParams) -> Result<()> {
+        params.validate()?;
         let Some(top) = params.logprobs else {
             return Ok(());
         };

@@ -2,9 +2,8 @@
 #
 # NFR-ARCH-1: dependencies point toward core only.
 #
-# - norte-core never pulls in HTTP, database, vendor, concrete-tool or harness
-#   code. The core defines what a conversation *is* and what a provider must
-#   implement; an agent runtime is one way to drive those, not part of them.
+# - norte-core never pulls in HTTP, database, vendor, or concrete-tool code.
+#   Core defines model-call data and adapter contracts.
 # - No adapter depends on another adapter or on host runtime code.
 # - norte-testing is a dev-only helper, never a normal dependency of core or
 #   a shipping adapter.
@@ -16,7 +15,7 @@ set -euo pipefail
 # Concrete adapters must not depend on each other or on test/host code.
 adapters="norte-anthropic norte-openai norte-gemini norte-tools norte-mcp"
 
-core_forbidden='^(norte-(http|harness|anthropic|openai|gemini|tools|media|testing|mcp)) v|^(reqwest|hyper|axum|tower-http|sqlx|diesel|mongodb|redis|rusqlite|aws-sdk|tokio-postgres) '
+core_forbidden='^(norte-(http|anthropic|openai|gemini|tools|media|testing|mcp)) v|^(reqwest|hyper|axum|tower-http|sqlx|diesel|mongodb|redis|rusqlite|aws-sdk|tokio-postgres) '
 
 status=0
 
@@ -39,8 +38,8 @@ for crate in $adapters; do
             status=1
         fi
     done
-    if printf '%s\n' "$tree" | grep -Eq '^norte-(harness|testing) v'; then
-        echo "FAIL: ${crate} depends on host or test code" >&2
+    if printf '%s\n' "$tree" | grep -Eq '^norte-testing v'; then
+        echo "FAIL: ${crate} depends on test helper code" >&2
         status=1
     fi
 done

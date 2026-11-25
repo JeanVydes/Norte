@@ -1,40 +1,23 @@
 # Norte
 
-**Provider-agnostic infrastructure for AI agents in Rust.** One core, three
-first-class provider SDKs, and a streaming, durable engine.
+Norte is a Rust library for calling language models through a shared API. It
+provides typed messages and tool calls, provider adapters, capability checks,
+and streams of model events.
 
-Nothing in your application names a vendor, and no model catalogue is baked in:
-you declare what your models can do, and the engine does the rest — every call
-under rules you write, every turn in a history you can audit.
+Norte is not an agent runtime. It does not create sessions, manage conversation
+history, dispatch tools in a loop, or persist application state. The host
+application decides how those pieces fit together.
 
-## What you get
+## What Norte provides
 
-- A **model port** (`Arc<dyn Model>`): swap the provider by swapping one
-  `Arc`, not the application.
-- **Durable sessions**: a session is a tree of commits in a `Store`; a turn
-  ends in exactly one commit — never in between.
-- **Streaming tools**: tools run, stream their output and report back, with
-  the host deciding what a call may attempt.
-- **Provider-reported usage and cost**: no rate table, no invented prices.
-
-## What it is not
-
-- Not a model catalogue: capabilities are declared by you, and anything a
-  wire reports that the neutral model has no field for is kept, not
-  interpreted.
-- Not an agent framework: no built-in ReAct loop, planner or prompt library.
-  The loop around the engine is your code.
-- Not tied to a cloud: persistence is two traits (`Store`, `BlobStore`)
-  with in-memory implementations ready to use.
+- A provider-neutral [`Model`](https://docs.rs/norte-core/latest/norte_core/trait.Model.html)
+  interface and request types.
+- OpenAI, Anthropic, and Gemini adapters.
+- Typed capabilities and request validation.
+- Streaming events, tools, media types, and opt-in integration helpers.
 
 ## Where to go
 
-- New here: [Getting started](getting-started.md).
-- Want the vocabulary first: [Sessions and turns](concepts/sessions-and-turns.md),
-  then [Streaming](concepts/streaming.md).
-- Solving something concrete: the [guides](guides/switch-provider.md).
-- Looking for a type: [Crates](reference/crates.md) and
-  [Glossary](reference/glossary.md); the full API is in rustdoc
-  (`cargo doc --workspace --no-deps --open`).
-- Auditing a promise: [Requirements](reference/requirements.md) carries every id
-  with the code and the CI job that enforce it.
+- New to the API: [Getting started](getting-started.md).
+- Public crates: [Crates](reference/crates.md).
+- Full API: [Rustdoc](https://docs.rs/norte/).

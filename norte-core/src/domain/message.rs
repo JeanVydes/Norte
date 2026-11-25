@@ -119,7 +119,9 @@ impl Usage {
     /// Input plus output tokens, as far as the provider reported them.
     #[must_use]
     pub fn total_tokens(&self) -> u64 {
-        self.input_tokens.unwrap_or(0) + self.output_tokens.unwrap_or(0)
+        self.input_tokens
+            .unwrap_or(0)
+            .saturating_add(self.output_tokens.unwrap_or(0))
     }
 }
 
@@ -211,8 +213,8 @@ impl MessageOrigin {
     /// The provenance of a message the given model produced, with no request
     /// digest recorded.
     ///
-    /// The type is `#[non_exhaustive]`, so this is how a harness outside the
-    /// core builds one: fields may be added later without breaking a caller
+    /// The type is `#[non_exhaustive]`, so this is how a host outside the core
+    /// builds one: fields may be added later without breaking a caller
     /// that spells out only what it knows.
     #[must_use]
     pub fn new(
@@ -565,5 +567,15 @@ mod tests {
         let json = serde_json::to_string(&message).expect("serialize");
         let decoded: Message = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(decoded, message);
+    }
+
+    #[test]
+    fn total_tokens_saturates_instead_of_overflowing() {
+        let usage = Usage {
+            input_tokens: Some(u64::MAX),
+            output_tokens: Some(1),
+            ..Usage::default()
+        };
+        assert_eq!(usage.total_tokens(), u64::MAX);
     }
 }

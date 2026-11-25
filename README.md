@@ -11,182 +11,63 @@
   <img src="https://img.shields.io/badge/edition-2024-blue.svg" alt="Edition: 2024">
 </p>
 
-**Provider-agnostic infrastructure for AI agents in Rust.** One core, three
-first-class provider SDKs, a durable conversation model, and a reference agent
-loop you may take or leave.
+**Provider-agnostic model and tool APIs for Rust.** Norte provides a shared
+message model, typed capabilities, provider adapters, streaming events, and
+optional tool and media support. It does not create sessions, run an agent
+loop, or persist conversation history; the application owns those policies.
 
-Nothing in your application names a vendor, and no model catalogue is baked in:
-you declare what your models can do, and the requests follow, every call inside
-the rules you write, every turn in a history you can audit.
+## Crates
 
-## Two crates, one choice
+- **`norte`** is the facade with optional provider and helper features.
+- **`norte-core`** defines messages, parts, model requests, streaming, tools,
+  capabilities, and adapter contracts.
+- **`norte-openai`**, **`norte-anthropic`**, and **`norte-gemini`** implement
+  their respective provider APIs.
+- **`norte-http`** provides the shared HTTP transport and vendor profile.
+- **`norte-tools`**, **`norte-mcp`**, and **`norte-testing`** are opt-in helpers.
 
-**`norte`** is the facade most applications depend on: core types at the
-root, optional provider and helper crates as modules, presets and a
-prelude. That is the whole public surface.
-
-**`norte-core`** is the port everything builds on — messages, parts,
-capabilities, the `Model`/`Store`/`BlobStore` traits, streaming and the
-turn loop. Depend on it alone if you write your own loop.
-
-## Why Norte
-
-- **Scalable.** Sessions live in a store you choose, not in process memory: add
-  workers, restart them mid-turn and share a session — with optimistic
-  concurrency instead of a coordinator.
-- **Extensible at every seam.** Providers, stores, tools, layers, interceptors
-  and observers are traits. Bring your own model, database, object storage or
-  toolchain; the engine holds no vendor and no persistence of its own.
-- **Governed.** A tool is the host's declaration, so the host decides what a call
-  may attempt: wrap the executor to re-root a path or refuse an argument, and
-  register an interceptor to decide what the conversation does next.
-- **Auditable.** Every turn is one atomic commit carrying the model, the token
-  counters and the cost the provider reported. A session exports and re-imports
-  byte for byte, for a review, a replay or a hand-off.
-- **Secure.** `unsafe` is forbidden, every wire parser is fuzzed, secrets are
-  redacted from tool output, and failures are typed errors rather than panics.
-- **Private by default.** No telemetry and no call home: the only network traffic
-  is to the endpoint you configure. Bring your own inference — any
-  OpenAI-compatible server — and your own database and object storage.
-- **Observable.** Every request, tool call, token count and cache boundary is an
-  event, streamed as it happens.
-- **Cost you can attribute.** Usage and cost come from the provider's own
-  payloads, per request and per turn: chargeback-ready, with no rate table to
-  maintain.
-
-## Providers and coverage
-
-| Provider | Crate | APIs |
-| --- | --- | --- |
-| OpenAI | `norte-openai` | Responses, Chat Completions |
-| Anthropic | `norte-anthropic` | Messages |
-| Google Gemini | `norte-gemini` | generateContent, cached content |
-
-Two directions are out of scope by decision: the Realtime API and unary
-`stream: false` delivery (`collect()` already covers blocking callers). A
-modality an API cannot express is a typed error, never a silent drop, and
-a documented block with no neutral form is kept verbatim and replayed
-unchanged.
-
-Anything OpenAI-compatible works through the OpenAI adapter with your own base
-`URL`: OpenRouter, Groq, Together, vLLM, an internal gateway or a self-hosted
-model server. The endpoint is configuration, so an on-prem deployment is a `URL`
-and a key.
+Norte has no model catalogue. Applications select model identifiers and declare
+the capabilities they want to expose. OpenAI-compatible endpoints can use the
+OpenAI adapter with a configured endpoint and authentication profile.
 
 ## Install
 
 ```toml
 [dependencies]
-norte = { version = "0.0.2", features = ["tools"] }
+norte = { version = "0.0.2", features = ["openai", "tools"] }
 ```
 
-The core, the providers and their contracts come by default. `tools` adds
-the default tool suite; `media`, `mcp` and `testing` are opt-in. A host that
-writes its own loop depends on `norte-core` alone and never compiles the
-rest.
+Provider features are `openai` (default), `anthropic`, and `gemini`. Optional
+helpers include `tools`, `media`, `mcp`, and `testing`; `full` enables all
+features. Each crate can also be used directly.
 
-## Quickstart
+## Stream a model response
 
-The core is a model port and the value types a conversation is made of — one request, every event:
-
-```rust
-use std::error::Error;
-
+```rust,ignore
 use futures_util::StreamExt;
-use norte_core::{Capabilities, Message, Modality, Model, ModelRef, ModelRequest, StreamingGranularity, WireFamily};
-use norte_http::{AuthScheme, VendorProfile};
-use norte_openai::{OpenAiChat, WIRE_CHAT};
+use norte_core::{Message, Model, ModelRequest};
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let model = OpenAiChat::new(
-        ModelRef::new(
-            "openrouter".try_into()?,
-            std::env::var("COOKBOOK_MODEL")?.as_str().try_into()?,
-        ),
-        VendorProfile::new(
-            "openrouter".try_into()?,
-            WireFamily::new(WIRE_CHAT)?,
-            &std::env::var("COOKBOOK_ENDPOINT")?,
-        )?
-        .with_auth(AuthScheme::bearer(std::env::var("OPENROUTER_API_KEY")?)),
-        Capabilities::builder()
-            .input(Modality::Text)
-            .output(Modality::Text)
-            .streaming(StreamingGranularity::Delta)
-            .build(),
-    )?;
+let request = ModelRequest::new(
+    model.reference().clone(),
+    vec![Message::user("What is a prompt cache?")],
+);
+let mut stream = model.stream(request).await?;
 
-    let mut stream = model
-        .stream(ModelRequest::new(
-            model.reference().clone(),
-            vec![
-                Message::system("Answer in one sentence."),
-                Message::user("What is a prompt cache?"),
-            ],
-        ))
-        .await?;
-
-    while let Some(event) = stream.next().await {
-        println!("{:?}", event?);
-    }
-
-    Ok(())
+while let Some(event) = stream.next().await {
+    handle_model_event(event?);
 }
 ```
 
-A model id and a profile are all the configuration a call needs: the adapter is
-chosen by name, the endpoint is a `URL`, and the key comes from the environment.
+The host decides how to collect events, keep conversation history, dispatch
+tools, retry calls, cancel work, and persist any application state.
 
-## Sessions and tools
+## Documentation and development
 
-On top of that port, `norte-core` also gives you the turn loop, streaming
-tools and the `Store`/`BlobStore` ports. The in-memory pair implements the
-whole contract — one atomic commit per turn, optimistic concurrency,
-content-addressed bytes — and is the right default for a CLI, a desktop
-app or a single-process worker. When a session has to outlive the process,
-implement the two traits over your own database and object storage.
-
-For runnable, end-to-end recipes see the
-[cookbook](https://github.com/JeanVydes/Norte/tree/dev/examples/cookbook):
-one small program per topic, each meant to be read and copied on its own.
-
-## Measurements
-
-Benchmarks live in
-[`benchmarks/`](https://github.com/JeanVydes/Norte/tree/dev/benchmarks): each one
-is a folder with the program, how to run it, and the reports it writes.
-
-## Documentation
-
-- **The guide** — [the hosted guide](https://jeanvydes.github.io/Norte/)
-  explains what the library offers, the concepts behind it, and how to do
-  specific things. It is written in Markdown and built with
-  [mdBook](https://rust-lang.github.io/mdBook/); run `mdbook serve guide` to read
-  it locally, and CI publishes it to GitHub Pages from `dev`.
-- **Requirements** — [the requirements ledger][ledger] is the normative contract:
-  every requirement with its id, the code that enforces it, and the test or CI
-  job that checks it. The ids in source comments and workflow names resolve
-  there; the source lives in `guide/src/reference/requirements.md`.
-- **Rustdoc** — every crate documents its public surface; the reference is
-  generated, not written twice:
-
-  ```sh
-  cargo doc --workspace --no-deps --open
-  ```
-
-- **Examples** — [the cookbook][cookbook] is one small recipe per topic, each
-  runnable on its own.
-- **Contributing** — [`CONTRIBUTING.md`][contributing] covers the layout, the
-  build and the lint policies.
-- **Changelog** — [`CHANGELOG.md`][changelog] records what each version changed.
-
-[ledger]: https://jeanvydes.github.io/Norte/reference/requirements.html
-[cookbook]: https://github.com/JeanVydes/Norte/tree/dev/examples/cookbook
-[contributing]: https://github.com/JeanVydes/Norte/blob/dev/CONTRIBUTING.md
-[changelog]: https://github.com/JeanVydes/Norte/blob/dev/CHANGELOG.md
-
-## Development
+- [Guide](https://jeanvydes.github.io/Norte/) — concepts and API usage.
+- [Rustdoc](https://docs.rs/norte/) — generated crate reference.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — workspace layout and checks.
+- [`CHANGELOG.md`](CHANGELOG.md) — release history.
+- [`benchmarks/`](benchmarks/) — reproducible performance measurements.
 
 ```sh
 cargo fmt --all -- --check
@@ -194,9 +75,6 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items
 ```
-
-Wire parsers are fuzzed with `cargo-fuzz` (`fuzz/`); live provider tests are
-`#[ignore]`d.
 
 ## License
 

@@ -34,6 +34,7 @@ pub(crate) fn build(
     quirks: &Quirks,
     request: &ModelRequest,
 ) -> Result<Value> {
+    request.params.validate()?;
     let messages = build_messages(model, continuity, request)?;
 
     let mut body = serde_json::Map::new();
@@ -122,7 +123,7 @@ pub(crate) fn build(
     if !quirks.contains(&Quirk::NoPromptCacheKey) {
         if let Some(key) = request
             .extensions
-            .get(SESSION_EXTENSION)
+            .get(&SESSION_EXTENSION)
             .and_then(Value::as_str)
         {
             body.insert("prompt_cache_key".to_owned(), Value::String(key.to_owned()));
@@ -608,7 +609,7 @@ mod tests {
                 Part::text("using tool"),
                 Part::ToolCall(ToolCallPart {
                     call_id,
-                    name: "lookup".to_owned(),
+                    name: "lookup".parse().expect("valid tool name"),
                     arguments: serde_json::json!({ "q": 1 }),
                     continuity: Some(token),
                 }),
@@ -859,9 +860,7 @@ mod tests {
         .collect();
         let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
         request.reasoning = ReasoningRequest::Automatic;
-        request
-            .extensions
-            .insert(SESSION_EXTENSION.to_owned(), json!("sess"));
+        request.extensions.insert(SESSION_EXTENSION, json!("sess"));
         let body = build(&model(), &continuity(), &quirks, &request).expect("build");
         assert!(body.get("stream_options").is_none());
         assert!(body.get("seed").is_none());
@@ -919,9 +918,12 @@ mod tests {
         ] {
             let quirks = [quirk].into_iter().collect();
             let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
-            request
-                .extensions
-                .insert(format!("{WIRE_CHAT}:{field}"), value);
+            request.extensions.insert(
+                format!("{WIRE_CHAT}:{field}")
+                    .parse()
+                    .expect("extension key"),
+                value,
+            );
             let error = build(&model(), &continuity(), &quirks, &request).expect_err("rejected");
             assert!(matches!(error, Error::Capability { model: target, feature }
                 if target == model() && feature.contains(field.split('.').next().expect("field"))));
@@ -955,7 +957,7 @@ mod tests {
     fn vendor_extras_are_spliced_into_the_body() {
         let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
         request.extensions.insert(
-            "openai.chat:metadata".to_owned(),
+            "openai.chat:metadata".parse().expect("extension key"),
             serde_json::json!({ "trace": "x" }),
         );
         let body = build(&model(), &continuity(), &Quirks::new(), &request).expect("build");
@@ -965,9 +967,10 @@ mod tests {
     #[test]
     fn a_vendor_extra_may_not_override_adapter_state() {
         let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
-        request
-            .extensions
-            .insert("openai.chat:model".to_owned(), serde_json::json!("other"));
+        request.extensions.insert(
+            "openai.chat:model".parse().expect("extension key"),
+            serde_json::json!("other"),
+        );
         let error =
             build(&model(), &continuity(), &Quirks::new(), &request).expect_err("collision");
         assert!(matches!(error, Error::Capability { .. }));

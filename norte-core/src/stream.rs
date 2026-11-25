@@ -13,7 +13,7 @@ use crate::domain::part::{
     ReasoningVisibility, RefusalPart, TextPart, ToolCallPart,
 };
 use crate::error::{Error, Result};
-use crate::id::{CallId, GenerationId};
+use crate::id::{CallId, GenerationId, ToolName};
 use crate::model::{ModelRequest, StreamLimits};
 
 /// One event of the model stream. Text, reasoning, tool arguments and media
@@ -296,14 +296,7 @@ impl StreamAccumulator {
                 index,
                 call_id,
                 name,
-            } => self.begin(
-                index,
-                Partial::ToolCall {
-                    call_id,
-                    name,
-                    arguments: String::new(),
-                },
-            ),
+            } => self.begin_tool_call(index, call_id, name),
             StreamEvent::ToolCallDelta {
                 index,
                 call_id,
@@ -409,6 +402,23 @@ impl StreamAccumulator {
         Ok(None)
     }
 
+    fn begin_tool_call(
+        &mut self,
+        index: u32,
+        call_id: CallId,
+        name: String,
+    ) -> Result<Option<Part>> {
+        check_growth(0, name.len(), self.limits.max_part_bytes, "streamed part")?;
+        self.begin(
+            index,
+            Partial::ToolCall {
+                call_id,
+                name,
+                arguments: String::new(),
+            },
+        )
+    }
+
     fn add_citation(&mut self, index: u32, citation: Citation) -> Result<Option<Part>> {
         match self.partials.entry(index).or_insert_with(|| Partial::Text {
             text: String::new(),
@@ -425,11 +435,13 @@ impl StreamAccumulator {
     }
 
     fn grow_text(&mut self, index: u32, text: &str) -> Result<Option<Part>> {
+        let limit = self.limits.max_part_bytes;
         let grown = match self.partials.entry(index).or_insert_with(|| Partial::Text {
             text: String::new(),
             citations: Vec::new(),
         }) {
             Partial::Text { text: held, .. } => {
+                check_growth(held.len(), text.len(), limit, "streamed part")?;
                 held.push_str(text);
                 held.len()
             }
@@ -444,6 +456,7 @@ impl StreamAccumulator {
     }
 
     fn grow_reasoning(&mut self, index: u32, text: &str) -> Result<Option<Part>> {
+        let limit = self.limits.max_part_bytes;
         let grown = match self
             .partials
             .entry(index)
@@ -452,6 +465,7 @@ impl StreamAccumulator {
                 text: String::new(),
             }) {
             Partial::Reasoning { text: held, .. } => {
+                check_growth(held.len(), text.len(), limit, "streamed part")?;
                 held.push_str(text);
                 held.len()
             }
@@ -466,6 +480,7 @@ impl StreamAccumulator {
     }
 
     fn grow_refusal(&mut self, index: u32, text: &str) -> Result<Option<Part>> {
+        let limit = self.limits.max_part_bytes;
         let grown = match self
             .partials
             .entry(index)
@@ -473,6 +488,7 @@ impl StreamAccumulator {
                 text: String::new(),
             }) {
             Partial::Refusal { text: held } => {
+                check_growth(held.len(), text.len(), limit, "streamed part")?;
                 held.push_str(text);
                 held.len()
             }
@@ -493,6 +509,7 @@ impl StreamAccumulator {
         name: Option<String>,
         arguments: &str,
     ) -> Result<Option<Part>> {
+        let limit = self.limits.max_part_bytes;
         let grown = match self
             .partials
             .entry(index)
@@ -511,11 +528,24 @@ impl StreamAccumulator {
                         "tool call id changed mid-stream at index {index}"
                     )));
                 }
+                let current = check_growth(
+                    held_name.len(),
+                    held_arguments.len(),
+                    limit,
+                    "streamed part",
+                )?;
+                let with_name = check_growth(
+                    current,
+                    name.as_ref().map_or(0, String::len),
+                    limit,
+                    "streamed part",
+                )?;
+                let next = check_growth(with_name, arguments.len(), limit, "streamed part")?;
                 if let Some(name) = name {
                     held_name.push_str(&name);
                 }
                 held_arguments.push_str(arguments);
-                held_arguments.len()
+                next
             }
             other => {
                 return Err(Error::Codec(format!(
@@ -551,7 +581,7 @@ impl StreamAccumulator {
         };
         let part = Part::ToolCall(ToolCallPart {
             call_id,
-            name,
+            name: ToolName::new(name).map_err(|error| Error::Codec(error.to_string()))?,
             arguments: Self::parse_tool_arguments(&arguments)?,
             continuity: None,
         });
@@ -579,6 +609,7 @@ impl StreamAccumulator {
     }
 
     fn grow_media(&mut self, index: u32, bytes: &[u8], last: bool) -> Result<Option<Part>> {
+        let limit = self.limits.max_part_bytes;
         match self.partials.entry(index).or_insert(Partial::Media {
             kind: MediaKind::Document,
             mime: MimeType::new("application/octet-stream")?,
@@ -591,13 +622,8 @@ impl StreamAccumulator {
                 metadata,
                 bytes: held,
             } => {
+                check_growth(held.len(), bytes.len(), limit, "streamed media")?;
                 held.extend_from_slice(bytes);
-                if held.len() > self.limits.max_part_bytes {
-                    return Err(Error::LimitExceeded {
-                        what: "streamed media".to_owned(),
-                        limit: self.limits.max_part_bytes,
-                    });
-                }
                 if last {
                     let part = Part::Media(MediaPart {
                         kind: *kind,
@@ -663,7 +689,7 @@ impl StreamAccumulator {
                     arguments,
                 } => Part::ToolCall(ToolCallPart {
                     call_id,
-                    name,
+                    name: ToolName::new(name).map_err(|error| Error::Codec(error.to_string()))?,
                     arguments: Self::parse_tool_arguments(&arguments)?,
                     continuity: self.continuity.remove(&index),
                 }),
@@ -735,6 +761,22 @@ impl StreamAccumulator {
         }
         Ok(())
     }
+}
+
+fn check_growth(current: usize, additional: usize, limit: usize, what: &str) -> Result<usize> {
+    let grown = current
+        .checked_add(additional)
+        .ok_or_else(|| Error::LimitExceeded {
+            what: what.to_owned(),
+            limit,
+        })?;
+    if grown > limit {
+        return Err(Error::LimitExceeded {
+            what: what.to_owned(),
+            limit,
+        });
+    }
+    Ok(grown)
 }
 
 /// The blocking form of the only primitive: collect a model stream into one
@@ -897,7 +939,7 @@ mod tests {
         }
         let result = accumulator.finish().expect("finish");
         let call = result.parts[0].as_tool_call().expect("tool call");
-        assert_eq!(call.name, "read_file");
+        assert_eq!(call.name.as_str(), "read_file");
         assert_eq!(call.arguments, serde_json::json!({ "path": "/tmp/a" }));
     }
 
@@ -1028,16 +1070,21 @@ mod tests {
 
     #[test]
     fn the_part_budget_is_enforced() {
-        let mut accumulator = StreamAccumulator::new(StreamLimits {
-            max_part_bytes: 3,
-            max_buffered_events: 1,
-        });
+        let mut accumulator = StreamAccumulator::new(StreamLimits { max_part_bytes: 3 });
         accumulator
             .apply(StreamEvent::TextDelta {
                 index: 0,
-                text: "abcd".to_owned(),
+                text: "abc".to_owned(),
+            })
+            .expect("within budget");
+        accumulator
+            .apply(StreamEvent::TextDelta {
+                index: 0,
+                text: "d".to_owned(),
             })
             .expect_err("over budget");
+        let message = accumulator.finish().expect("finish partial stream");
+        assert_eq!(message.parts[0].as_text().expect("text"), "abc");
     }
 
     struct FixtureModel {

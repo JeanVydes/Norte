@@ -20,7 +20,7 @@ workflow for contributing.
   model-call layers. `src/tool/` owns tool declarations, the registry and
   execution; `src/blob.rs`, `src/media_adapter.rs` and `src/preprocess.rs` own
   the blob and media seams. `src/lib.rs` lists the public modules and re-exports.
-  There are no `Session` or `Commit` domain types and no `norte-harness` crate.
+  Session lifecycle and conversation persistence belong to the host application.
 - `norte-http/` — shared HTTP transport, `VendorProfile`, auth schemes and
   `HttpMedia`.
 - `norte-openai/`, `norte-anthropic/`, `norte-gemini/` — the wire
@@ -31,17 +31,13 @@ workflow for contributing.
 - `norte-testing/` — the scripted model, fixture replayer, request probe
   and conformance suites.
 - `norte-macros/` — the procedural macros used across the workspace.
-- `examples/cookbook/` — recipe sources, not a current workspace member. Its
-  manifest still references the retired harness; it is not a validated guide to
-  the current API.
+- `examples/cookbook/` — older, standalone recipes; these are not current
+  workspace members and are not validated against the current API.
 - `benchmarks/` — benchmark sources with their own manifests and documentation,
   not current workspace members.
 - `guide/` — the multi-page user guide, written in Markdown and built with
   [mdBook](https://rust-lang.github.io/mdBook/) (`mdbook serve guide`). CI
   publishes it to GitHub Pages from `dev`; a pull request only builds it.
-- `guide/src/reference/requirements.md` — the requirements ledger: every id, the
-  code that enforces it and the suite or CI job that checks it. The code is the
-  source of truth; the ledger records the promise it implements.
 - top-level `Cargo.toml` — the workspace manifest.
 
 ## How to Contribute

@@ -219,7 +219,7 @@ mod tests {
                 Role::Assistant,
                 vec![Part::ToolCall(ToolCallPart {
                     call_id: call,
-                    name: "read".to_owned(),
+                    name: "read".parse().expect("tool name"),
                     arguments: serde_json::json!({ "path": "a.txt" }),
                     continuity: None,
                 })],

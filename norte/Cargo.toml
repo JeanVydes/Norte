@@ -1,13 +1,12 @@
 [package]
 name = "norte"
-description = "The Norte facade: build AI agents in Rust with OpenAI, Anthropic and Gemini adapters, durable sessions, streaming and tools"
+description = "The Norte facade: provider adapters, streaming model requests, and optional tool integrations"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-documentation = "https://jeanvydes.github.io/Norte/"
 authors.workspace = true
 readme = "../README.md"
 keywords = ["llm", "ai-agents", "openai", "anthropic", "gemini"]

@@ -47,6 +47,7 @@ pub(crate) fn build_with_quirks(
     quirks: &Quirks,
     request: &ModelRequest,
 ) -> Result<Value> {
+    request.params.validate()?;
     let (instructions, conversation) = split_instructions(&request.messages);
     let calls = call_index(continuity, &request.messages);
     let input = build_input(continuity, &calls, conversation, &request.cache_boundaries)?;
@@ -97,7 +98,7 @@ pub(crate) fn build_with_quirks(
     if !quirks.contains(&Quirk::NoPromptCacheKey) {
         if let Some(key) = request
             .extensions
-            .get(SESSION_EXTENSION)
+            .get(&SESSION_EXTENSION)
             .and_then(Value::as_str)
         {
             body.insert("prompt_cache_key".to_owned(), Value::String(key.to_owned()));
@@ -607,7 +608,7 @@ mod tests {
             Role::Assistant,
             vec![Part::ToolCall(ToolCallPart {
                 call_id,
-                name: "lookup".to_owned(),
+                name: "lookup".parse().expect("valid tool name"),
                 arguments: serde_json::json!({ "q": 1 }),
                 continuity: Some(token),
             })],
@@ -869,7 +870,7 @@ mod tests {
         let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
         request
             .extensions
-            .insert(SESSION_EXTENSION.to_owned(), serde_json::json!("ses_1"));
+            .insert(SESSION_EXTENSION, serde_json::json!("ses_1"));
         let body = build(&model(), &continuity(), &request).expect("build");
         assert_eq!(body["prompt_cache_key"], "ses_1");
     }
@@ -879,7 +880,7 @@ mod tests {
         let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
         request
             .extensions
-            .insert(SESSION_EXTENSION.to_owned(), serde_json::json!("ses_1"));
+            .insert(SESSION_EXTENSION, serde_json::json!("ses_1"));
         let quirks: Quirks = [Quirk::NoPromptCacheKey].into_iter().collect();
         let body = build_with_quirks(&model(), &continuity(), &quirks, &request).expect("build");
         assert!(body.get("prompt_cache_key").is_none());
@@ -940,9 +941,12 @@ mod tests {
         ] {
             let quirks = [quirk].into_iter().collect();
             let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
-            request
-                .extensions
-                .insert(format!("{WIRE_RESPONSES}:{field}"), value);
+            request.extensions.insert(
+                format!("{WIRE_RESPONSES}:{field}")
+                    .parse()
+                    .expect("extension key"),
+                value,
+            );
             let error = build_with_quirks(&model(), &continuity(), &quirks, &request)
                 .expect_err("rejected");
             assert!(matches!(error, Error::Capability { model: target, feature }
@@ -952,12 +956,18 @@ mod tests {
             .into_iter()
             .collect();
         let mut request = ModelRequest::new(model(), vec![]);
-        request
-            .extensions
-            .insert(format!("{WIRE_RESPONSES}:text.verbosity"), json!("low"));
-        request
-            .extensions
-            .insert(format!("{WIRE_RESPONSES}:reasoning.summary"), json!("auto"));
+        request.extensions.insert(
+            format!("{WIRE_RESPONSES}:text.verbosity")
+                .parse()
+                .expect("extension key"),
+            json!("low"),
+        );
+        request.extensions.insert(
+            format!("{WIRE_RESPONSES}:reasoning.summary")
+                .parse()
+                .expect("extension key"),
+            json!("auto"),
+        );
         build_with_quirks(&model(), &continuity(), &quirks, &request)
             .expect("unrestricted sibling fields");
     }
@@ -1035,11 +1045,13 @@ mod tests {
     fn vendor_extras_are_spliced_into_the_body() {
         let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
         request.extensions.insert(
-            "openai.responses:metadata".to_owned(),
+            "openai.responses:metadata".parse().expect("extension key"),
             serde_json::json!({ "trace": "x" }),
         );
         request.extensions.insert(
-            "google.gemini:safetySettings".to_owned(),
+            "google.gemini:safetySettings"
+                .parse()
+                .expect("extension key"),
             serde_json::json!([]),
         );
         let body = build(&model(), &continuity(), &request).expect("build");
@@ -1051,7 +1063,7 @@ mod tests {
     fn a_vendor_extra_may_not_override_adapter_state() {
         let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
         request.extensions.insert(
-            "openai.responses:model".to_owned(),
+            "openai.responses:model".parse().expect("extension key"),
             serde_json::json!("other"),
         );
         let error = build(&model(), &continuity(), &request).expect_err("collision");

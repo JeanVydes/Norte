@@ -76,6 +76,9 @@ fn build_body(
     request: &ModelRequest,
     generation: bool,
 ) -> Result<Value> {
+    if generation {
+        request.params.validate()?;
+    }
     let instructions = instruction_count(&request.messages);
     let names = call_names(continuity, &request.messages);
 
@@ -250,7 +253,7 @@ fn call_names(continuity: &GeminiContinuity, messages: &[Message]) -> CallNames 
                         .and_then(|call| opt_str(call, "name"))
                         .map(ToOwned::to_owned)
                 })
-                .unwrap_or_else(|| call.name.clone());
+                .unwrap_or_else(|| call.name.as_str().to_owned());
             names.insert(call.call_id, name);
         }
     }
@@ -659,7 +662,7 @@ mod tests {
             Role::Assistant,
             vec![Part::ToolCall(ToolCallPart {
                 call_id: CallId::new(),
-                name: "lookup".to_owned(),
+                name: "lookup".parse().expect("valid tool name"),
                 arguments: serde_json::json!({ "q": 1 }),
                 continuity: Some(token),
             })],
@@ -718,7 +721,7 @@ mod tests {
             Role::Assistant,
             vec![Part::ToolCall(ToolCallPart {
                 call_id,
-                name: "lookup".to_owned(),
+                name: "lookup".parse().expect("valid tool name"),
                 arguments: serde_json::json!({}),
                 continuity: Some(token),
             })],
@@ -1119,17 +1122,21 @@ mod tests {
     fn vendor_extras_are_spliced_into_the_body() {
         let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
         request.extensions.insert(
-            "google.gemini:safetySettings".to_owned(),
+            "google.gemini:safetySettings"
+                .parse()
+                .expect("extension key"),
             serde_json::json!([
                 { "category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE" }
             ]),
         );
         request.extensions.insert(
-            "google.gemini:generationConfig.responseModalities".to_owned(),
+            "google.gemini:generationConfig.responseModalities"
+                .parse()
+                .expect("extension key"),
             serde_json::json!(["TEXT", "IMAGE"]),
         );
         request.extensions.insert(
-            "openai.responses:metadata".to_owned(),
+            "openai.responses:metadata".parse().expect("extension key"),
             serde_json::json!({ "trace": "x" }),
         );
         let body = build(&model(), &continuity(), &request).expect("build");
@@ -1141,9 +1148,10 @@ mod tests {
     #[test]
     fn a_vendor_extra_may_not_override_adapter_state() {
         let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
-        request
-            .extensions
-            .insert("google.gemini:contents".to_owned(), serde_json::json!([]));
+        request.extensions.insert(
+            "google.gemini:contents".parse().expect("extension key"),
+            serde_json::json!([]),
+        );
         let error = build(&model(), &continuity(), &request).expect_err("collision");
         assert!(matches!(error, Error::Capability { .. }));
     }

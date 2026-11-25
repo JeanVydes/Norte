@@ -9,7 +9,7 @@ use crate::capability::{Capabilities, ReasoningRequest};
 use crate::domain::continuity::{ContinuityFragment, ContinuityToken, ReplayDecision};
 use crate::domain::message::Message;
 use crate::error::{Error, Result};
-use crate::id::{ModelRef, ToolName};
+use crate::id::{ModelRef, ToolName, VendorExtensionKey, WireFamily};
 use crate::stream::StreamEvent;
 use crate::tool::ToolSpec;
 
@@ -18,7 +18,7 @@ pub type ModelStream = Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send + '
 
 /// Request extension key carrying the originating session id, so adapters can
 /// derive a stable provider cache key without inventing their own identity.
-pub const SESSION_EXTENSION: &str = "session";
+pub const SESSION_EXTENSION: VendorExtensionKey = VendorExtensionKey::Session;
 
 /// Session-metadata key carrying the effective request options of the last turn
 /// (FR-EXP-7). This is a convention for hosts that persist turn options;
@@ -100,6 +100,63 @@ pub struct GenerationParams {
 }
 
 impl GenerationParams {
+    /// Checks values that are invalid independently of a provider's supported
+    /// parameter ranges.
+    ///
+    /// Provider-specific ranges remain the adapter's responsibility; this
+    /// method rejects non-finite numbers and universally invalid sampling
+    /// bounds before values reach JSON serialization.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidInput`] for a non-finite number or an invalid
+    /// probability/count bound.
+    pub fn validate(&self) -> Result<()> {
+        let finite = [
+            ("temperature", self.temperature),
+            ("top_p", self.top_p),
+            ("min_p", self.min_p),
+            ("top_a", self.top_a),
+            ("frequency_penalty", self.frequency_penalty),
+            ("presence_penalty", self.presence_penalty),
+            ("repetition_penalty", self.repetition_penalty),
+        ];
+        for (name, value) in finite {
+            if value.is_some_and(|value| !value.is_finite()) {
+                return Err(Error::InvalidInput(format!(
+                    "generation parameter `{name}` must be finite"
+                )));
+            }
+        }
+        for (name, value) in [("top_p", self.top_p), ("min_p", self.min_p)] {
+            if value.is_some_and(|value| !(0.0..=1.0).contains(&value) || value == 0.0) {
+                return Err(Error::InvalidInput(format!(
+                    "generation parameter `{name}` must be in (0, 1]"
+                )));
+            }
+        }
+        if self.temperature.is_some_and(|value| value < 0.0) {
+            return Err(Error::InvalidInput(
+                "generation parameter `temperature` must be non-negative".to_owned(),
+            ));
+        }
+        if self.top_k == Some(0) {
+            return Err(Error::InvalidInput(
+                "generation parameter `top_k` must be greater than zero".to_owned(),
+            ));
+        }
+        if self
+            .logit_bias
+            .as_ref()
+            .is_some_and(|bias| bias.values().any(|value| !value.is_finite()))
+        {
+            return Err(Error::InvalidInput(
+                "generation parameter `logit_bias` values must be finite".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
     /// True when every field is unset, i.e. the parameters change nothing.
     #[must_use]
     pub fn is_default(&self) -> bool {
@@ -162,7 +219,7 @@ pub struct TurnOptions {
     /// splices the field into its request body; a path that collides with
     /// adapter-owned state is a typed capability error (Section 12).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub extensions: BTreeMap<String, Value>,
+    pub extensions: BTreeMap<VendorExtensionKey, Value>,
 }
 
 impl TurnOptions {
@@ -189,24 +246,21 @@ impl TurnOptions {
     }
 }
 
-/// Accumulation and host-channel limits, not a total memory budget.
+/// The bound applied by [`crate::StreamAccumulator`] to one unfinished part.
 ///
-/// [`crate::StreamAccumulator`] enforces `max_part_bytes`. Hosts own event
-/// buffering; adapters and transports may enforce additional wire-size limits.
+/// Event-channel capacity is owned by the consumer because the model port does
+/// not create a channel. Adapters and transports may enforce additional wire
+/// size limits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StreamLimits {
     /// Maximum bytes held for one unfinished part.
     pub max_part_bytes: usize,
-    /// Event-channel capacity for a host that buffers model events.
-    /// The model port does not create a channel or enforce this value.
-    pub max_buffered_events: usize,
 }
 
 impl Default for StreamLimits {
     fn default() -> Self {
         Self {
             max_part_bytes: 8 * 1024 * 1024,
-            max_buffered_events: 256,
         }
     }
 }
@@ -226,8 +280,8 @@ pub struct ModelRequest {
     pub reasoning: ReasoningRequest,
     /// The effective generation parameters (FR-ENG-9).
     pub params: GenerationParams,
-    /// Limits for the consumer's accumulator and any host event channel.
-    /// These do not configure transport frame limits.
+    /// Limits applied by Norte's stream accumulator. These do not configure
+    /// transport frame sizes or host event-channel capacity.
     pub limits: StreamLimits,
     /// Positions (exclusive end indices into `messages`) at which the provider
     /// may place a prompt-cache breakpoint. Deterministic: computed by
@@ -236,7 +290,7 @@ pub struct ModelRequest {
     pub cache_boundaries: Vec<u32>,
     /// Vendor request extras, keyed `<wire-family>:<field>`; the adapter whose
     /// family matches splices them into its body (Section 12).
-    pub extensions: BTreeMap<String, Value>,
+    pub extensions: BTreeMap<VendorExtensionKey, Value>,
 }
 
 impl ModelRequest {
@@ -274,12 +328,14 @@ impl ModelRequest {
 pub fn splice_vendor_extensions(
     model: &ModelRef,
     family: &str,
-    extensions: &BTreeMap<String, Value>,
+    extensions: &BTreeMap<VendorExtensionKey, Value>,
     body: &mut serde_json::Map<String, Value>,
 ) -> Result<()> {
-    let prefix = format!("{family}:");
     for (key, value) in extensions {
-        let Some(path) = key.strip_prefix(&prefix) else {
+        if key.family().map(WireFamily::as_str) != Some(family) {
+            continue;
+        }
+        let Some(path) = key.path() else {
             continue;
         };
         let segments: Vec<&str> = path.split('.').collect();
@@ -290,7 +346,7 @@ pub fn splice_vendor_extensions(
 
 fn insert_extension(
     model: &ModelRef,
-    key: &str,
+    key: &VendorExtensionKey,
     segments: &[&str],
     value: Value,
     body: &mut serde_json::Map<String, Value>,
@@ -402,18 +458,26 @@ mod tests {
     fn vendor_extensions_apply_only_for_the_matching_family() {
         let mut extensions = BTreeMap::new();
         extensions.insert(
-            "google.gemini:safetySettings".to_owned(),
+            "google.gemini:safetySettings"
+                .parse()
+                .expect("extension key"),
             json!([{ "category": "HARM" }]),
         );
         extensions.insert(
-            "google.gemini:generationConfig.responseModalities".to_owned(),
+            "google.gemini:generationConfig.responseModalities"
+                .parse()
+                .expect("extension key"),
             json!(["TEXT"]),
         );
-        extensions.insert("openai.responses:metadata".to_owned(), json!({ "k": 1 }));
+        extensions.insert(
+            "openai.responses:metadata".parse().expect("extension key"),
+            json!({ "k": 1 }),
+        );
 
         let mut body = serde_json::Map::new();
         body.insert("generationConfig".to_owned(), json!({ "temperature": 0.5 }));
-        splice_vendor_extensions(&model(), "google.gemini", &extensions, &mut body)
+        let family = WireFamily::new("google.gemini").expect("wire family");
+        splice_vendor_extensions(&model(), family.as_str(), &extensions, &mut body)
             .expect("splice");
 
         assert_eq!(body["safetySettings"][0]["category"], "HARM");
@@ -425,11 +489,15 @@ mod tests {
     #[test]
     fn a_vendor_extension_may_not_override_a_request_field() {
         let mut extensions = BTreeMap::new();
-        extensions.insert("google.gemini:contents".to_owned(), json!([]));
+        extensions.insert(
+            "google.gemini:contents".parse().expect("extension key"),
+            json!([]),
+        );
 
         let mut body = serde_json::Map::new();
         body.insert("contents".to_owned(), json!([{ "role": "user" }]));
-        let error = splice_vendor_extensions(&model(), "google.gemini", &extensions, &mut body)
+        let family = WireFamily::new("google.gemini").expect("wire family");
+        let error = splice_vendor_extensions(&model(), family.as_str(), &extensions, &mut body)
             .expect_err("collision");
         assert!(matches!(error, Error::Capability { .. }));
     }
@@ -437,11 +505,15 @@ mod tests {
     #[test]
     fn a_vendor_extension_may_not_descend_through_a_scalar() {
         let mut extensions = BTreeMap::new();
-        extensions.insert("google.gemini:model.extra".to_owned(), json!(true));
+        extensions.insert(
+            "google.gemini:model.extra".parse().expect("extension key"),
+            json!(true),
+        );
 
         let mut body = serde_json::Map::new();
         body.insert("model".to_owned(), json!("gemini-2.5-pro"));
-        let error = splice_vendor_extensions(&model(), "google.gemini", &extensions, &mut body)
+        let family = WireFamily::new("google.gemini").expect("wire family");
+        let error = splice_vendor_extensions(&model(), family.as_str(), &extensions, &mut body)
             .expect_err("scalar");
         assert!(matches!(error, Error::Capability { .. }));
     }
@@ -450,21 +522,101 @@ mod tests {
     fn turn_options_overlay_merges_extensions_per_key() {
         let base = TurnOptions {
             extensions: BTreeMap::from([
-                ("a".to_owned(), json!(1)),
-                ("shared".to_owned(), json!("base")),
+                ("google.gemini:a".parse().expect("extension key"), json!(1)),
+                (
+                    "google.gemini:shared".parse().expect("extension key"),
+                    json!("base"),
+                ),
             ]),
             ..TurnOptions::default()
         };
         let over = TurnOptions {
             extensions: BTreeMap::from([
-                ("b".to_owned(), json!(2)),
-                ("shared".to_owned(), json!("over")),
+                ("google.gemini:b".parse().expect("extension key"), json!(2)),
+                (
+                    "google.gemini:shared".parse().expect("extension key"),
+                    json!("over"),
+                ),
             ]),
             ..TurnOptions::default()
         };
         let merged = over.over(&base);
-        assert_eq!(merged.extensions.get("a"), Some(&json!(1)));
-        assert_eq!(merged.extensions.get("b"), Some(&json!(2)));
-        assert_eq!(merged.extensions.get("shared"), Some(&json!("over")));
+        assert_eq!(
+            merged
+                .extensions
+                .get(&"google.gemini:a".parse().expect("key")),
+            Some(&json!(1))
+        );
+        assert_eq!(
+            merged
+                .extensions
+                .get(&"google.gemini:b".parse().expect("key")),
+            Some(&json!(2))
+        );
+        assert_eq!(
+            merged
+                .extensions
+                .get(&"google.gemini:shared".parse().expect("key")),
+            Some(&json!("over"))
+        );
+    }
+
+    #[test]
+    fn extension_keys_round_trip_as_map_keys_and_validate_paths() {
+        let extensions = BTreeMap::from([
+            (VendorExtensionKey::Session, json!("session-1")),
+            (
+                "google.gemini:generationConfig.responseModalities"
+                    .parse()
+                    .expect("vendor extension key"),
+                json!(["TEXT"]),
+            ),
+        ]);
+        let encoded = serde_json::to_string(&extensions).expect("serialize map");
+        let decoded: BTreeMap<VendorExtensionKey, Value> =
+            serde_json::from_str(&encoded).expect("deserialize map");
+        assert_eq!(decoded, extensions);
+        assert!(
+            "google.gemini:generationConfig..temperature"
+                .parse::<VendorExtensionKey>()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn generation_params_reject_non_finite_and_invalid_bounds() {
+        assert!(
+            GenerationParams {
+                temperature: Some(f32::NAN),
+                ..GenerationParams::default()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            GenerationParams {
+                top_p: Some(0.0),
+                ..GenerationParams::default()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            GenerationParams {
+                top_k: Some(0),
+                ..GenerationParams::default()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            GenerationParams {
+                top_p: Some(0.9),
+                temperature: Some(1.0),
+                ..GenerationParams::default()
+            }
+            .validate()
+            .is_ok()
+        );
     }
 }

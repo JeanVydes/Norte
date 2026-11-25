@@ -59,6 +59,9 @@ fn build_body(
     request: &ModelRequest,
     stream: bool,
 ) -> Result<Value> {
+    if stream {
+        request.params.validate()?;
+    }
     let instructions = instruction_count(&request.messages);
     let calls = call_index(continuity, &request.messages);
 
@@ -918,7 +921,7 @@ mod tests {
             Role::Assistant,
             vec![Part::ToolCall(ToolCallPart {
                 call_id,
-                name: "lookup".to_owned(),
+                name: "lookup".parse().expect("valid tool name"),
                 arguments: serde_json::json!({ "q": 1 }),
                 continuity: Some(token),
             })],
@@ -1238,7 +1241,7 @@ mod tests {
             Role::Assistant,
             vec![Part::ToolCall(ToolCallPart {
                 call_id,
-                name: "x".to_owned(),
+                name: "x".parse().expect("valid tool name"),
                 arguments: serde_json::json!({}),
                 continuity: Some(token),
             })],
@@ -1252,7 +1255,9 @@ mod tests {
     fn vendor_extras_are_spliced_into_the_body() {
         let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
         request.extensions.insert(
-            "anthropic.messages:metadata".to_owned(),
+            "anthropic.messages:metadata"
+                .parse()
+                .expect("extension key"),
             serde_json::json!({ "trace": "x" }),
         );
         let body = build(&model(), &continuity(), &request).expect("build");
@@ -1263,7 +1268,7 @@ mod tests {
     fn a_vendor_extra_may_not_override_adapter_state() {
         let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
         request.extensions.insert(
-            "anthropic.messages:model".to_owned(),
+            "anthropic.messages:model".parse().expect("extension key"),
             serde_json::json!("other"),
         );
         let error = build(&model(), &continuity(), &request).expect_err("collision");

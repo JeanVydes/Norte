@@ -59,7 +59,7 @@ pub use domain::role::Role;
 pub use error::{Error, ProviderError, ProviderErrorKind, Result};
 pub use id::{
     BlobId, CallId, Digest, GenerationId, ModelId, ModelRef, NodeId, ProviderId, SessionId,
-    ToolName, WireFamily,
+    ToolName, VendorExtensionKey, WireFamily,
 };
 pub use layer::{
     Continuation, Layer, LayerContext, LayerStack, ModelContinuation, ShortCircuitReason,

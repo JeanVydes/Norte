@@ -1,13 +1,12 @@
 //! The blob port: content-addressed bytes, for media and for anything else too
 //! large to travel inline.
 //!
-//! This stays in the core because [`MediaAdapter`]
+//! This stays in the core because [`crate::media_adapter::MediaAdapter`]
 //! names it and `norte-http::HttpMedia` implements that port: moving the blob
-//! store out would point an adapter at `norte-harness`.
+//! store out would make the adapter depend on a host-specific persistence layer.
 //!
-//! The *session* store is a different question. That one exists because there is
-//! a runtime that commits turns and parks approvals, and it lives in
-//! `norte-harness` with the runtime.
+//! Session and conversation storage are intentionally host-owned; this crate
+//! defines no session-store port.
 
 use std::collections::HashMap;
 

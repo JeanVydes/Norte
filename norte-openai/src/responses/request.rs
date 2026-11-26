@@ -50,7 +50,12 @@ pub(crate) fn build_with_quirks(
     request.params.validate()?;
     let (instructions, conversation) = split_instructions(&request.messages);
     let calls = call_index(continuity, &request.messages);
-    let input = build_input(continuity, &calls, conversation, &request.cache_boundaries)?;
+    let boundaries: &[u32] = if quirks.contains(&Quirk::NoPromptCacheBreakpoints) {
+        &[]
+    } else {
+        request.cache_boundaries.as_slice()
+    };
+    let input = build_input(continuity, &calls, conversation, boundaries)?;
 
     let mut body = serde_json::Map::new();
     body.insert(
@@ -135,6 +140,23 @@ fn validate_quirks(
             Quirk::NoPromptCacheKey,
             "prompt_cache_key",
             body.contains_key("prompt_cache_key"),
+        ),
+        (
+            Quirk::NoPromptCacheBreakpoints,
+            "input[*].content[*].prompt_cache_breakpoint",
+            body.get("input")
+                .and_then(Value::as_array)
+                .is_some_and(|items| {
+                    items.iter().any(|item| {
+                        item.get("content")
+                            .and_then(Value::as_array)
+                            .is_some_and(|blocks| {
+                                blocks
+                                    .iter()
+                                    .any(|block| block.get("prompt_cache_breakpoint").is_some())
+                            })
+                    })
+                }),
         ),
     ] {
         if quirks.contains(&quirk) && requested {
@@ -613,6 +635,27 @@ mod tests {
                 .get("prompt_cache_breakpoint")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn unsupported_breakpoint_quirk_keeps_session_cache_key() {
+        let mut request =
+            ModelRequest::new(model(), vec![Message::user("one"), Message::user("two")]);
+        request.cache_boundaries = vec![1, 2];
+        request
+            .extensions
+            .insert(SESSION_EXTENSION, serde_json::json!("session-1"));
+        let quirks = [Quirk::NoPromptCacheBreakpoints].into_iter().collect();
+
+        let body = build_with_quirks(&model(), &continuity(), &quirks, &request)
+            .expect("Codex Responses body");
+
+        assert_eq!(body["prompt_cache_key"], "session-1");
+        for item in body["input"].as_array().expect("input") {
+            for block in item["content"].as_array().expect("content") {
+                assert!(block.get("prompt_cache_breakpoint").is_none());
+            }
+        }
     }
 
     #[test]

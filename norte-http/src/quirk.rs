@@ -35,6 +35,9 @@ pub enum Quirk {
     /// The vendor rejects `prompt_cache_key` on Chat Completions and Responses.
     /// Omit the automatic session key; reject an explicit vendor extension.
     NoPromptCacheKey,
+    /// The Responses vendor rejects `prompt_cache_breakpoint` on input content.
+    /// Omit automatic breakpoints; reject an extension that tries to add one.
+    NoPromptCacheBreakpoints,
 }
 
 /// An ordered set of [`Quirk`]s with the standard [`BTreeSet`] API.

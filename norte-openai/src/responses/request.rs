@@ -123,6 +123,12 @@ fn validate_quirks(
     // Inspect nested fields after splicing both object and dotted extensions.
     for (quirk, field, requested) in [
         (
+            Quirk::NoTemperature,
+            "temperature",
+            body.contains_key("temperature"),
+        ),
+        (Quirk::NoTopP, "top_p", body.contains_key("top_p")),
+        (
             Quirk::NoStructuredOutput,
             "text.format",
             body.get("text")

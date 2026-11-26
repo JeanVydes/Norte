@@ -2,6 +2,7 @@ use norte_core::{
     CallId, Error, MediaPart, MediaSource, Message, ModelRef, ModelRequest, Part, ReasoningEffort,
     ReasoningRequest, Result, Role, ToolKind, ToolResultPart, ToolSpec, splice_vendor_extensions,
 };
+use norte_http::{Quirk, Quirks};
 use serde_json::{Value, json};
 
 use crate::WIRE_GENERATE;
@@ -22,6 +23,61 @@ pub(crate) fn build(
     request: &ModelRequest,
 ) -> Result<Value> {
     build_body(model, continuity, request, true)
+}
+
+/// Builds a generation body and applies host-declared wire restrictions.
+pub(crate) fn build_with_quirks(
+    model: &ModelRef,
+    continuity: &GeminiContinuity,
+    request: &ModelRequest,
+    quirks: &Quirks,
+) -> Result<Value> {
+    let body = build(model, continuity, request)?;
+    for (quirk, field, present) in [
+        (
+            Quirk::NoTemperature,
+            "generationConfig.temperature",
+            body.pointer("/generationConfig/temperature").is_some(),
+        ),
+        (
+            Quirk::NoTopP,
+            "generationConfig.topP",
+            body.pointer("/generationConfig/topP").is_some(),
+        ),
+        (
+            Quirk::NoStructuredOutput,
+            "generationConfig.responseSchema",
+            body.pointer("/generationConfig/responseSchema").is_some()
+                || body
+                    .pointer("/generationConfig/responseJsonSchema")
+                    .is_some()
+                || body.pointer("/generationConfig/responseMimeType").is_some(),
+        ),
+        (
+            Quirk::NoStopSequences,
+            "generationConfig.stopSequences",
+            body.pointer("/generationConfig/stopSequences").is_some(),
+        ),
+        (
+            Quirk::NoSeed,
+            "generationConfig.seed",
+            body.pointer("/generationConfig/seed").is_some(),
+        ),
+        (
+            Quirk::NoReasoningEffort,
+            "generationConfig.thinkingConfig.thinkingLevel",
+            body.pointer("/generationConfig/thinkingConfig/thinkingLevel")
+                .is_some(),
+        ),
+    ] {
+        if quirks.contains(&quirk) && present {
+            return Err(Error::Capability {
+                model: model.clone(),
+                feature: format!("`{field}` (the vendor declares {quirk:?})"),
+            });
+        }
+    }
+    Ok(body)
 }
 
 /// Builds the wire body for a `countTokens` call, which accepts the prompt but
@@ -608,6 +664,54 @@ mod tests {
 
     fn continuity() -> GeminiContinuity {
         GeminiContinuity::new(WireFamily::new(WIRE_GENERATE).expect("family"), model())
+    }
+
+    #[test]
+    fn declared_quirks_reject_generation_fields_and_extensions() {
+        for (quirk, field, value) in [
+            (
+                Quirk::NoStructuredOutput,
+                "responseSchema",
+                json!({"type":"object"}),
+            ),
+            (Quirk::NoStopSequences, "stopSequences", json!(["stop"])),
+            (Quirk::NoSeed, "seed", json!(7)),
+            (Quirk::NoTemperature, "temperature", json!(0.5)),
+            (Quirk::NoTopP, "topP", json!(0.5)),
+            (
+                Quirk::NoReasoningEffort,
+                "thinkingConfig",
+                json!({"thinkingLevel":"HIGH"}),
+            ),
+        ] {
+            let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
+            request.extensions.insert(
+                format!("{WIRE_GENERATE}:generationConfig.{field}")
+                    .parse()
+                    .unwrap(),
+                value,
+            );
+            let quirks = [quirk].into_iter().collect();
+            assert!(
+                matches!(
+                    build_with_quirks(&model(), &continuity(), &request, &quirks),
+                    Err(Error::Capability { .. })
+                ),
+                "{quirk:?}"
+            );
+            assert!(build(&model(), &continuity(), &request).is_ok());
+        }
+        let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
+        request.params.seed = Some(7);
+        assert!(matches!(
+            build_with_quirks(
+                &model(),
+                &continuity(),
+                &request,
+                &[Quirk::NoSeed].into_iter().collect()
+            ),
+            Err(Error::Capability { .. })
+        ));
     }
 
     #[test]

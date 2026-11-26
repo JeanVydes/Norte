@@ -71,6 +71,21 @@ impl VendorProfile {
         self
     }
 
+    /// Checks that all declared quirks have a meaning for the adapter.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error naming the first quirk that the adapter cannot apply.
+    pub fn validate_quirks(&self, supported: &[Quirk]) -> Result<()> {
+        if let Some(quirk) = self.quirks.iter().find(|quirk| !supported.contains(quirk)) {
+            return Err(Error::InvalidInput(format!(
+                "quirk {quirk:?} is not applicable to wire {}",
+                self.wire
+            )));
+        }
+        Ok(())
+    }
+
     /// The deviations this profile declares.
     #[must_use]
     pub fn quirks(&self) -> &Quirks {

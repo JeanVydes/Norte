@@ -8,7 +8,7 @@ pub use stream::FuzzMessages;
 use norte_core::{
     Capabilities, ContinuityAdapter, Model, ModelRef, ModelRequest, ModelStream, Result, WireFamily,
 };
-use norte_http::{HttpClient, VendorProfile};
+use norte_http::{HttpClient, Quirk, VendorProfile};
 use serde_json::Value;
 
 use crate::WIRE_MESSAGES;
@@ -43,6 +43,13 @@ impl AnthropicMessages {
         profile: VendorProfile,
         capabilities: Capabilities,
     ) -> Result<Self> {
+        profile.validate_quirks(&[
+            Quirk::NoStopSequences,
+            Quirk::NoTemperature,
+            Quirk::NoTopP,
+            Quirk::NoReasoningEffort,
+            Quirk::NoPromptCacheBreakpoints,
+        ])?;
         let family = WireFamily::new(WIRE_MESSAGES)?;
         Ok(Self {
             continuity: AnthropicContinuity::new(family, reference.clone()),
@@ -75,11 +82,13 @@ impl AnthropicMessages {
     ///
     /// Returns a codec error when a part cannot be expressed on this wire.
     pub fn request_body(&self, request: &ModelRequest) -> Result<Value> {
-        request::build(
+        request::build_with_quirks(
             &self.reference,
             &self.continuity,
             &self.capabilities,
             request,
+            self.profile.quirks(),
+            true,
         )
     }
 
@@ -92,11 +101,13 @@ impl AnthropicMessages {
     /// Returns an error when the request cannot be expressed on this wire or the
     /// endpoint fails.
     pub async fn count_tokens(&self, request: &ModelRequest) -> Result<u64> {
-        let body = request::build_count(
+        let body = request::build_with_quirks(
             &self.reference,
             &self.continuity,
             &self.capabilities,
             request,
+            self.profile.quirks(),
+            false,
         )?;
         let response = self
             .client
@@ -128,12 +139,7 @@ impl Model for AnthropicMessages {
     }
 
     async fn stream(&self, request: ModelRequest) -> Result<ModelStream> {
-        let body = request::build(
-            &self.reference,
-            &self.continuity,
-            &self.capabilities,
-            &request,
-        )?;
+        let body = self.request_body(&request)?;
         let sse = self.client.send_sse(&self.profile, PATH, &body).await?;
         Ok(stream::map(sse, self.continuity.clone()))
     }

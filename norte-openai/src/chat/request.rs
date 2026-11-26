@@ -145,6 +145,8 @@ fn validate_quirks(
         (Quirk::NoStructuredOutput, "response_format"),
         (Quirk::NoStopSequences, "stop"),
         (Quirk::NoSeed, "seed"),
+        (Quirk::NoTemperature, "temperature"),
+        (Quirk::NoTopP, "top_p"),
         (Quirk::NoReasoningEffort, "reasoning_effort"),
         (Quirk::NoPromptCacheKey, "prompt_cache_key"),
     ] {

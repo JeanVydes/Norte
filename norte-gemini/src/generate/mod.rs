@@ -9,7 +9,7 @@ use norte_core::{
     Capabilities, ContinuityAdapter, Model, ModelId, ModelRef, ModelRequest, ModelStream, Result,
     WireFamily,
 };
-use norte_http::{HttpClient, VendorProfile};
+use norte_http::{HttpClient, Quirk, VendorProfile};
 use serde_json::Value;
 
 use crate::WIRE_GENERATE;
@@ -38,6 +38,14 @@ impl GeminiGenerate {
         profile: VendorProfile,
         capabilities: Capabilities,
     ) -> Result<Self> {
+        profile.validate_quirks(&[
+            Quirk::NoStructuredOutput,
+            Quirk::NoStopSequences,
+            Quirk::NoSeed,
+            Quirk::NoTemperature,
+            Quirk::NoTopP,
+            Quirk::NoReasoningEffort,
+        ])?;
         let family = WireFamily::new(WIRE_GENERATE)?;
         Ok(Self {
             continuity: GeminiContinuity::new(family, reference.clone()),
@@ -70,7 +78,12 @@ impl GeminiGenerate {
     ///
     /// Returns a codec error when a part cannot be expressed on this wire.
     pub fn request_body(&self, request: &ModelRequest) -> Result<Value> {
-        request::build(&self.reference, &self.continuity, request)
+        request::build_with_quirks(
+            &self.reference,
+            &self.continuity,
+            request,
+            self.profile.quirks(),
+        )
     }
 
     /// Counts the tokens a request would consume, using the vendor's
@@ -157,7 +170,7 @@ impl Model for GeminiGenerate {
     }
 
     async fn stream(&self, request: ModelRequest) -> Result<ModelStream> {
-        let body = request::build(&self.reference, &self.continuity, &request)?;
+        let body = self.request_body(&request)?;
         let path = stream_path(&self.reference.model);
         let sse = self.client.send_sse(&self.profile, &path, &body).await?;
         Ok(stream::map(sse, self.continuity.clone()))

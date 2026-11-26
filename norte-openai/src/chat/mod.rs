@@ -8,7 +8,7 @@ pub use stream::FuzzChat;
 use norte_core::{
     Capabilities, ContinuityAdapter, Model, ModelRef, ModelRequest, ModelStream, Result, WireFamily,
 };
-use norte_http::{HttpClient, VendorProfile};
+use norte_http::{HttpClient, Quirk, VendorProfile};
 use serde_json::Value;
 
 use crate::WIRE_CHAT;
@@ -45,6 +45,16 @@ impl OpenAiChat {
         profile: VendorProfile,
         capabilities: Capabilities,
     ) -> Result<Self> {
+        profile.validate_quirks(&[
+            Quirk::NoStreamUsage,
+            Quirk::NoStructuredOutput,
+            Quirk::NoStopSequences,
+            Quirk::NoSeed,
+            Quirk::NoTemperature,
+            Quirk::NoTopP,
+            Quirk::NoReasoningEffort,
+            Quirk::NoPromptCacheKey,
+        ])?;
         let family = WireFamily::new(WIRE_CHAT)?;
         Ok(Self {
             continuity: OpenAiContinuity::new(family, reference.clone()),

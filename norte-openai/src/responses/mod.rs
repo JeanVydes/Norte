@@ -8,7 +8,7 @@ pub use stream::FuzzResponses;
 use norte_core::{
     Capabilities, ContinuityAdapter, Model, ModelRef, ModelRequest, ModelStream, Result, WireFamily,
 };
-use norte_http::{HttpClient, VendorProfile};
+use norte_http::{HttpClient, Quirk, VendorProfile};
 use serde_json::Value;
 
 use crate::WIRE_RESPONSES;
@@ -40,6 +40,14 @@ impl OpenAiResponses {
         profile: VendorProfile,
         capabilities: Capabilities,
     ) -> Result<Self> {
+        profile.validate_quirks(&[
+            Quirk::NoStructuredOutput,
+            Quirk::NoTemperature,
+            Quirk::NoTopP,
+            Quirk::NoReasoningEffort,
+            Quirk::NoPromptCacheKey,
+            Quirk::NoPromptCacheBreakpoints,
+        ])?;
         let family = WireFamily::new(WIRE_RESPONSES)?;
         Ok(Self {
             continuity: OpenAiContinuity::new(family, reference.clone()),

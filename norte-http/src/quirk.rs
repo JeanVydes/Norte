@@ -9,10 +9,22 @@ use serde::{Deserialize, Serialize};
 /// where safe and return typed capability errors for explicitly requested
 /// incompatible features, including features supplied through extensions.
 ///
-/// The set is non-exhaustive: new quirks may be added without a breaking change.
+/// Each quirk must be declared by the host and supported by the selected adapter.
+/// Adapter constructors reject quirks that have no meaning for their wire.
+///
+/// | Quirk | Chat | Responses | Messages | Generate |
+/// | --- | --- | --- | --- | --- |
+/// | NoStreamUsage | yes | — | — | — |
+/// | NoStructuredOutput | yes | yes | — | yes |
+/// | NoStopSequences | yes | — | yes | yes |
+/// | NoTemperature, NoTopP | yes | yes | yes | yes |
+/// | NoSeed | yes | — | — | yes |
+/// | NoReasoningEffort | yes | yes | yes | yes |
+/// | NoPromptCacheKey | yes | yes | — | — |
+/// | NoPromptCacheBreakpoints | — | yes | yes | — |
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[non_exhaustive]
 pub enum Quirk {
     /// The wire does not accept a request to include token usage in the stream.
     /// Omit the automatic usage request.
@@ -22,6 +34,10 @@ pub enum Quirk {
     NoStructuredOutput,
     /// The wire does not accept stop sequences.
     NoStopSequences,
+    /// The wire does not accept a temperature parameter.
+    NoTemperature,
+    /// The wire does not accept a top-p sampling parameter.
+    NoTopP,
     /// The wire does not accept a generation seed.
     NoSeed,
     /// The wire does not accept a requested reasoning effort.

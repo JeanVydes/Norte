@@ -4,6 +4,12 @@ use serde::{Deserialize, Serialize};
 
 /// A known deviation from the expected behavior of a wire protocol.
 ///
+/// A quirk describes an endpoint's deviation from its wire, not whether an
+/// individual model supports a generation parameter. Model-specific support
+/// belongs in model capability metadata. For example, `NoTemperature` is for
+/// an endpoint that rejects the wire field across its models, not a model that
+/// happens not to support temperature.
+///
 /// A host declares applicable deviations on the
 /// [`VendorProfile`](crate::VendorProfile). Adapters omit automatic behavior
 /// where safe and return typed capability errors for explicitly requested

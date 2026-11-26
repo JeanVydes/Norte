@@ -2,41 +2,35 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-/// A known deviation a wire-compatible vendor has from the reference wire
-/// (FR-OAI-2).
+/// A known deviation from the expected behavior of a wire protocol.
 ///
-/// The framework ships no vendor table: a host declares the deviations it knows
-/// about on the [`VendorProfile`](crate::VendorProfile). Adapters omit automatic
-/// fields and reject explicitly requested incompatible features with a typed
-/// capability error, including features supplied through vendor extensions.
-/// Deviations are explicit host decisions rather than runtime discoveries.
+/// A host declares applicable deviations on the
+/// [`VendorProfile`](crate::VendorProfile). Adapters omit automatic behavior
+/// where safe and return typed capability errors for explicitly requested
+/// incompatible features, including features supplied through extensions.
 ///
 /// The set is non-exhaustive: new quirks may be added without a breaking change.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum Quirk {
-    /// Chat Completions rejects `stream_options`; omit automatic stream usage.
-    /// Does not apply to Responses, which has no such request field.
+    /// The wire does not accept a request to include token usage in the stream.
+    /// Omit the automatic usage request.
     NoStreamUsage,
-    /// The vendor rejects structured output: `response_format` on Chat
-    /// Completions or `text.format` on Responses. Explicit requests are typed
+    /// The wire does not accept structured output. Explicit requests are typed
     /// capability errors, never silent omissions.
     NoStructuredOutput,
-    /// Chat Completions rejects `stop` sequences. Does not apply to Responses,
-    /// which does not map neutral stop sequences.
+    /// The wire does not accept stop sequences.
     NoStopSequences,
-    /// Chat Completions rejects `seed`. Does not apply to Responses, which does
-    /// not map the neutral seed parameter.
+    /// The wire does not accept a generation seed.
     NoSeed,
-    /// The vendor rejects `reasoning_effort` on Chat Completions or
-    /// `reasoning.effort` on Responses.
+    /// The wire does not accept a requested reasoning effort.
     NoReasoningEffort,
-    /// The vendor rejects `prompt_cache_key` on Chat Completions and Responses.
-    /// Omit the automatic session key; reject an explicit vendor extension.
+    /// The wire does not accept a session-scoped prompt cache key. Omit the
+    /// automatic key and reject an explicit extension that tries to add one.
     NoPromptCacheKey,
-    /// The Responses vendor rejects `prompt_cache_breakpoint` on input content.
-    /// Omit automatic breakpoints; reject an extension that tries to add one.
+    /// The wire does not accept explicit prompt cache boundary markers. Omit
+    /// automatic markers and reject an extension that tries to add one.
     NoPromptCacheBreakpoints,
 }
 

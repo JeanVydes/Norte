@@ -25,7 +25,7 @@ pub struct VendorProfile {
     pub auth: AuthScheme,
     /// Extra headers attached to every request.
     pub headers: BTreeMap<String, String>,
-    /// The deviations this vendor has from the reference wire.
+    /// The deviations this provider has from the expected wire behavior.
     pub quirks: Quirks,
 }
 
@@ -64,7 +64,7 @@ impl VendorProfile {
         self
     }
 
-    /// Declares a known deviation from the reference wire (FR-OAI-2).
+    /// Declares a known deviation from this profile's wire behavior.
     #[must_use]
     pub fn with_quirk(mut self, quirk: Quirk) -> Self {
         self.quirks.insert(quirk);

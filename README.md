@@ -1,81 +1,115 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/JeanVydes/Norte/dev/assets/banner.jpg" alt="Norte" width="100%">
+  <img src="https://raw.githubusercontent.com/JeanVydes/Norte/main/assets/banner.jpg" alt="Norte" width="100%">
 </p>
 
 # Norte
 
 <p align="center">
-  <a href="https://github.com/JeanVydes/Norte/actions/workflows/rust.yml"><img src="https://github.com/JeanVydes/Norte/actions/workflows/rust.yml/badge.svg?branch=dev" alt="CI"></a>
-  <a href="https://github.com/JeanVydes/Norte/blob/dev/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
+  <a href="https://github.com/JeanVydes/Norte/actions/workflows/rust.yml"><img src="https://github.com/JeanVydes/Norte/actions/workflows/rust.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="https://github.com/JeanVydes/Norte/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/MSRV-1.85-blue.svg" alt="MSRV: 1.85">
   <img src="https://img.shields.io/badge/edition-2024-blue.svg" alt="Edition: 2024">
 </p>
 
-**Provider-agnostic model and tool APIs for Rust.** Norte provides a shared
-message model, typed capabilities, provider adapters, streaming events, and
-optional tool and media support. It does not create sessions, run an agent
-loop, or persist conversation history; the application owns those policies.
+**Provider-neutral model and tool APIs for Rust.** Norte gives applications a
+shared message model, typed capabilities, provider adapters, and streaming
+events. It also offers optional tool, media, and MCP integrations. Your
+application controls conversation history, tool loops, sessions, and storage.
 
-## Crates
+## Features
 
-- **`norte`** is the facade with optional provider and helper features.
-- **`norte-core`** defines messages, parts, model requests, streaming, tools,
-  capabilities, and adapter contracts.
-- **`norte-openai`**, **`norte-anthropic`**, and **`norte-gemini`** implement
-  their respective provider APIs.
-- **`norte-http`** provides the shared HTTP transport and vendor profile.
-- **`norte-tools`**, **`norte-mcp`**, and **`norte-testing`** are opt-in helpers.
+- Stream model responses through one provider-neutral API.
+- Use OpenAI, Anthropic, and Google adapters, or connect OpenAI-compatible
+  endpoints through the OpenAI adapter.
+- Declare model capabilities and supported parameters explicitly.
+- Add tools, image input and output, and MCP support through opt-in features.
+- Keep runtime policy and conversation persistence in your application.
 
-Norte has no model catalogue. Applications select model identifiers and declare
-the capabilities they want to expose. OpenAI-compatible endpoints can use the
-OpenAI adapter with a configured endpoint and authentication profile.
+Norte does not include a model catalogue. Applications supply model IDs and
+capabilities from their own configuration or trusted catalogue.
 
 ## Install
 
+Add Norte to your `Cargo.toml`:
+
 ```toml
 [dependencies]
-norte = { version = "0.0.2", features = ["openai", "tools"] }
+norte = { git = "https://github.com/JeanVydes/Norte", branch = "main", features = ["openai"] }
+futures-util = "0.3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
-Provider features are `openai` (default), `anthropic`, and `gemini`. Optional
-helpers include `tools`, `media`, `mcp`, and `testing`; `full` enables all
-features. Each crate can also be used directly.
+The `openai` feature is enabled by default. Add `anthropic` or `gemini` for
+those providers. Optional integrations include `tools`, `media`, and `mcp`.
+The `full` feature enables all provider and integration features.
 
-## Stream a model response
+## Make a request
 
-```rust,ignore
+This program reads `OPENAI_API_KEY`, sends one request to OpenAI, and prints
+the stream events. Create a binary crate, add the dependencies above to its
+`Cargo.toml`, save the complete program as `src/main.rs`, set
+`OPENAI_API_KEY` in your environment, and run `cargo run`.
+
+```rust
+use std::error::Error;
+
 use futures_util::StreamExt;
-use norte_core::{Message, Model, ModelRequest};
+use norte::{Capabilities, Message, Modality, Model, ModelRequest};
 
-let request = ModelRequest::new(
-    model.reference().clone(),
-    vec![Message::user("What is a prompt cache?")],
-);
-let mut stream = model.stream(request).await?;
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+    let api_key = std::env::var("OPENAI_API_KEY")?;
+    let capabilities = Capabilities::builder()
+        .input(Modality::Text)
+        .output(Modality::Text)
+        .build();
+    let model = norte::presets::openai("gpt-5", api_key, capabilities)?;
+    let request = ModelRequest::new(
+        model.reference().clone(),
+        vec![Message::user("What is a prompt cache?")],
+    );
 
-while let Some(event) = stream.next().await {
-    handle_model_event(event?);
+    let mut stream = model.stream(request).await?;
+    while let Some(event) = stream.next().await {
+        println!("{:?}", event?);
+    }
+
+    Ok(())
 }
 ```
 
-The host decides how to collect events, keep conversation history, dispatch
-tools, retry calls, cancel work, and persist any application state.
+The [model example](examples/cookbook/examples/model.rs) shows the same flow
+with an explicit endpoint profile. The [cookbook](examples/cookbook/README.md)
+also includes tool loops, chat history, image input and output, and scripted
+models for tests.
 
-## Documentation and development
+## Crates
 
-- [Guide](https://jeanvydes.github.io/Norte/) — concepts and API usage.
-- [Rustdoc](https://docs.rs/norte/) — generated crate reference.
-- [`CONTRIBUTING.md`](CONTRIBUTING.md) — workspace layout and checks.
-- [`CHANGELOG.md`](CHANGELOG.md) — release history.
-- [`benchmarks/`](benchmarks/) — reproducible performance measurements.
+| Crate | Purpose |
+| --- | --- |
+| [`norte`](norte/) | Facade with optional provider and helper features. |
+| [`norte-core`](norte-core/) | Messages, model requests, events, capabilities, and tool contracts. |
+| [`norte-openai`](norte-openai/) | OpenAI Responses and Chat Completions adapters. |
+| [`norte-anthropic`](norte-anthropic/) | Anthropic Messages adapter. |
+| [`norte-gemini`](norte-gemini/) | Google Gemini adapter. |
+| [`norte-http`](norte-http/) | Shared HTTP transport and vendor profiles. |
+| [`norte-tools`](norte-tools/) | Optional built-in tools. |
+| [`norte-mcp`](norte-mcp/) | Optional MCP client integration. |
+| [`norte-testing`](norte-testing/) | Scripted models and test support. |
 
-```sh
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items
-```
+## Documentation
+
+- [User guide](https://jeanvydes.github.io/Norte/)
+- [API reference](https://docs.rs/norte/)
+- [Contributing](CONTRIBUTING.md)
+- [Changelog](CHANGELOG.md)
+- [Cookbook](examples/cookbook/README.md)
+- [Benchmarks](benchmarks/README.md)
+
+Run the workspace checks with `cargo fmt --all -- --check`,
+`cargo clippy --workspace --all-targets -- -D warnings`, and
+`cargo test --workspace`.
 
 ## License
 
-MIT.
+MIT. See [LICENSE](LICENSE).

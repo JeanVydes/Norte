@@ -327,7 +327,7 @@ fn push_assistant(
     message: &Message,
     items: &mut Vec<Value>,
 ) -> Result<()> {
-    let content = content_blocks(&message.parts)?;
+    let content = assistant_content_blocks(&message.parts);
     if !content.is_empty() {
         items.push(json!({
             "type": "message",
@@ -431,6 +431,23 @@ fn content_blocks(parts: &[Part]) -> Result<Vec<Value>> {
         }
     }
     Ok(blocks)
+}
+
+fn assistant_content_blocks(parts: &[Part]) -> Vec<Value> {
+    parts
+        .iter()
+        .filter_map(|part| match part {
+            Part::Text(text) => Some(json!({
+                "type": "output_text",
+                "text": text.text,
+            })),
+            Part::Refusal(refusal) => Some(json!({
+                "type": "refusal",
+                "refusal": refusal.text,
+            })),
+            _ => None,
+        })
+        .collect()
 }
 
 /// The content blocks of a tool result, with structured data answering for a

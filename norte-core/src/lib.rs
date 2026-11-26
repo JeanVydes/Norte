@@ -74,6 +74,7 @@ pub use model::{
     splice_vendor_extensions,
 };
 pub use norte_macros::tool;
+pub use norte_types::{GenerationSupport, ParameterSupport, SupportedParam};
 pub use preprocess::{MediaPayload, MediaPreprocessor};
 pub use stream::{Accumulated, StreamAccumulator, StreamEvent};
 pub use tool::registry::{FnTool, ToolRegistry};

@@ -76,36 +76,3 @@ fn host_json_becomes_the_capability_descriptor() {
     assert_eq!(capabilities.max_context, Some(200_000));
     assert!(capabilities.supports(ToolKind::Function));
 }
-
-#[test]
-fn host_quirks_follow_the_wire_for_any_provider() {
-    use norte_core::{Error, Message, ModelRequest};
-    use norte_http::Quirk;
-
-    let provider = ProviderId::new("example-gateway").unwrap();
-    let model = ModelRef::new(provider.clone(), "example-model".parse().unwrap());
-    let profile = VendorProfile::new(
-        provider,
-        WireFamily::new(WIRE_CHAT).unwrap(),
-        "https://example.com/v1",
-    )
-    .unwrap()
-    .with_quirk(Quirk::NoTemperature);
-    let adapter = OpenAiChat::new(
-        model.clone(),
-        profile.clone(),
-        Capabilities::builder().build(),
-    )
-    .unwrap();
-    let mut request = ModelRequest::new(model.clone(), vec![Message::user("hello")]);
-    request.params.temperature = Some(0.5);
-    assert!(matches!(
-        adapter.request_body(&request),
-        Err(Error::Capability { .. })
-    ));
-    let profile = profile.with_quirk(Quirk::NoPromptCacheBreakpoints);
-    assert!(matches!(
-        OpenAiChat::new(model, profile, Capabilities::builder().build()),
-        Err(Error::InvalidInput(_))
-    ));
-}

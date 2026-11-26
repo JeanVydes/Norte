@@ -100,6 +100,42 @@ pub struct GenerationParams {
 }
 
 impl GenerationParams {
+    /// Lists the neutral parameter values present in this request.
+    pub fn requested_params(&self) -> impl Iterator<Item = norte_types::SupportedParam> {
+        use norte_types::SupportedParam;
+        [
+            (SupportedParam::Temperature, self.temperature.is_some()),
+            (SupportedParam::TopP, self.top_p.is_some()),
+            (SupportedParam::TopK, self.top_k.is_some()),
+            (SupportedParam::MinP, self.min_p.is_some()),
+            (SupportedParam::TopA, self.top_a.is_some()),
+            (
+                SupportedParam::FrequencyPenalty,
+                self.frequency_penalty.is_some(),
+            ),
+            (
+                SupportedParam::PresencePenalty,
+                self.presence_penalty.is_some(),
+            ),
+            (
+                SupportedParam::RepetitionPenalty,
+                self.repetition_penalty.is_some(),
+            ),
+            (SupportedParam::LogitBias, self.logit_bias.is_some()),
+            (
+                SupportedParam::MaxOutputTokens,
+                self.max_output_tokens.is_some(),
+            ),
+            (
+                SupportedParam::StopSequences,
+                !self.stop_sequences.is_empty(),
+            ),
+            (SupportedParam::Seed, self.seed.is_some()),
+        ]
+        .into_iter()
+        .filter_map(|(param, present)| present.then_some(param))
+    }
+
     /// Checks values that are invalid independently of a provider's supported
     /// parameter ranges.
     ///

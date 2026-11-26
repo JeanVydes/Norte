@@ -13,6 +13,7 @@ keywords = ["llm", "http-client", "sse", "streaming", "retry"]
 categories = ["web-programming::http-client", "asynchronous"]
 
 [dependencies]
+norte-types = { workspace = true }
 norte-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

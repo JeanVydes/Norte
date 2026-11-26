@@ -2,7 +2,6 @@ use norte_core::{
     CallId, Error, MediaPart, MediaSource, Message, ModelRef, ModelRequest, Part, ReasoningEffort,
     ReasoningRequest, Result, Role, ToolKind, ToolResultPart, ToolSpec, splice_vendor_extensions,
 };
-use norte_http::{Quirk, Quirks};
 use serde_json::{Value, json};
 
 use crate::WIRE_GENERATE;
@@ -17,67 +16,22 @@ use crate::json::{base64_encode, opt_str};
 /// blob that no [`MediaAdapter`] resolved.
 ///
 /// [`MediaAdapter`]: norte_core::MediaAdapter
+#[cfg(test)]
 pub(crate) fn build(
     model: &ModelRef,
     continuity: &GeminiContinuity,
     request: &ModelRequest,
 ) -> Result<Value> {
-    build_body(model, continuity, request, true)
+    build_with_reasoning(model, continuity, request, request.reasoning)
 }
 
-/// Builds a generation body and applies host-declared wire restrictions.
-pub(crate) fn build_with_quirks(
+pub(crate) fn build_with_reasoning(
     model: &ModelRef,
     continuity: &GeminiContinuity,
     request: &ModelRequest,
-    quirks: &Quirks,
+    reasoning: ReasoningRequest,
 ) -> Result<Value> {
-    let body = build(model, continuity, request)?;
-    for (quirk, field, present) in [
-        (
-            Quirk::NoTemperature,
-            "generationConfig.temperature",
-            body.pointer("/generationConfig/temperature").is_some(),
-        ),
-        (
-            Quirk::NoTopP,
-            "generationConfig.topP",
-            body.pointer("/generationConfig/topP").is_some(),
-        ),
-        (
-            Quirk::NoStructuredOutput,
-            "generationConfig.responseSchema",
-            body.pointer("/generationConfig/responseSchema").is_some()
-                || body
-                    .pointer("/generationConfig/responseJsonSchema")
-                    .is_some()
-                || body.pointer("/generationConfig/responseMimeType").is_some(),
-        ),
-        (
-            Quirk::NoStopSequences,
-            "generationConfig.stopSequences",
-            body.pointer("/generationConfig/stopSequences").is_some(),
-        ),
-        (
-            Quirk::NoSeed,
-            "generationConfig.seed",
-            body.pointer("/generationConfig/seed").is_some(),
-        ),
-        (
-            Quirk::NoReasoningEffort,
-            "generationConfig.thinkingConfig.thinkingLevel",
-            body.pointer("/generationConfig/thinkingConfig/thinkingLevel")
-                .is_some(),
-        ),
-    ] {
-        if quirks.contains(&quirk) && present {
-            return Err(Error::Capability {
-                model: model.clone(),
-                feature: format!("`{field}` (the vendor declares {quirk:?})"),
-            });
-        }
-    }
-    Ok(body)
+    build_body(model, continuity, request, Some(reasoning))
 }
 
 /// Builds the wire body for a `countTokens` call, which accepts the prompt but
@@ -91,7 +45,7 @@ pub(crate) fn build_count(
     continuity: &GeminiContinuity,
     request: &ModelRequest,
 ) -> Result<Value> {
-    build_body(model, continuity, request, false)
+    build_body(model, continuity, request, None)
 }
 
 /// Builds the wire body that creates an explicit cached content: the prompt
@@ -107,7 +61,7 @@ pub(crate) fn build_cache(
     request: &ModelRequest,
     ttl: &str,
 ) -> Result<Value> {
-    let mut body = build_body(model, continuity, request, false)?;
+    let mut body = build_body(model, continuity, request, None)?;
     let object = body
         .as_object_mut()
         .ok_or_else(|| Error::Codec("gemini wire: cache body is not an object".to_owned()))?;
@@ -130,9 +84,9 @@ fn build_body(
     model: &ModelRef,
     continuity: &GeminiContinuity,
     request: &ModelRequest,
-    generation: bool,
+    reasoning: Option<ReasoningRequest>,
 ) -> Result<Value> {
-    if generation {
+    if reasoning.is_some() {
         request.params.validate()?;
     }
     let instructions = instruction_count(&request.messages);
@@ -167,8 +121,8 @@ fn build_body(
             body.insert("tools".to_owned(), Value::Array(tools));
         }
     }
-    if generation {
-        let config = generation_config(request);
+    if let Some(reasoning) = reasoning {
+        let config = generation_config(request, reasoning);
         if !config.is_empty() {
             body.insert("generationConfig".to_owned(), Value::Object(config));
         }
@@ -570,7 +524,10 @@ fn build_tools(model: &ModelRef, tools: &[ToolSpec]) -> Result<Vec<Value>> {
     Ok(out)
 }
 
-fn generation_config(request: &ModelRequest) -> serde_json::Map<String, Value> {
+fn generation_config(
+    request: &ModelRequest,
+    reasoning: ReasoningRequest,
+) -> serde_json::Map<String, Value> {
     let mut config = serde_json::Map::new();
     if let Some(temperature) = request.params.temperature {
         config.insert("temperature".to_owned(), json!(temperature));
@@ -607,7 +564,7 @@ fn generation_config(request: &ModelRequest) -> serde_json::Map<String, Value> {
         );
         config.insert("responseSchema".to_owned(), gemini_schema(schema));
     }
-    if let Some(thinking) = thinking_config(request.reasoning) {
+    if let Some(thinking) = thinking_config(reasoning) {
         config.insert("thinkingConfig".to_owned(), thinking);
     }
     if let Some(top) = request.params.logprobs {
@@ -664,54 +621,6 @@ mod tests {
 
     fn continuity() -> GeminiContinuity {
         GeminiContinuity::new(WireFamily::new(WIRE_GENERATE).expect("family"), model())
-    }
-
-    #[test]
-    fn declared_quirks_reject_generation_fields_and_extensions() {
-        for (quirk, field, value) in [
-            (
-                Quirk::NoStructuredOutput,
-                "responseSchema",
-                json!({"type":"object"}),
-            ),
-            (Quirk::NoStopSequences, "stopSequences", json!(["stop"])),
-            (Quirk::NoSeed, "seed", json!(7)),
-            (Quirk::NoTemperature, "temperature", json!(0.5)),
-            (Quirk::NoTopP, "topP", json!(0.5)),
-            (
-                Quirk::NoReasoningEffort,
-                "thinkingConfig",
-                json!({"thinkingLevel":"HIGH"}),
-            ),
-        ] {
-            let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
-            request.extensions.insert(
-                format!("{WIRE_GENERATE}:generationConfig.{field}")
-                    .parse()
-                    .unwrap(),
-                value,
-            );
-            let quirks = [quirk].into_iter().collect();
-            assert!(
-                matches!(
-                    build_with_quirks(&model(), &continuity(), &request, &quirks),
-                    Err(Error::Capability { .. })
-                ),
-                "{quirk:?}"
-            );
-            assert!(build(&model(), &continuity(), &request).is_ok());
-        }
-        let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
-        request.params.seed = Some(7);
-        assert!(matches!(
-            build_with_quirks(
-                &model(),
-                &continuity(),
-                &request,
-                &[Quirk::NoSeed].into_iter().collect()
-            ),
-            Err(Error::Capability { .. })
-        ));
     }
 
     #[test]

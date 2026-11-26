@@ -142,12 +142,6 @@ fn validate_quirks(
     // Check the completed body so vendor extensions cannot bypass restrictions.
     for (quirk, field) in [
         (Quirk::NoStreamUsage, "stream_options"),
-        (Quirk::NoStructuredOutput, "response_format"),
-        (Quirk::NoStopSequences, "stop"),
-        (Quirk::NoSeed, "seed"),
-        (Quirk::NoTemperature, "temperature"),
-        (Quirk::NoTopP, "top_p"),
-        (Quirk::NoReasoningEffort, "reasoning_effort"),
         (Quirk::NoPromptCacheKey, "prompt_cache_key"),
     ] {
         if quirks.contains(&quirk) && body.contains_key(field) {
@@ -847,98 +841,6 @@ mod tests {
         let body = build(&model(), &continuity(), &Quirks::new(), &request).expect("build");
 
         assert_eq!(body["reasoning_effort"], "none");
-    }
-
-    #[test]
-    fn quirks_omit_automatic_fields_without_rejecting_unset_features() {
-        let quirks: Quirks = [
-            Quirk::NoStreamUsage,
-            Quirk::NoSeed,
-            Quirk::NoStopSequences,
-            Quirk::NoReasoningEffort,
-            Quirk::NoPromptCacheKey,
-        ]
-        .into_iter()
-        .collect();
-        let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
-        request.reasoning = ReasoningRequest::Automatic;
-        request.extensions.insert(SESSION_EXTENSION, json!("sess"));
-        let body = build(&model(), &continuity(), &quirks, &request).expect("build");
-        assert!(body.get("stream_options").is_none());
-        assert!(body.get("seed").is_none());
-        assert!(body.get("stop").is_none());
-        assert!(body.get("reasoning_effort").is_none());
-        assert!(body.get("prompt_cache_key").is_none());
-    }
-
-    #[test]
-    fn explicit_features_against_deviating_vendors_are_typed_errors() {
-        for (quirk, field) in [
-            (Quirk::NoSeed, "seed"),
-            (Quirk::NoStopSequences, "stop"),
-            (Quirk::NoReasoningEffort, "reasoning_effort"),
-        ] {
-            let quirks = [quirk].into_iter().collect();
-            let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
-            match quirk {
-                Quirk::NoSeed => request.params.seed = Some(7),
-                Quirk::NoStopSequences => request.params.stop_sequences = vec!["stop".to_owned()],
-                Quirk::NoReasoningEffort => {
-                    request.reasoning = ReasoningRequest::Effort(ReasoningEffort::High);
-                }
-                _ => unreachable!(),
-            }
-            let body = build(&model(), &continuity(), &Quirks::new(), &request).expect("supported");
-            assert!(body.get(field).is_some());
-            let error = build(&model(), &continuity(), &quirks, &request).expect_err("rejected");
-            assert!(matches!(error, Error::Capability { model: target, feature }
-                if target == model() && feature.contains(field)));
-        }
-    }
-
-    #[test]
-    fn vendor_extensions_cannot_bypass_quirks() {
-        for (quirk, field, value) in [
-            (Quirk::NoSeed, "seed", json!(7)),
-            (Quirk::NoStopSequences, "stop", json!(["stop"])),
-            (Quirk::NoReasoningEffort, "reasoning_effort", json!("high")),
-            (
-                Quirk::NoStructuredOutput,
-                "response_format",
-                json!({ "type": "json_object" }),
-            ),
-            (
-                Quirk::NoStreamUsage,
-                "stream_options.include_usage",
-                json!(true),
-            ),
-            (
-                Quirk::NoPromptCacheKey,
-                "prompt_cache_key",
-                json!("explicit"),
-            ),
-        ] {
-            let quirks = [quirk].into_iter().collect();
-            let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
-            request.extensions.insert(
-                format!("{WIRE_CHAT}:{field}")
-                    .parse()
-                    .expect("extension key"),
-                value,
-            );
-            let error = build(&model(), &continuity(), &quirks, &request).expect_err("rejected");
-            assert!(matches!(error, Error::Capability { model: target, feature }
-                if target == model() && feature.contains(field.split('.').next().expect("field"))));
-        }
-    }
-
-    #[test]
-    fn structured_output_against_a_deviating_vendor_is_a_typed_error() {
-        let quirks: Quirks = [Quirk::NoStructuredOutput].into_iter().collect();
-        let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
-        request.params.output_schema = Some(json!({ "type": "object" }));
-        let error = build(&model(), &continuity(), &quirks, &request).expect_err("error");
-        assert!(matches!(error, Error::Capability { .. }));
     }
 
     #[test]

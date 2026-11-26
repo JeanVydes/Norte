@@ -6,8 +6,9 @@ use crate::domain::media::{MediaKind, MimeType};
 use crate::domain::part::Part;
 use crate::error::{Error, Result};
 use crate::id::ModelRef;
-use crate::model::{GenerationParams, MAX_TOP_LOGPROBS};
+use crate::model::{GenerationParams, MAX_TOP_LOGPROBS, ModelRequest};
 use crate::tool::ToolSpec;
+use norte_types::{GenerationSupport, ParameterSupport};
 
 /// A kind of content a model can accept or produce.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -251,6 +252,9 @@ pub enum StructuredOutputMode {
 pub struct Capabilities {
     /// What the model accepts and produces, with the host's limits.
     pub modalities: ModalityCapabilities,
+    /// Known generation parameters; an incomplete list leaves others unknown.
+    #[serde(default)]
+    pub generation: GenerationSupport,
     /// What the model's reasoning supports.
     #[serde(default)]
     pub reasoning: Reasoning,
@@ -343,6 +347,18 @@ impl Capabilities {
         Ok(())
     }
 
+    /// Validates the effective request before passing it to the wire adapter.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a requested feature, parameter value, or part is unsupported.
+    pub fn check_request(&self, model: &ModelRef, request: &ModelRequest) -> Result<()> {
+        self.check_reasoning(model, request.reasoning)?;
+        self.check_generation(model, &request.params)?;
+        self.check_tools(model, &request.tools)?;
+        self.check_part_iter(model, request.messages.iter().flat_map(|msg| &msg.parts))
+    }
+
     /// Enforces the host-configured limits for every part. Without configured
     /// limits nothing is rejected, which is the model-agnostic default.
     ///
@@ -351,6 +367,14 @@ impl Capabilities {
     /// Returns [`Error::Capability`] for an unsupported modality, an unaccepted
     /// MIME type, an oversized payload, or too many parts of one modality.
     pub fn check_parts(&self, model: &ModelRef, parts: &[Part]) -> Result<()> {
+        self.check_part_iter(model, parts)
+    }
+
+    fn check_part_iter<'a>(
+        &self,
+        model: &ModelRef,
+        parts: impl IntoIterator<Item = &'a Part>,
+    ) -> Result<()> {
         let mut counts: BTreeMap<Modality, u32> = BTreeMap::new();
         for part in parts {
             let Part::Media(media) = part else {
@@ -412,12 +436,31 @@ impl Capabilities {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Capability`] when the model does not declare
-    /// [`Error::InvalidInput`] for invalid parameter values,
-    /// [`Feature::Logprobs`] when unsupported, and [`Error::LimitExceeded`]
-    /// above [`MAX_TOP_LOGPROBS`].
+    /// Returns a capability error for unsupported features and an input or
+    /// limit error for invalid parameter values.
     pub fn check_generation(&self, model: &ModelRef, params: &GenerationParams) -> Result<()> {
         params.validate()?;
+        for param in params.requested_params() {
+            if self.generation.support(param) == ParameterSupport::Unsupported {
+                return Err(Error::Capability {
+                    model: model.clone(),
+                    feature: format!("generation parameter {param:?}"),
+                });
+            }
+        }
+        if params.output_schema.is_some()
+            && !self
+                .structured_output
+                .contains(&StructuredOutputMode::JsonSchema)
+            && !self
+                .structured_output
+                .contains(&StructuredOutputMode::StrictSchema)
+        {
+            return Err(Error::Capability {
+                model: model.clone(),
+                feature: "structured output with a JSON schema".to_owned(),
+            });
+        }
         let Some(top) = params.logprobs else {
             return Ok(());
         };
@@ -465,6 +508,13 @@ impl CapabilitiesBuilder {
     #[must_use]
     pub fn output(mut self, modality: Modality) -> Self {
         self.capabilities.modalities.allow_output(modality);
+        self
+    }
+
+    /// Sets the model's known generation parameter support.
+    #[must_use]
+    pub fn generation(mut self, generation: GenerationSupport) -> Self {
+        self.capabilities.generation = generation;
         self
     }
 

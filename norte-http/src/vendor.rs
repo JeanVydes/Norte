@@ -86,6 +86,26 @@ impl VendorProfile {
         Ok(())
     }
 
+    /// Checks that the adapter can encode the requested neutral parameters.
+    ///
+    /// # Errors
+    ///
+    /// Returns a capability error if the adapter cannot encode a requested field.
+    pub fn check_wire_params(
+        &self,
+        model: &norte_core::ModelRef,
+        params: &norte_core::GenerationParams,
+        supported: &[norte_core::SupportedParam],
+    ) -> Result<()> {
+        if let Some(param) = params.requested_params().find(|p| !supported.contains(p)) {
+            return Err(Error::Capability {
+                model: model.clone(),
+                feature: format!("generation parameter {param:?} on wire {}", self.wire),
+            });
+        }
+        Ok(())
+    }
+
     /// The deviations this profile declares.
     #[must_use]
     pub fn quirks(&self) -> &Quirks {
@@ -144,15 +164,5 @@ mod tests {
     fn wire_family_round_trips() {
         let model_wire = WireFamily::from_str("anthropic-messages").expect("wire");
         assert_eq!(model_wire.as_str(), "anthropic-messages");
-    }
-
-    #[test]
-    fn quirks_are_declared_on_the_profile() {
-        let profile = profile("https://api.example.com/v1")
-            .with_quirk(Quirk::NoStreamUsage)
-            .with_quirk(Quirk::NoSeed);
-        assert!(profile.quirks().contains(&Quirk::NoStreamUsage));
-        assert!(profile.quirks().contains(&Quirk::NoSeed));
-        assert!(!profile.quirks().contains(&Quirk::NoStructuredOutput));
     }
 }

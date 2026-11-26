@@ -6,7 +6,8 @@ mod stream;
 pub use stream::FuzzResponses;
 
 use norte_core::{
-    Capabilities, ContinuityAdapter, Model, ModelRef, ModelRequest, ModelStream, Result, WireFamily,
+    Capabilities, ContinuityAdapter, Model, ModelRef, ModelRequest, ModelStream, Result,
+    SupportedParam, WireFamily,
 };
 use norte_http::{HttpClient, Quirk, VendorProfile};
 use serde_json::Value;
@@ -31,6 +32,10 @@ pub struct OpenAiResponses {
 }
 
 impl OpenAiResponses {
+    /// Quirks this adapter can apply to a profile.
+    pub const SUPPORTED_QUIRKS: &'static [Quirk] =
+        &[Quirk::NoPromptCacheKey, Quirk::NoPromptCacheBreakpoints];
+
     /// # Errors
     ///
     /// Returns an error when the wire family name or the default `HTTP` client
@@ -40,14 +45,7 @@ impl OpenAiResponses {
         profile: VendorProfile,
         capabilities: Capabilities,
     ) -> Result<Self> {
-        profile.validate_quirks(&[
-            Quirk::NoStructuredOutput,
-            Quirk::NoTemperature,
-            Quirk::NoTopP,
-            Quirk::NoReasoningEffort,
-            Quirk::NoPromptCacheKey,
-            Quirk::NoPromptCacheBreakpoints,
-        ])?;
+        profile.validate_quirks(Self::SUPPORTED_QUIRKS)?;
         let family = WireFamily::new(WIRE_RESPONSES)?;
         Ok(Self {
             continuity: OpenAiContinuity::new(family, reference.clone()),
@@ -84,6 +82,33 @@ impl OpenAiResponses {
     /// cache keys are omitted for `NoPromptCacheKey`; explicit cache-key
     /// extensions are rejected instead.
     pub fn request_body(&self, request: &ModelRequest) -> Result<Value> {
+        self.capabilities.check_request(&self.reference, request)?;
+        if matches!(request.reasoning, norte_core::ReasoningRequest::Budget(_)) {
+            return Err(norte_core::Error::Capability {
+                model: self.reference.clone(),
+                feature: format!("reasoning token budget on wire {}", self.profile.wire),
+            });
+        }
+        // A model without reasoning already satisfies the disabled mode.
+        let mut without_reasoning;
+        let request = if request.reasoning == norte_core::ReasoningRequest::Disabled
+            && !self.capabilities.reasoning.supported
+        {
+            without_reasoning = request.clone();
+            without_reasoning.reasoning = norte_core::ReasoningRequest::Automatic;
+            &without_reasoning
+        } else {
+            request
+        };
+        self.profile.check_wire_params(
+            &self.reference,
+            &request.params,
+            &[
+                SupportedParam::Temperature,
+                SupportedParam::TopP,
+                SupportedParam::MaxOutputTokens,
+            ],
+        )?;
         request::build_with_quirks(
             &self.reference,
             &self.continuity,
@@ -108,12 +133,7 @@ impl Model for OpenAiResponses {
     }
 
     async fn stream(&self, request: ModelRequest) -> Result<ModelStream> {
-        let body = request::build_with_quirks(
-            &self.reference,
-            &self.continuity,
-            self.profile.quirks(),
-            &request,
-        )?;
+        let body = self.request_body(&request)?;
         let sse = self.client.send_sse(&self.profile, PATH, &body).await?;
         Ok(stream::map(sse, self.continuity.clone()))
     }

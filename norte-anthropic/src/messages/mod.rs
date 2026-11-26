@@ -6,7 +6,8 @@ mod stream;
 pub use stream::FuzzMessages;
 
 use norte_core::{
-    Capabilities, ContinuityAdapter, Model, ModelRef, ModelRequest, ModelStream, Result, WireFamily,
+    Capabilities, ContinuityAdapter, Model, ModelRef, ModelRequest, ModelStream, Result,
+    SupportedParam, WireFamily,
 };
 use norte_http::{HttpClient, Quirk, VendorProfile};
 use serde_json::Value;
@@ -34,6 +35,9 @@ pub struct AnthropicMessages {
 }
 
 impl AnthropicMessages {
+    /// Quirks this adapter can apply to a profile.
+    pub const SUPPORTED_QUIRKS: &'static [Quirk] = &[Quirk::NoPromptCacheBreakpoints];
+
     /// # Errors
     ///
     /// Returns an error when the wire family name or the default `HTTP` client
@@ -43,13 +47,7 @@ impl AnthropicMessages {
         profile: VendorProfile,
         capabilities: Capabilities,
     ) -> Result<Self> {
-        profile.validate_quirks(&[
-            Quirk::NoStopSequences,
-            Quirk::NoTemperature,
-            Quirk::NoTopP,
-            Quirk::NoReasoningEffort,
-            Quirk::NoPromptCacheBreakpoints,
-        ])?;
+        profile.validate_quirks(Self::SUPPORTED_QUIRKS)?;
         let family = WireFamily::new(WIRE_MESSAGES)?;
         Ok(Self {
             continuity: AnthropicContinuity::new(family, reference.clone()),
@@ -82,6 +80,24 @@ impl AnthropicMessages {
     ///
     /// Returns a codec error when a part cannot be expressed on this wire.
     pub fn request_body(&self, request: &ModelRequest) -> Result<Value> {
+        self.capabilities.check_request(&self.reference, request)?;
+        if request.params.logprobs.is_some() {
+            return Err(norte_core::Error::Capability {
+                model: self.reference.clone(),
+                feature: "log probabilities on the Messages wire".to_owned(),
+            });
+        }
+        self.profile.check_wire_params(
+            &self.reference,
+            &request.params,
+            &[
+                SupportedParam::Temperature,
+                SupportedParam::TopP,
+                SupportedParam::TopK,
+                SupportedParam::MaxOutputTokens,
+                SupportedParam::StopSequences,
+            ],
+        )?;
         request::build_with_quirks(
             &self.reference,
             &self.continuity,

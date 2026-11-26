@@ -36,6 +36,9 @@ pub struct OpenAiChat {
 }
 
 impl OpenAiChat {
+    /// Quirks this adapter can apply to a profile.
+    pub const SUPPORTED_QUIRKS: &'static [Quirk] = &[Quirk::NoStreamUsage, Quirk::NoPromptCacheKey];
+
     /// # Errors
     ///
     /// Returns an error when the wire family name or the default `HTTP` client
@@ -45,16 +48,7 @@ impl OpenAiChat {
         profile: VendorProfile,
         capabilities: Capabilities,
     ) -> Result<Self> {
-        profile.validate_quirks(&[
-            Quirk::NoStreamUsage,
-            Quirk::NoStructuredOutput,
-            Quirk::NoStopSequences,
-            Quirk::NoSeed,
-            Quirk::NoTemperature,
-            Quirk::NoTopP,
-            Quirk::NoReasoningEffort,
-            Quirk::NoPromptCacheKey,
-        ])?;
+        profile.validate_quirks(Self::SUPPORTED_QUIRKS)?;
         let family = WireFamily::new(WIRE_CHAT)?;
         Ok(Self {
             continuity: OpenAiContinuity::new(family, reference.clone()),
@@ -90,6 +84,24 @@ impl OpenAiChat {
     /// extensions) conflicts with the profile's quirks. Automatic stream usage
     /// and session cache keys are omitted when their quirks are set.
     pub fn request_body(&self, request: &ModelRequest) -> Result<Value> {
+        self.capabilities.check_request(&self.reference, request)?;
+        if matches!(request.reasoning, norte_core::ReasoningRequest::Budget(_)) {
+            return Err(norte_core::Error::Capability {
+                model: self.reference.clone(),
+                feature: format!("reasoning token budget on wire {}", self.profile.wire),
+            });
+        }
+        // A model without reasoning already satisfies the disabled mode.
+        let mut without_reasoning;
+        let request = if request.reasoning == norte_core::ReasoningRequest::Disabled
+            && !self.capabilities.reasoning.supported
+        {
+            without_reasoning = request.clone();
+            without_reasoning.reasoning = norte_core::ReasoningRequest::Automatic;
+            &without_reasoning
+        } else {
+            request
+        };
         request::build(
             &self.reference,
             &self.continuity,
@@ -114,12 +126,7 @@ impl Model for OpenAiChat {
     }
 
     async fn stream(&self, request: ModelRequest) -> Result<ModelStream> {
-        let body = request::build(
-            &self.reference,
-            &self.continuity,
-            self.profile.quirks(),
-            &request,
-        )?;
+        let body = self.request_body(&request)?;
         let sse = self.client.send_sse(&self.profile, PATH, &body).await?;
         Ok(stream::map(sse, self.continuity.clone()))
     }

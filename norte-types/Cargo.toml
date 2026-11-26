@@ -1,0 +1,13 @@
+[package]
+name = "norte-types"
+description = "Shared types for Norte model capabilities and wire deviations"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+
+[lints]
+workspace = true

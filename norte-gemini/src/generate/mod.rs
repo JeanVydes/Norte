@@ -7,7 +7,7 @@ pub use stream::FuzzGenerate;
 
 use norte_core::{
     Capabilities, ContinuityAdapter, Model, ModelId, ModelRef, ModelRequest, ModelStream, Result,
-    WireFamily,
+    SupportedParam, WireFamily,
 };
 use norte_http::{HttpClient, Quirk, VendorProfile};
 use serde_json::Value;
@@ -29,6 +29,9 @@ pub struct GeminiGenerate {
 }
 
 impl GeminiGenerate {
+    /// Quirks this adapter can apply to a profile.
+    pub const SUPPORTED_QUIRKS: &'static [Quirk] = &[];
+
     /// # Errors
     ///
     /// Returns an error when the wire family name or the default `HTTP` client
@@ -38,14 +41,7 @@ impl GeminiGenerate {
         profile: VendorProfile,
         capabilities: Capabilities,
     ) -> Result<Self> {
-        profile.validate_quirks(&[
-            Quirk::NoStructuredOutput,
-            Quirk::NoStopSequences,
-            Quirk::NoSeed,
-            Quirk::NoTemperature,
-            Quirk::NoTopP,
-            Quirk::NoReasoningEffort,
-        ])?;
+        profile.validate_quirks(Self::SUPPORTED_QUIRKS)?;
         let family = WireFamily::new(WIRE_GENERATE)?;
         Ok(Self {
             continuity: GeminiContinuity::new(family, reference.clone()),
@@ -78,12 +74,25 @@ impl GeminiGenerate {
     ///
     /// Returns a codec error when a part cannot be expressed on this wire.
     pub fn request_body(&self, request: &ModelRequest) -> Result<Value> {
-        request::build_with_quirks(
+        self.capabilities.check_request(&self.reference, request)?;
+        self.profile.check_wire_params(
             &self.reference,
-            &self.continuity,
-            request,
-            self.profile.quirks(),
-        )
+            &request.params,
+            &[
+                SupportedParam::Temperature,
+                SupportedParam::TopP,
+                SupportedParam::TopK,
+                SupportedParam::MaxOutputTokens,
+                SupportedParam::StopSequences,
+                SupportedParam::Seed,
+            ],
+        )?;
+        let reasoning = if self.capabilities.reasoning.supported {
+            request.reasoning
+        } else {
+            norte_core::ReasoningRequest::Automatic
+        };
+        request::build_with_reasoning(&self.reference, &self.continuity, request, reasoning)
     }
 
     /// Counts the tokens a request would consume, using the vendor's

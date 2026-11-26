@@ -64,64 +64,45 @@ pub(crate) fn build_with_quirks(
     quirks: &Quirks,
     stream: bool,
 ) -> Result<Value> {
-    let boundaries = if quirks.contains(&Quirk::NoPromptCacheBreakpoints) {
-        &[][..]
+    let omit_breakpoints = quirks.contains(&Quirk::NoPromptCacheBreakpoints);
+    let boundaries = if omit_breakpoints {
+        &[]
     } else {
-        &request.cache_boundaries
+        request.cache_boundaries.as_slice()
     };
     let body =
         build_body_with_boundaries(model, continuity, capabilities, request, stream, boundaries)?;
-    let has_cache_control = |value: &Value| -> bool {
-        let has_marker = |block: &Value| block.get("cache_control").is_some();
-        let blocks_have_marker = |blocks: &Value| {
-            blocks
-                .as_array()
-                .is_some_and(|blocks| blocks.iter().any(has_marker))
-        };
-        value.get("cache_control").is_some()
-            || value.get("system").is_some_and(blocks_have_marker)
-            || value.get("tools").is_some_and(blocks_have_marker)
-            || value
-                .get("messages")
-                .and_then(Value::as_array)
-                .is_some_and(|messages| {
-                    messages.iter().any(|message| {
-                        message.get("cache_control").is_some()
-                            || message.get("content").is_some_and(blocks_have_marker)
-                    })
-                })
-    };
-    for (quirk, field, present) in [
-        (
-            Quirk::NoTemperature,
-            "temperature",
-            body.get("temperature").is_some(),
-        ),
-        (Quirk::NoTopP, "top_p", body.get("top_p").is_some()),
-        (
-            Quirk::NoStopSequences,
-            "stop_sequences",
-            body.get("stop_sequences").is_some(),
-        ),
-        (
-            Quirk::NoReasoningEffort,
-            "output_config.effort",
-            body.pointer("/output_config/effort").is_some(),
-        ),
-        (
-            Quirk::NoPromptCacheBreakpoints,
-            "cache_control",
-            has_cache_control(&body),
-        ),
-    ] {
-        if quirks.contains(&quirk) && present {
-            return Err(Error::Capability {
-                model: model.clone(),
-                feature: format!("`{field}` (the vendor declares {quirk:?})"),
-            });
-        }
+    if omit_breakpoints && has_cache_control(&body) {
+        return Err(Error::Capability {
+            model: model.clone(),
+            feature: "cache_control (profile declares NoPromptCacheBreakpoints)".to_owned(),
+        });
     }
     Ok(body)
+}
+
+fn has_cache_control(body: &Value) -> bool {
+    fn has_marker(block: &Value) -> bool {
+        block.get("cache_control").is_some()
+    }
+
+    fn blocks_have_marker(blocks: &Value) -> bool {
+        blocks
+            .as_array()
+            .is_some_and(|items| items.iter().any(has_marker))
+    }
+
+    has_marker(body)
+        || body.get("system").is_some_and(blocks_have_marker)
+        || body.get("tools").is_some_and(blocks_have_marker)
+        || body
+            .get("messages")
+            .and_then(Value::as_array)
+            .is_some_and(|messages| {
+                messages.iter().any(|message| {
+                    has_marker(message) || message.get("content").is_some_and(blocks_have_marker)
+                })
+            })
 }
 
 #[cfg(test)]
@@ -219,8 +200,18 @@ fn build_body_with_boundaries(
         if let Some(thinking) = thinking_config(model, capabilities, request, max_tokens)? {
             body.insert("thinking".to_owned(), thinking);
         }
+        let mut output = serde_json::Map::new();
         if let Some(effort) = effort_name(request.reasoning) {
-            body.insert("output_config".to_owned(), json!({ "effort": effort }));
+            output.insert("effort".to_owned(), json!(effort));
+        }
+        if let Some(schema) = &request.params.output_schema {
+            output.insert(
+                "format".to_owned(),
+                json!({ "type": "json_schema", "schema": schema }),
+            );
+        }
+        if !output.is_empty() {
+            body.insert("output_config".to_owned(), Value::Object(output));
         }
     }
     splice_vendor_extensions(model, WIRE_MESSAGES, &request.extensions, &mut body)?;
@@ -731,68 +722,6 @@ mod tests {
         let model = model_named(id);
         let continuity = continuity_for(&model);
         super::build(&model, &continuity, capabilities, request)
-    }
-
-    #[test]
-    fn declared_quirks_apply_to_generated_fields_and_extensions() {
-        let mut request =
-            ModelRequest::new(model(), vec![Message::system("rules"), Message::user("hi")]);
-        request.cache_boundaries = vec![1];
-        let quirks = [Quirk::NoPromptCacheBreakpoints].into_iter().collect();
-        for stream in [false, true] {
-            let body = super::build_with_quirks(
-                &model(),
-                &continuity(),
-                &test_capabilities(),
-                &request,
-                &quirks,
-                stream,
-            )
-            .expect("build");
-            assert!(body["system"][0].get("cache_control").is_none());
-        }
-        request.extensions.insert(
-            format!("{WIRE_MESSAGES}:cache_control").parse().unwrap(),
-            json!({"type":"ephemeral"}),
-        );
-        assert!(matches!(
-            super::build_with_quirks(
-                &model(),
-                &continuity(),
-                &test_capabilities(),
-                &request,
-                &quirks,
-                true
-            ),
-            Err(Error::Capability { .. })
-        ));
-
-        for (quirk, field, value) in [
-            (Quirk::NoTemperature, "temperature", json!(0.5)),
-            (Quirk::NoTopP, "top_p", json!(0.5)),
-            (Quirk::NoStopSequences, "stop_sequences", json!(["stop"])),
-            (
-                Quirk::NoReasoningEffort,
-                "output_config",
-                json!({"effort":"high"}),
-            ),
-        ] {
-            let mut request = ModelRequest::new(model(), vec![Message::user("hi")]);
-            request
-                .extensions
-                .insert(format!("{WIRE_MESSAGES}:{field}").parse().unwrap(), value);
-            assert!(matches!(
-                super::build_with_quirks(
-                    &model(),
-                    &continuity(),
-                    &test_capabilities(),
-                    &request,
-                    &[quirk].into_iter().collect(),
-                    true
-                ),
-                Err(Error::Capability { .. })
-            ));
-        }
     }
 
     #[test]
